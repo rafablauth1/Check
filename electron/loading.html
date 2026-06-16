@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<title>CISPR 15 — Iniciando</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  background: #0B0E14;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  font-family: Arial, sans-serif;
+  user-select: none;
+  -webkit-app-region: drag;
+}
+.wrap { text-align: center; }
+.icon {
+  width: 56px; height: 56px;
+  background: linear-gradient(135deg, #E8B94B, #c9950e);
+  border-radius: 14px;
+  display: flex; align-items: center; justify-content: center;
+  margin: 0 auto 20px;
+  font-size: 28px;
+}
+.title {
+  color: #E8B94B;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 3px;
+}
+.subtitle {
+  color: rgba(255,255,255,0.3);
+  font-size: 11px;
+  letter-spacing: 3px;
+  margin-top: 6px;
+}
+.spinner {
+  width: 28px; height: 28px;
+  border: 2.5px solid rgba(232,185,75,0.15);
+  border-top: 2.5px solid #E8B94B;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+  margin: 24px auto 12px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.status {
+  color: rgba(255,255,255,0.2);
+  font-size: 10.5px;
+  letter-spacing: 1px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="icon">⚡</div>
+  <div class="title">CISPR 15</div>
+  <div class="subtitle">LABELO / PUCRS</div>
+  <div class="spinner"></div>
+  <div class="status">Iniciando servidor...</div>
+</div>
+</body>
+</html>

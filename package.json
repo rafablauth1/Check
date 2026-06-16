@@ -1,0 +1,129 @@
+{
+  "name": "cispr15-labelo",
+  "version": "1.0.62",
+  "description": "Gerador de Relatórios CISPR 15 — LABELO/PUCRS",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build && xcopy /E /I /Y .next\\static .next\\standalone\\.next\\static && xcopy /E /I /Y public .next\\standalone\\public",
+    "start": "next start",
+    "electron": "electron .",
+    "dist": "next build && electron-builder --win --x64",
+    "dist:publish": "node -e \"require('dotenv').config({path:'.env.local'})\" && next build && electron-builder --win --x64 --publish always",
+    "postdist": "node scripts/publish-update.js",
+    "publish-update": "node scripts/publish-update.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.95.2",
+    "@signpdf/placeholder-plain": "^3.3.0",
+    "@signpdf/signpdf": "^3.3.0",
+    "mammoth": "^1.12.0",
+    "node-forge": "^1.4.0",
+    "pdf-parse": "^1.1.1",
+    "tesseract.js": "^7.0.0",
+    "xlsx": "^0.18.5",
+    "xlsx-populate": "^1.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.13.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "autoprefixer": "^10.4.19",
+    "cheerio": "^1.2.0",
+    "clsx": "^2.1.1",
+    "date-fns": "^3.6.0",
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3",
+    "lucide-react": "^0.379.0",
+    "next": "14.2.3",
+    "postcss": "^8.4.38",
+    "puppeteer-core": "^24.43.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "tailwindcss": "^3.4.4",
+    "typescript": "^5.4.5"
+  },
+  "build": {
+    "appId": "br.pucrs.labelo.cispr15",
+    "productName": "CISPR 15 LABELO",
+    "copyright": "LABELO/PUCRS",
+    "directories": {
+      "output": "C:\\Temp\\cispr15-dist"
+    },
+    "forceCodeSigning": false,
+    "win": {
+      "icon": "assets/icon.ico",
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowElevation": true,
+      "perMachine": true,
+      "include": "build/installer.nsh",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CISPR 15 LABELO",
+      "installerLanguages": [
+        "pt_BR"
+      ],
+      "language": "1046"
+    },
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "nextapp",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": ".next/static",
+        "to": "nextapp/.next/static",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "public",
+        "to": "nextapp/public",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "assets/icon.ico",
+        "to": "assets/icon.ico"
+      },
+      {
+        "from": "bin/wmf2png.exe",
+        "to": "bin/wmf2png.exe"
+      }
+    ],
+    "files": [
+      "electron/**/*"
+    ],
+    "asarUnpack": [
+      "**/node_modules/pdf-parse/**"
+    ],
+    "publish": {
+      "provider": "github",
+      "owner": "rafablauth1",
+      "repo": "CISPR-15_",
+      "releaseType": "release"
+    }
+  }
+}

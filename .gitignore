@@ -1,0 +1,24 @@
+node_modules/
+.next/
+dist/
+standalone/
+*.log
+.env.local
+out/
+dados/*.json
+agenda/*.json
+pdfs/
+updates/
+releases/
+dist.rar
+
+# build/: versiona só o installer.nsh (referenciado pelo electron-builder), ignora o resto
+build/*
+!build/installer.nsh
+
+# cache incremental do TypeScript
+tsconfig.tsbuildinfo
+
+# temporários do Office e lixo
+~$*
+null

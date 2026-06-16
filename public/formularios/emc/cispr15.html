@@ -1,0 +1,1250 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Relatório CISPR 15 — LABELO/PUCRS</title>
+<style>
+/* ════════════════════════════════════════════════════════════
+   TELA — Interface de preenchimento
+════════════════════════════════════════════════════════════ */
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:Arial,sans-serif;background:#f0f2f5;color:#222;}
+.app{display:flex;height:100vh;overflow:hidden;}
+
+/* Painel esquerdo — formulário */
+.form-panel{
+  width:380px;min-width:380px;
+  background:#1a2338;overflow-y:auto;
+  border-right:1px solid rgba(255,255,255,.08);
+  scrollbar-width:thin;scrollbar-color:#2d3f50 transparent;
+}
+.form-panel::-webkit-scrollbar{width:5px;}
+.form-panel::-webkit-scrollbar-thumb{background:#2d3f50;}
+.form-logo{
+  padding:16px 18px 14px;
+  background:#0d1420;border-bottom:1px solid rgba(255,255,255,.07);
+  display:flex;align-items:center;gap:10px;
+}
+.form-logo-icon{
+  width:32px;height:32px;border-radius:8px;
+  background:linear-gradient(135deg,#e8b94b,#c9950e);
+  display:flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.form-logo-icon svg{width:18px;height:18px;}
+.form-logo-text{font-size:14px;font-weight:700;color:#fff;letter-spacing:.5px;}
+.form-logo-text span{color:#e8b94b;}
+.form-logo-sub{font-size:8px;color:rgba(255,255,255,.3);letter-spacing:1.5px;margin-top:1px;}
+
+.form-section{padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.06);}
+.form-section-title{
+  font-size:8.5px;font-weight:700;letter-spacing:2px;
+  color:#e8b94b;text-transform:uppercase;margin-bottom:10px;
+}
+.frow{display:flex;flex-direction:column;gap:3px;margin-bottom:8px;}
+.frow label{font-size:7.5px;letter-spacing:1.5px;color:rgba(255,255,255,.35);text-transform:uppercase;}
+.frow input,.frow textarea,.frow select{
+  background:#0d1420;border:1px solid rgba(255,255,255,.1);border-radius:6px;
+  color:#e8b94b;padding:7px 10px;font-size:12px;font-family:Arial,sans-serif;
+  outline:none;transition:border-color .15s;
+}
+.frow input:focus,.frow textarea:focus{border-color:#e8b94b;}
+.frow textarea{resize:vertical;min-height:54px;}
+.frow select option{background:#141b28;color:#e8b94b;}
+.frow2{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.frow3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;}
+
+/* Upload área */
+.upload-area{
+  background:#0d1420;border:1.5px dashed rgba(255,255,255,.15);
+  border-radius:8px;padding:12px;text-align:center;cursor:pointer;
+  transition:border-color .15s;margin-bottom:6px;
+}
+.upload-area:hover{border-color:#e8b94b;}
+.upload-area input{display:none;}
+.upload-area p{font-size:10.5px;color:rgba(255,255,255,.35);}
+.upload-area span{color:#e8b94b;font-weight:600;}
+.upload-thumb{
+  display:flex;align-items:center;gap:8px;
+  background:#1a2338;border:1px solid rgba(255,255,255,.1);
+  border-radius:6px;padding:6px 10px;margin-bottom:5px;
+}
+.upload-thumb img{width:48px;height:36px;object-fit:cover;border-radius:4px;}
+.upload-thumb .thumb-info{flex:1;min-width:0;}
+.upload-thumb .thumb-name{font-size:10px;color:#e8b94b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.upload-thumb .thumb-label{font-size:9px;color:rgba(255,255,255,.3);}
+.upload-thumb button{background:none;border:none;color:rgba(255,255,255,.25);cursor:pointer;font-size:15px;}
+.upload-thumb button:hover{color:#ef4444;}
+
+/* Tabela de picos no formulário */
+.peaks-mini-header{
+  display:flex;align-items:center;justify-content:space-between;margin-bottom:5px;
+}
+.peaks-mini-label{font-size:8.5px;color:rgba(255,255,255,.4);letter-spacing:.8px;}
+.btn-add{
+  font-size:9px;padding:3px 9px;background:rgba(34,211,200,.1);
+  color:#22d3c8;border:1px solid rgba(34,211,200,.2);border-radius:20px;cursor:pointer;
+}
+.peaks-mini-table{width:100%;border-collapse:collapse;font-size:9.5px;margin-bottom:6px;}
+.peaks-mini-table th{
+  background:rgba(0,0,0,.3);color:rgba(255,255,255,.3);
+  padding:4px 4px;text-align:center;font-size:7.5px;letter-spacing:.8px;
+}
+.peaks-mini-table td{padding:2px 2px;text-align:center;}
+.peaks-mini-table input{
+  width:100%;background:rgba(0,0,0,.3);border:none;
+  color:#e8b94b;text-align:center;font-size:9px;padding:3px 2px;border-radius:3px;
+  font-family:'Courier New',monospace;
+}
+.peaks-mini-table input:focus{outline:1px solid #e8b94b;}
+.peaks-mini-table select{
+  background:rgba(0,0,0,.3);border:none;color:#e8b94b;font-size:9px;padding:3px 2px;border-radius:3px;width:100%;
+}
+.check-none{display:flex;align-items:center;gap:5px;margin-bottom:8px;}
+.check-none input{accent-color:#e8b94b;}
+.check-none span{font-size:10px;color:rgba(255,255,255,.35);}
+
+/* Ações */
+.form-actions{padding:14px 16px;}
+.btn-preview{
+  width:100%;padding:11px;background:linear-gradient(135deg,#e8b94b,#c9950e);
+  color:#0d1420;font-weight:700;font-size:13px;border:none;border-radius:9px;
+  cursor:pointer;transition:filter .15s;margin-bottom:8px;
+}
+.btn-preview:hover{filter:brightness(1.1);}
+.btn-save,.btn-load{
+  width:100%;padding:8px;background:#1f2a40;color:rgba(255,255,255,.6);
+  font-size:11px;border:1px solid rgba(255,255,255,.1);border-radius:7px;cursor:pointer;margin-bottom:5px;
+}
+
+/* Painel direito — preview */
+.preview-panel{
+  flex:1;background:#d0d0d0;overflow-y:auto;
+  display:flex;flex-direction:column;align-items:center;padding:20px;
+}
+.preview-toolbar{
+  display:flex;align-items:center;gap:10px;margin-bottom:16px;
+  background:#1a2338;border-radius:8px;padding:8px 16px;width:100%;max-width:820px;
+}
+.preview-toolbar span{color:rgba(255,255,255,.4);font-size:11px;flex:1;}
+.btn-print{
+  padding:7px 18px;background:linear-gradient(135deg,#e8b94b,#c9950e);
+  color:#0d1420;font-weight:700;font-size:11px;border:none;border-radius:7px;cursor:pointer;
+}
+.btn-edit{
+  padding:7px 14px;background:#1f2a40;color:rgba(255,255,255,.6);
+  font-size:11px;border:1px solid rgba(255,255,255,.1);border-radius:7px;cursor:pointer;
+}
+
+/* ════════════════════════════════════════════════════════════
+   RELATÓRIO — estilos do documento (tela e impressão)
+════════════════════════════════════════════════════════════ */
+.relatorio{
+  width:210mm;background:white;
+  box-shadow:0 4px 24px rgba(0,0,0,.3);
+  font-family:Arial,Helvetica,sans-serif;
+  font-size:8.5pt;color:#000;
+  line-height:1.35;
+}
+
+/* Cabeçalho */
+.rel-header{display:block;width:100%;border:1px solid #999;padding:0;overflow:hidden;}
+.rel-header-top{display:flex;flex-direction:row;align-items:center;background:#3C3C3C;width:100%;min-height:80px;}
+.rel-header-logo{width:82px;min-width:82px;flex-shrink:0;padding:7px;display:flex;align-items:center;justify-content:center;}
+.rel-header-logo img{width:66px;height:auto;display:block;}
+.rel-header-uni{flex:1;text-align:center;padding:6px 8px;}
+.rel-header-uni .uni{font-size:10pt;font-weight:700;color:#fff;margin-bottom:3px;display:block;}
+.rel-header-uni .lab{font-size:8.5pt;font-weight:700;color:#fff;line-height:1.6;display:block;}
+.rel-header-badge{width:82px;min-width:82px;flex-shrink:0;padding:7px;display:flex;align-items:center;justify-content:center;}
+.rel-header-badge img{height:62px;width:auto;display:block;}
+.rel-header-bottom{display:block;width:100%;background:white;border-top:1px solid #bbb;padding:5px 14px 8px;box-sizing:border-box;}
+.rel-header-acred{display:block;text-align:center;font-size:6.5pt;font-style:italic;color:#444;margin-bottom:5px;}
+.rel-header-report{display:flex;flex-direction:row;justify-content:space-between;align-items:center;width:100%;}
+.rel-header-report .report-label{font-size:13pt;font-weight:700;color:#000;}
+.rel-header-report .report-num{font-size:13pt;font-weight:700;color:#000;}
+
+/* Título da amostra */
+.rel-title-block{text-align:center;padding:6px 14mm;}
+.rel-title-block .amostra-title{font-size:10pt;font-weight:700;margin-bottom:1px;}
+.rel-title-block .periodo{font-size:9pt;font-weight:700;color:#000;margin-top:2px;}
+.rel-title-block .emissao{font-size:9pt;font-weight:700;color:#000;margin-top:1px;}
+
+/* Cabeçalho páginas seguintes */
+.pg-header{
+  border:1.5px solid #003366;margin:0 0 4px 0;
+}
+.pg-header-row1{display:flex;border-bottom:1px solid #ccc;}
+.pg-header-logo{width:70px;flex-shrink:0;padding:3px 6px;border-right:1px solid #ccc;display:flex;align-items:center;}
+.pg-header-logo span{font-size:7.5pt;font-weight:700;color:#003366;}
+.pg-header-mid{flex:1;padding:3px 8px;border-right:1px solid #ccc;}
+.pg-header-mid .acred-small{font-size:6.5pt;color:#444;}
+.pg-header-right{width:160px;flex-shrink:0;padding:3px 8px;text-align:right;}
+.pg-header-right .re-label{font-size:6pt;color:#666;}
+.pg-header-right .re-num{font-size:8.5pt;font-weight:700;color:#003366;}
+.pg-header-row2{display:flex;background:#eef2f8;padding:2px 8px;gap:12px;align-items:center;}
+.pg-header-row2 .ph-produto{font-size:7pt;font-weight:700;color:#003366;flex:1;}
+.pg-header-row2 .ph-periodo{font-size:6.5pt;color:#444;}
+.pg-header-row2 .ph-emissao{font-size:6.5pt;color:#444;}
+
+/* Corpo */
+.rel-body{padding:0 14mm 10mm;}
+
+/* Seção */
+.sec-header{
+  background:#003366;color:white;
+  font-size:8.5pt;font-weight:700;padding:4px 8px;margin:8px 0 5px;
+}
+
+/* Texto */
+.rel-p{margin-bottom:4px;font-size:8.5pt;text-align:justify;}
+.rel-p.indent{margin-left:15px;}
+.rel-p b,.rel-p strong{color:#000;}
+.rel-label{font-weight:700;font-size:8.5pt;}
+
+/* Tabelas do relatório */
+.rel-table{width:100%;border-collapse:collapse;margin-bottom:5px;font-size:8pt;}
+.rel-table th{
+  background:#003366;color:white;
+  padding:4px 6px;text-align:center;font-size:7.5pt;
+  border:1px solid #003366;
+}
+.rel-table td{
+  padding:3px 6px;text-align:center;border:1px solid #ccc;font-size:8pt;
+}
+.rel-table tr:nth-child(even) td{background:#f5f8ff;}
+.rel-table .nota{font-size:7pt;color:#555;text-align:left;border:none;padding:2px 0;}
+.rel-table .status-pass{color:#1a7a4a;font-weight:700;}
+.rel-table .status-fail{color:#c0392b;font-weight:700;}
+.rel-table .section-row td{background:#e8eef5;font-weight:700;text-align:left;color:#003366;}
+.rel-table .span-col{text-align:left;}
+
+/* KV table */
+.kv-table{width:100%;border-collapse:collapse;margin-bottom:6px;}
+.kv-table td{padding:3px 6px;border:1px solid #ccc;font-size:8.5pt;}
+.kv-table tr:nth-child(even) td{background:#f5f8ff;}
+
+/* Resultado */
+.resultado-box{
+  border:2px solid #003366;padding:8px 12px;margin:8px 0;
+  display:flex;align-items:center;justify-content:space-between;
+}
+.resultado-label{font-size:9pt;font-weight:700;color:#003366;}
+.resultado-val{font-size:13pt;font-weight:700;}
+.resultado-val.conforme{color:#1a7a4a;}
+.resultado-val.nao-conforme{color:#c0392b;}
+
+/* Imagens */
+.img-grid{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0;}
+.img-item{text-align:center;}
+.img-item img{max-width:170px;max-height:140px;border:1px solid #ccc;}
+.img-item .fig-cap{font-size:7.5pt;color:#555;margin-top:3px;}
+
+/* Gráfico */
+.grafico-box{
+  border:1px solid #ccc;padding:4px;margin:6px 0;text-align:center;
+}
+.grafico-box img{max-width:100%;max-height:180px;object-fit:contain;}
+.grafico-box .grafico-title{font-size:8pt;font-weight:700;color:#003366;padding:3px 0 1px;}
+.grafico-placeholder{
+  height:100px;background:#f5f5f5;display:flex;align-items:center;justify-content:center;
+  color:#aaa;font-size:9pt;border:1px dashed #ccc;
+}
+
+/* Rodapé */
+.rel-footer{
+  border-top:1px solid #003366;padding:4px 14mm;
+  font-size:7pt;color:#555;text-align:center;margin-top:6px;
+}
+
+/* Assinatura */
+.assinatura{margin-top:18mm;text-align:center;}
+.assinatura .linha{border-top:1px solid #000;width:60mm;margin:0 auto 4px;}
+.assinatura p{font-size:8.5pt;}
+
+/* Quebra de página manual */
+.page-break{border-bottom:3px dashed #aaa;margin:14px 0;padding-bottom:8px;}
+.page-break::after{content:'↓ Quebra de página';font-size:9px;color:#aaa;display:block;text-align:center;}
+
+/* ════════════════════════════════════════════════════════════
+   IMPRESSÃO
+════════════════════════════════════════════════════════════ */
+@media print {
+  body{background:white;}
+  .form-panel,.preview-toolbar{display:none!important;}
+  .preview-panel{background:white;padding:0;overflow:visible;}
+  .relatorio{width:100%;box-shadow:none;page-break-after:auto;}
+  .page-break{border:none;margin:0;padding:0;page-break-after:always;}
+  .page-break::after{display:none;}
+  @page{size:A4;margin:18mm 20mm 20mm 20mm;}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+<!-- ═══════════════════════════════════════════════════
+     PAINEL ESQUERDO — FORMULÁRIO
+════════════════════════════════════════════════════════ -->
+<div class="form-panel" id="form-panel">
+
+  <div class="form-logo">
+    <div class="form-logo-icon">
+      <svg viewBox="0 0 36 36" fill="none">
+        <rect x="4" y="15" width="28" height="3" rx="1.5" fill="rgba(11,14,20,0.4)"/>
+        <rect x="13" y="10" width="10" height="13" rx="2" fill="rgba(11,14,20,0.9)"/>
+        <line x1="12" y1="13" x2="12" y2="18" stroke="rgba(11,14,20,0.5)" stroke-width="1"/>
+        <line x1="24" y1="13" x2="24" y2="18" stroke="rgba(11,14,20,0.5)" stroke-width="1"/>
+        <line x1="18" y1="8" x2="18" y2="25" stroke="rgba(11,14,20,0.7)" stroke-width="1.5"/>
+        <circle cx="18" cy="16.5" r="2.5" fill="rgba(11,14,20,0.9)"/>
+      </svg>
+    </div>
+    <div>
+      <div class="form-logo-text">LABI<span>ADIO</span></div>
+      <div class="form-logo-sub">Relatório CISPR 15 · LABELO/PUCRS</div>
+    </div>
+  </div>
+
+  <!-- IDENTIFICAÇÃO -->
+  <div class="form-section">
+    <div class="form-section-title">Identificação do Relatório</div>
+    <div class="frow3">
+      <div class="frow"><label>Nº EMC</label><input id="f-num" placeholder="0822" value="0822"/></div>
+      <div class="frow"><label>Ano</label><input id="f-ano" placeholder="2026" value="2026"/></div>
+      <div class="frow"><label>Protocolo</label><input id="f-proto" placeholder="026031535"/></div>
+    </div>
+    <div class="frow2">
+      <div class="frow"><label>Início ensaios</label><input type="date" id="f-ini" value="2026-03-23"/></div>
+      <div class="frow"><label>Fim ensaios</label><input type="date" id="f-fim" value="2026-03-26"/></div>
+    </div>
+    <div class="frow"><label>Data de emissão</label><input type="date" id="f-emissao" value="2026-03-27"/></div>
+    <div class="frow"><label>Responsável Técnico</label><input id="f-responsavel" placeholder="Ex: Lucas Menegotto Dias"/></div>
+  </div>
+
+  <!-- CLIENTE -->
+  <div class="form-section">
+    <div class="form-section-title">Cliente</div>
+    <div class="frow"><label>Nome / Razão Social</label><input id="f-cli" placeholder="CEB Iluminação Pública..."/></div>
+    <div class="frow"><label>Endereço</label><textarea id="f-end" rows="3" placeholder="Rua, número, cidade..."></textarea></div>
+  </div>
+
+  <!-- AMOSTRA -->
+  <div class="form-section">
+    <div class="form-section-title">Amostra</div>
+    <div class="frow2">
+      <div class="frow"><label>Fabricante</label><input id="f-fab" placeholder="TRADETEK"/></div>
+      <div class="frow"><label>Modelo</label><input id="f-mod" placeholder="AGN7120D4"/></div>
+    </div>
+    <div class="frow2">
+      <div class="frow"><label>Nº de série</label><input id="f-serie" placeholder="000045"/></div>
+      <div class="frow"><label>Tensão alim.</label><input id="f-tensao" placeholder="90–305VAC"/></div>
+    </div>
+    <div class="frow2">
+      <div class="frow"><label>Potência nom.</label><input id="f-pot" placeholder="120W"/></div>
+      <div class="frow"><label>Orçamento</label><input id="f-orc" placeholder="887f"/></div>
+    </div>
+    <div class="frow"><label>Lacre</label><input id="f-lacre" placeholder="Amostra Recebida Lacrada"/></div>
+    <div class="frow"><label>Documentação da amostra</label><input id="f-doc-am" value="Embalagem com especificações"/></div>
+    <div class="frow"><label>Observações da amostra</label><textarea id="f-obs-am" rows="2">Os resultados deste relatório de ensaios apresentam itens conformes. Informações adicionais podem ser acessadas em Parte 2 – Resultados dos ensaios.</textarea></div>
+  </div>
+
+  <!-- CONDIÇÕES AMBIENTAIS -->
+  <div class="form-section">
+    <div class="form-section-title">Condições Ambientais</div>
+    <div class="frow3">
+      <div class="frow"><label>Temp. (°C)</label><input id="f-temp" value="20" style="width:100%"/></div>
+      <div class="frow"><label>±Tol.</label><input id="f-temp-tol" value="5" style="width:100%"/></div>
+      <div class="frow"><label>Tensão V</label><input id="f-tensao-e" value="220" style="width:100%"/></div>
+    </div>
+    <div class="frow2">
+      <div class="frow"><label>Umidade (%)</label><input id="f-umid" value="55"/></div>
+      <div class="frow"><label>±Tol.</label><input id="f-umid-tol" value="15"/></div>
+    </div>
+  </div>
+
+  <!-- CONDUZIDOS — FASE -->
+  <div class="form-section">
+    <div class="form-section-title">Conduzidos — FASE (Line 1)</div>
+    <div class="check-none">
+      <input type="checkbox" id="chk-fase-none" onchange="toggleNone('fase')"/>
+      <span>Nenhum pico detectado</span>
+    </div>
+    <div class="peaks-mini-header">
+      <div class="peaks-mini-label">PICOS DETECTADOS</div>
+      <button class="btn-add" onclick="addPeakCond('fase')">+ Pico</button>
+    </div>
+    <table class="peaks-mini-table" id="tbl-fase">
+      <thead><tr><th>MHz</th><th>Med</th><th>LMed</th><th>QP</th><th>LQP</th><th>Status</th><th></th></tr></thead>
+      <tbody id="tbody-fase"></tbody>
+    </table>
+  </div>
+
+  <!-- CONDUZIDOS — NEUTRO -->
+  <div class="form-section">
+    <div class="form-section-title">Conduzidos — NEUTRO (Neutral)</div>
+    <div class="check-none">
+      <input type="checkbox" id="chk-neutro-none" onchange="toggleNone('neutro')"/>
+      <span>Nenhum pico detectado</span>
+    </div>
+    <div class="peaks-mini-header">
+      <div class="peaks-mini-label">PICOS DETECTADOS</div>
+      <button class="btn-add" onclick="addPeakCond('neutro')">+ Pico</button>
+    </div>
+    <table class="peaks-mini-table" id="tbl-neutro">
+      <thead><tr><th>MHz</th><th>Med</th><th>LMed</th><th>QP</th><th>LQP</th><th>Status</th><th></th></tr></thead>
+      <tbody id="tbody-neutro"></tbody>
+    </table>
+  </div>
+
+  <!-- GRÁFICOS CONDUZIDOS -->
+  <div class="form-section">
+    <div class="form-section-title">Gráficos Conduzidos (Radimation)</div>
+    <div class="frow"><label>Gráfico FASE (Line 1) — PNG/JPG</label>
+      <div class="upload-area" onclick="document.getElementById('up-graf-fase').click()">
+        <input type="file" id="up-graf-fase" accept="image/*" onchange="loadImage(this,'prev-graf-fase','thumb-graf-fase')"/>
+        <p>📊 <span>Clique para anexar</span> o gráfico do Radimation</p>
+      </div>
+      <div id="thumb-graf-fase"></div>
+    </div>
+    <div class="frow"><label>Gráfico NEUTRO (Neutral) — PNG/JPG</label>
+      <div class="upload-area" onclick="document.getElementById('up-graf-neutro').click()">
+        <input type="file" id="up-graf-neutro" accept="image/*" onchange="loadImage(this,'prev-graf-neutro','thumb-graf-neutro')"/>
+        <p>📊 <span>Clique para anexar</span> o gráfico do Radimation</p>
+      </div>
+      <div id="thumb-graf-neutro"></div>
+    </div>
+  </div>
+
+  <!-- RADIADOS 9-30MHz -->
+  <div class="form-section">
+    <div class="form-section-title">Radiados 9 kHz – 30 MHz</div>
+    <div style="font-size:9.5px;color:rgba(255,255,255,.3);margin-bottom:8px;">Loop A, B, C</div>
+    <div class="check-none"><input type="checkbox" id="chk-loopA-none" checked onchange="toggleNone('loopA')"/><span>Loop A — Nenhum pico</span></div>
+    <div id="peaks-loopA-wrap" style="display:none;">
+      <div class="peaks-mini-header"><div class="peaks-mini-label">Loop A</div><button class="btn-add" onclick="addPeakRad('loopA')">+ Pico</button></div>
+      <table class="peaks-mini-table"><thead><tr><th>MHz</th><th>QP</th><th>Lim</th><th>Dif</th><th>Status</th><th></th></tr></thead><tbody id="tbody-loopA"></tbody></table>
+    </div>
+    <div class="check-none"><input type="checkbox" id="chk-loopB-none" checked onchange="toggleNone('loopB')"/><span>Loop B — Nenhum pico</span></div>
+    <div id="peaks-loopB-wrap" style="display:none;">
+      <div class="peaks-mini-header"><div class="peaks-mini-label">Loop B</div><button class="btn-add" onclick="addPeakRad('loopB')">+ Pico</button></div>
+      <table class="peaks-mini-table"><thead><tr><th>MHz</th><th>QP</th><th>Lim</th><th>Dif</th><th>Status</th><th></th></tr></thead><tbody id="tbody-loopB"></tbody></table>
+    </div>
+    <div class="check-none"><input type="checkbox" id="chk-loopC-none" checked onchange="toggleNone('loopC')"/><span>Loop C — Nenhum pico</span></div>
+    <div id="peaks-loopC-wrap" style="display:none;">
+      <div class="peaks-mini-header"><div class="peaks-mini-label">Loop C</div><button class="btn-add" onclick="addPeakRad('loopC')">+ Pico</button></div>
+      <table class="peaks-mini-table"><thead><tr><th>MHz</th><th>QP</th><th>Lim</th><th>Dif</th><th>Status</th><th></th></tr></thead><tbody id="tbody-loopC"></tbody></table>
+    </div>
+    <div class="frow" style="margin-top:8px;"><label>Gráfico Radiados 9-30 MHz — PNG/JPG</label>
+      <div class="upload-area" onclick="document.getElementById('up-graf-rad9').click()">
+        <input type="file" id="up-graf-rad9" accept="image/*" onchange="loadImage(this,'prev-graf-rad9','thumb-graf-rad9')"/>
+        <p>📊 <span>Clique para anexar</span></p>
+      </div>
+      <div id="thumb-graf-rad9"></div>
+    </div>
+  </div>
+
+  <!-- RADIADOS 30-300MHz -->
+  <div class="form-section">
+    <div class="form-section-title">Radiados 30 MHz – 300 MHz</div>
+    <div class="check-none"><input type="checkbox" id="chk-rad300-none" onchange="toggleNone('rad300')"/><span>Nenhum pico detectado</span></div>
+    <div class="peaks-mini-header"><div class="peaks-mini-label">PICOS DETECTADOS</div><button class="btn-add" onclick="addPeakRad('rad300')">+ Pico</button></div>
+    <table class="peaks-mini-table" id="tbl-rad300">
+      <thead><tr><th>MHz</th><th>QP</th><th>Lim</th><th>Dif</th><th>Status</th><th></th></tr></thead>
+      <tbody id="tbody-rad300"></tbody>
+    </table>
+    <div class="frow" style="margin-top:8px;"><label>Gráfico Radiados 30-300 MHz — PNG/JPG</label>
+      <div class="upload-area" onclick="document.getElementById('up-graf-rad300').click()">
+        <input type="file" id="up-graf-rad300" accept="image/*" onchange="loadImage(this,'prev-graf-rad300','thumb-graf-rad300')"/>
+        <p>📊 <span>Clique para anexar</span></p>
+      </div>
+      <div id="thumb-graf-rad300"></div>
+    </div>
+  </div>
+
+  <!-- RESULTADO + FOTOS -->
+  <div class="form-section">
+    <div class="form-section-title">Resultado Geral</div>
+    <div class="frow">
+      <label>Resultado</label>
+      <select id="f-resultado">
+        <option value="CONFORME">✅ CONFORME</option>
+        <option value="NÃO CONFORME">❌ NÃO CONFORME</option>
+        <option value="PARCIALMENTE CONFORME">⚠ PARCIALMENTE CONFORME</option>
+      </select>
+    </div>
+    <div class="frow"><label>Observações finais adicionais</label>
+      <textarea id="f-obs-final" rows="2" placeholder="Observações específicas..."></textarea>
+    </div>
+  </div>
+
+  <!-- ARQUIVO RADIMATION (.docx) -->
+  <div class="form-section" id="section-docx" style="display:none;">
+    <div class="form-section-title">Arquivo Radimation (.docx)</div>
+    <div class="upload-area" onclick="document.getElementById('up-docx').click()">
+      <input type="file" id="up-docx" accept=".docx" onchange="carregarDocx(this)"/>
+      <p>📄 <span>Clique para carregar</span> o arquivo .docx do Radimation</p>
+    </div>
+    <div id="docx-status" style="font-size:11px;color:#22D3C8;padding:4px 0;display:none;"></div>
+  </div>
+
+  <!-- FOTOS DA AMOSTRA -->
+  <div class="form-section">
+    <div class="form-section-title">Fotos da Amostra</div>
+    <p style="font-size:9.5px;color:rgba(255,255,255,.3);margin-bottom:10px;">Figura 1 a 4 — igual ao relatório Word</p>
+    <div id="fotos-list"></div>
+    <div class="upload-area" onclick="document.getElementById('up-fotos').click()">
+      <input type="file" id="up-fotos" accept="image/*" multiple onchange="loadFotos(this)"/>
+      <p>📷 <span>Adicionar fotos</span> da amostra (múltiplas)</p>
+    </div>
+  </div>
+
+  <!-- AÇÕES -->
+  <div class="form-actions">
+    <button id="btn-gerar-rel" class="btn-preview" onclick="gerarRelatorio()" style="background:linear-gradient(135deg,#e8b94b,#c9950e);color:#0b0e14;font-weight:700;">📋 Gerar Relatório</button>
+    <button class="btn-preview" onclick="atualizarPreview()">👁 Atualizar Preview</button>
+    <button class="btn-save" onclick="salvarJSON()">💾 Salvar (JSON)</button>
+    <button class="btn-load" onclick="document.getElementById('up-json').click()">📂 Carregar (JSON)
+      <input type="file" id="up-json" accept=".json" style="display:none" onchange="carregarJSON(this)"/>
+    </button>
+    <button class="btn-save" onclick="seedExemplo()" style="color:#e8b94b;border-color:rgba(232,185,75,.2);">📄 Exemplo</button>
+    <div id="rel-status" style="font-size:11px;color:#22D3C8;padding:4px 0;"></div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════════════
+     PAINEL DIREITO — PREVIEW DO RELATÓRIO
+════════════════════════════════════════════════════════ -->
+<div class="preview-panel" id="preview-panel">
+  <div class="preview-toolbar">
+    <span id="preview-status">👁 Preencha os campos e clique em "Atualizar Preview"</span>
+    <button class="btn-edit" onclick="window.scrollTo(0,0)">⇐ Formulário</button>
+    <button class="btn-print" onclick="gerarPDF()">🖨 Imprimir / Salvar PDF</button>
+  </div>
+  <div id="relatorio-output">
+    <!-- Conteúdo gerado pelo JS -->
+  </div>
+</div>
+</div>
+
+<!-- Imagens ocultas para preview (base64) -->
+<div id="img-store" style="display:none;"></div>
+
+<script>
+// ════════════════════════════════════════════════════════════
+// ESTADO
+// ════════════════════════════════════════════════════════════
+const imgs = {}; // {id: base64DataURL}
+const fotos = []; // [{name, src}]
+
+// ════════════════════════════════════════════════════════════
+// HELPERS
+// ════════════════════════════════════════════════════════════
+function v(id){ return (document.getElementById(id)||{}).value||''; }
+function fmtDate(s){
+  if(!s) return '—';
+  const p=s.split('-');
+  return p.length===3?`${p[2]}/${p[1]}/${p[0]}`:s;
+}
+function statusClass(s){
+  if(!s) return '';
+  return s.toLowerCase()==='pass'?'status-pass':s.toLowerCase()==='fail'?'status-fail':'';
+}
+
+// ════════════════════════════════════════════════════════════
+// PICOS
+// ════════════════════════════════════════════════════════════
+function addPeakCond(id){
+  const tbody=document.getElementById('tbody-'+id);
+  if(!tbody) return;
+  const n=tbody.querySelectorAll('tr').length+1;
+  const tr=document.createElement('tr');
+  tr.innerHTML=`
+    <td><input placeholder="0,241" style="width:48px"/></td>
+    <td><input placeholder="35,8" style="width:38px"/></td>
+    <td><input placeholder="52,1" style="width:38px"/></td>
+    <td><input placeholder="40,5" style="width:38px"/></td>
+    <td><input placeholder="62,1" style="width:38px"/></td>
+    <td><select style="width:52px"><option>Pass</option><option>Fail</option></select></td>
+    <td><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function addPeakRad(id){
+  const tbody=document.getElementById('tbody-'+id);
+  if(!tbody) return;
+  const tr=document.createElement('tr');
+  tr.innerHTML=`
+    <td><input placeholder="91,739" style="width:52px"/></td>
+    <td><input placeholder="53,5" style="width:38px"/></td>
+    <td><input placeholder="54,7" style="width:38px"/></td>
+    <td><input placeholder="-1,3" style="width:38px"/></td>
+    <td><select style="width:52px"><option>Pass</option><option>Fail</option></select></td>
+    <td><button onclick="this.closest('tr').remove()" style="background:none;border:none;color:#ef4444;cursor:pointer;font-size:13px">✕</button></td>`;
+  tbody.appendChild(tr);
+}
+
+function toggleNone(id){
+  const chk=document.getElementById('chk-'+id+'-none');
+  const wrap=document.getElementById('peaks-'+id+'-wrap');
+  if(wrap) wrap.style.display=chk.checked?'none':'block';
+}
+
+function getPeaksCond(id){
+  const chk=document.getElementById('chk-'+id+'-none');
+  if(chk&&chk.checked) return null;
+  const rows=[...document.querySelectorAll('#tbody-'+id+' tr')];
+  return rows.map((tr,i)=>{
+    const ins=[...tr.querySelectorAll('input,select')];
+    return{n:i+1,freq:ins[0]?.value||'',avg:ins[1]?.value||'',avgLim:ins[2]?.value||'',qp:ins[3]?.value||'',qpLim:ins[4]?.value||'',status:ins[5]?.value||'Pass'};
+  }).filter(r=>r.freq);
+}
+
+function getPeaksRad(id){
+  const chk=document.getElementById('chk-'+id+'-none');
+  if(chk&&chk.checked) return null;
+  const rows=[...document.querySelectorAll('#tbody-'+id+' tr')];
+  return rows.map((tr,i)=>{
+    const ins=[...tr.querySelectorAll('input,select')];
+    return{n:i+1,freq:ins[0]?.value||'',qp:ins[1]?.value||'',qpLim:ins[2]?.value||'',qpDif:ins[3]?.value||'',status:ins[4]?.value||'Pass'};
+  }).filter(r=>r.freq);
+}
+
+// ════════════════════════════════════════════════════════════
+// IMAGENS
+// ════════════════════════════════════════════════════════════
+function loadImage(input, previewId, thumbId){
+  const file=input.files[0]; if(!file) return;
+  const reader=new FileReader();
+  reader.onload=e=>{
+    imgs[previewId]=e.target.result;
+    const thumb=document.getElementById(thumbId);
+    if(thumb){
+      thumb.innerHTML=`<div class="upload-thumb">
+        <img src="${e.target.result}" alt=""/>
+        <div class="thumb-info"><div class="thumb-name">${file.name}</div><div class="thumb-label">${(file.size/1024).toFixed(0)} KB</div></div>
+        <button onclick="delete imgs['${previewId}'];document.getElementById('${thumbId}').innerHTML='';document.getElementById('${input.id}').value=''">✕</button>
+      </div>`;
+    }
+  };
+  reader.readAsDataURL(file);
+}
+
+function loadFotos(input){
+  const files=[...input.files];
+  const listEl=document.getElementById('fotos-list');
+  files.forEach(file=>{
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const idx=fotos.length;
+      fotos.push({name:file.name,src:e.target.result});
+      listEl.insertAdjacentHTML('beforeend',`<div class="upload-thumb" id="foto-${idx}">
+        <img src="${e.target.result}" alt=""/>
+        <div class="thumb-info"><div class="thumb-name">${file.name}</div><div class="thumb-label">Figura ${fotos.length}</div></div>
+        <button onclick="fotos.splice(${idx},1);document.getElementById('foto-${idx}').remove()">✕</button>
+      </div>`);
+    };
+    reader.readAsDataURL(file);
+  });
+  input.value='';
+}
+
+// ════════════════════════════════════════════════════════════
+// GERADOR HTML DO RELATÓRIO
+// ════════════════════════════════════════════════════════════
+function tabelaPicosCond(peaks, lisn){
+  if(peaks===null) return `<p class="rel-p indent"><i>Nenhum pico detectado</i></p>`;
+  if(!peaks||!peaks.length) return `<p class="rel-p indent"><i>Sem dados</i></p>`;
+
+  // Calcular diferença média automaticamente se não preenchida
+  const rows=peaks.map((p,i)=>{
+    const difAvg=p.avg&&p.avgLim?(parseFloat(p.avg.replace(',','.'))-parseFloat(p.avgLim.replace(',','.'))).toFixed(1):'—';
+    const difQP=p.qp&&p.qpLim?(parseFloat(p.qp.replace(',','.'))-parseFloat(p.qpLim.replace(',','.'))).toFixed(1):'—';
+    const sc=statusClass(p.status);
+    return `<tr>
+      <td>${p.n}</td><td>${p.freq}</td>
+      <td>${p.avg||'—'}</td><td>${p.avgLim||'—'}</td><td>${difAvg}</td>
+      <td>${p.qp||'—'}</td><td>${p.qpLim||'—'}</td><td>${difQP}</td>
+      <td class="${sc}">${p.status}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+  <p class="rel-p"><b>LISN: ${lisn}</b></p>
+  <p class="rel-p indent"><b>Picos Detectados:</b></p>
+  <table class="rel-table">
+    <thead><tr>
+      <th>Peak<br>Number</th><th>Frequency<br>(MHz)</th>
+      <th>Average<br>(dBµV)</th><th>Average<br>Limit</th><th>Average<br>Difference</th>
+      <th>Quasi-Peak<br>(dBµV)</th><th>QP<br>Limit</th><th>QP<br>Difference</th>
+      <th>Status</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function tabelaPicosRad(peaks){
+  if(peaks===null) return `<p class="rel-p indent"><i>Nenhum pico detectado</i></p>`;
+  if(!peaks||!peaks.length) return `<p class="rel-p indent"><i>Sem dados</i></p>`;
+  const rows=peaks.map(p=>{
+    const sc=statusClass(p.status);
+    return `<tr><td>${p.n}</td><td>${p.freq}</td><td>${p.qp||'—'}</td><td>${p.qpLim||'—'}</td><td>${p.qpDif||'—'}</td><td class="${sc}">${p.status}</td></tr>`;
+  }).join('');
+  return `
+  <p class="rel-p indent"><b>Picos Detectados:</b></p>
+  <table class="rel-table">
+    <thead><tr><th>Peak Number</th><th>Frequency (MHz)</th><th>Quasi-Peak (dBµV)</th><th>QP Limit (dBµV)</th><th>QP Difference</th><th>Status</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+function graficoBox(title, imgKey){
+  const src=imgs[imgKey];
+  if(!src) return `<div class="grafico-box"><div class="grafico-title">${title}</div><div class="grafico-placeholder">[ Gráfico não anexado ]</div></div>`;
+  return `<div class="grafico-box"><div class="grafico-title">${title}</div><img src="${src}" alt="${title}"/></div>`;
+}
+
+function atualizarPreview(){
+  const numEmc=v('f-num')||'xxxx';
+  const ano=v('f-ano')||'2026';
+  const proto=v('f-proto')||'—';
+  const tensaoE=v('f-tensao-e')||'220';
+  const res=v('f-resultado')||'CONFORME';
+  const resClass=res.includes('NÃO')?'nao-conforme':'conforme';
+
+  const fasePeaks=getPeaksCond('fase');
+  const neutroPeaks=getPeaksCond('neutro');
+  const loopA=getPeaksRad('loopA');
+  const loopB=getPeaksRad('loopB');
+  const loopC=getPeaksRad('loopC');
+  const rad300=getPeaksRad('rad300');
+
+  const fotosHtml=fotos.length?`
+    <div class="sec-header">Fotos da amostra:</div>
+    <div class="img-grid">
+      ${fotos.map((f,i)=>`<div class="img-item"><img src="${f.src}" alt="Figura ${i+1}"/><div class="fig-cap">Figura ${i+1} – ${f.name.replace(/\.[^.]+$/,'')}</div></div>`).join('')}
+    </div>`:'';
+
+  const obsFinalExtra=v('f-obs-final');
+
+  const html=`
+<div class="relatorio" id="rel-doc">
+  <!-- ══ PÁGINA 1 ═══════════════════════════════════════════ -->
+  <!-- Cabeçalho principal -->
+  <div class="rel-header">
+    <div class="rel-header-top">
+      <div class="rel-header-logo">
+        <img src="data:image/png;base64,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" alt="PUCRS"/>
+      </div>
+      <div class="rel-header-uni">
+        <div class="uni">Pontifícia Universidade Católica do Rio Grande do Sul</div>
+        <div class="lab">LABELO - Laboratórios Especializados em Eletroeletrônica</div>
+        <div class="lab">Calibração e Ensaios</div>
+        <div class="lab">Rede Brasileira de Laboratórios de Ensaios</div>
+      </div>
+      <div class="rel-header-badge">
+        <img src="data:image/jpeg;base64,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" alt="CRL 0075"/>
+      </div>
+    </div>
+    <div class="rel-header-bottom">
+      <div class="rel-header-acred">Laboratório de Ensaio acreditado pela Cgcre de acordo com a ABNT NBR ISO/IEC 17025 sob o número CRL 0075</div>
+      <div class="rel-header-report">
+        <span class="report-label">Relatório de Ensaio</span>
+        <span class="report-num">Nº EMC ${numEmc}/${ano}</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="rel-title-block">
+    <div class="amostra-title">Luminária LED – ${v('f-mod')||'Modelo'} – ${v('f-fab')||'Fabricante'}</div>
+    <div class="periodo"><b>Período de realização dos ensaios:</b> ${fmtDate(v('f-ini'))} até ${fmtDate(v('f-fim'))}</div>
+    <div class="emissao"><b>Data de emissão do relatório:</b> ${fmtDate(v('f-emissao'))}</div>
+  </div>
+
+  <div class="rel-body">
+    <div class="sec-header">Parte 1 - Identificação e condições gerais</div>
+
+    <p class="rel-p"><b>1. Cliente:</b></p>
+    <p class="rel-p indent"><b>${v('f-cli')||'—'}</b></p>
+    <p class="rel-p indent">${(v('f-end')||'—').replace(/\n/g,'<br/>')}</p>
+
+    <p class="rel-p" style="margin-top:6px;"><b>2. Objeto ensaiado (amostra):</b></p>
+    <table class="kv-table">
+      <tr><td><b>Luminária LED</b></td><td>Tensão de alimentação: ${v('f-tensao')||'—'}</td></tr>
+      <tr><td>Fabricante: <b>${v('f-fab')||'—'}</b></td><td>Potência nominal: <b>${v('f-pot')||'—'}</b></td></tr>
+      <tr><td>Modelo: <b>${v('f-mod')||'—'}</b></td><td>Frequência de rede: 50/60Hz</td></tr>
+      <tr><td>Número de série: ${v('f-serie')||'—'}</td><td>Orçamento LABELO: ${v('f-orc')||'—'}</td></tr>
+      <tr><td>Lacre: ${v('f-lacre')||'—'}</td><td>Protocolo LABELO: ${proto}</td></tr>
+    </table>
+
+    <p class="rel-p"><b>2.1. Documentação que acompanha a amostra:</b></p>
+    <p class="rel-p indent">- ${v('f-doc-am')||'—'}</p>
+    <p class="rel-p" style="margin-top:4px;"><b>2.2. Observações:</b></p>
+    <p class="rel-p indent">- ${v('f-obs-am')||'—'}</p>
+
+    <p class="rel-p" style="margin-top:6px;"><b>3. Documento(s) normativo(s) utilizado(s):</b></p>
+    <p class="rel-p indent">- Portaria INMETRO nº 62, de 17 de fevereiro de 2022 - Regulamento Técnico da Qualidade e os Requisitos de Avaliação da Conformidade para Luminárias para a Iluminação Pública Viária - Consolidado.</p>
+    <p class="rel-p indent">- Associação Brasileira de Normas Técnicas. NBR IEC/CISPR 15/2014 - Limites e métodos de medição das radioperturbações características dos equipamentos elétricos de iluminação e similares. Rio de Janeiro, RJ, Brasil, 2014.</p>
+    <p class="rel-p" style="margin-top:4px;"><b>3.1 Documento(s) complementar(es):</b></p>
+    <p class="rel-p indent">Os documentos complementares abaixo indicados não fazem parte do escopo de acreditação deste laboratório.</p>
+    <p class="rel-p indent">- International Electrotechnical Commission. CISPR 16-4-2 - Second Edition/2011, Specification for radio disturbance and immunity measuring apparatus and methods – Part 4-2: Uncertainties, statistics and limit modeling – Uncertainty in EMC measurements, Geneva, Switzerland.</p>
+
+    <p class="rel-p" style="margin-top:6px;"><b>4. Condições ambientais:</b></p>
+    <p class="rel-p indent">Temperatura: ${v('f-temp')||'20'} °C ± ${v('f-temp-tol')||'5'} °C</p>
+    <p class="rel-p indent">Umidade Relativa: ${v('f-umid')||'55'} % ± ${v('f-umid-tol')||'15'} %</p>
+
+    <p class="rel-p" style="margin-top:6px;"><b>5. Observações:</b></p>
+    <p class="rel-p indent" style="text-align:justify;">A regra de decisão aplicada para a avaliação da conformidade do item de ensaio foi estabelecida conforme documentos normativos indicados no item 3 deste relatório e previamente contratados.</p>
+    <p class="rel-p indent" style="text-align:justify;">Itens dos documentos normativos de referência deste relatório não descritos com resultados não foram solicitados pelo requerente ou não fazem parte do escopo de acreditação do laboratório.</p>
+    <p class="rel-p indent" style="text-align:justify;">De acordo com o item 6.1.1.4.1.5 da Portaria INMETRO citada no item 3 da parte 1 o ensaio de interferência eletromagnética e rádio frequência foi conduzido na tensão nominal de ${tensaoE} V.</p>
+  </div>
+  <div class="rel-footer">Av. Ipiranga nº 6681, Prédio 30 Bloco A, Sala 210 – Partenon – CEP 90619-900 – Porto Alegre – RS – Brasil &nbsp;|&nbsp; Tel: (51) 3320 3551 &nbsp;|&nbsp; labelo@pucrs.br &nbsp;|&nbsp; www.labelo.com.br</div>
+
+  <!-- ══ QUEBRA ════════════════════════════════════════════ -->
+  <div class="page-break"></div>
+
+  <!-- ══ PÁGINAS DE RESULTADOS ══════════════════════════════ -->
+  <div class="rel-body" style="padding-top:8px;">
+    <!-- Cabeçalho p/ páginas seguintes -->
+    <div class="pg-header">
+      <div class="pg-header-row1">
+        <div class="pg-header-logo"><span>LABELO/PUCRS</span></div>
+        <div class="pg-header-mid"><div class="acred-small">Laboratório de Ensaio acreditado pela Cgcre de acordo com a ABNT NBR ISO/IEC 17025, sob o número CRL 0075</div></div>
+        <div class="pg-header-right"><div class="re-label">Relatório de Ensaio</div><div class="re-num">Nº EMC ${numEmc}/${ano}</div></div>
+      </div>
+      <div class="pg-header-row2">
+        <span class="ph-produto">Luminária LED – ${v('f-mod')||'Modelo'} – ${v('f-fab')||'Fabricante'}</span>
+        <span class="ph-periodo">Período: ${fmtDate(v('f-ini'))} até ${fmtDate(v('f-fim'))}</span>
+        <span class="ph-emissao">Emissão: ${fmtDate(v('f-emissao'))}</span>
+      </div>
+    </div>
+
+    <div class="sec-header">Parte 2 – Resultados dos ensaios</div>
+
+    <!-- 1. Conduzidos -->
+    <p class="rel-p" style="margin-top:6px;"><b>1. Método de medição das tensões de perturbação conduzidas (Item 8 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <p class="rel-p indent" style="text-align:justify;">A tensão de perturbação foi medida nos terminais de alimentação do sistema de iluminação.</p>
+    <p class="rel-p indent" style="text-align:justify;">Os terminais de saída da LISN e os terminais do equipamento em ensaio foram interligados por um cabo flexível com 3 condutores para conexão dos terminais de fase, neutro e terra.</p>
+    <p class="rel-p indent" style="text-align:justify;">A distância entre os terminais de saída da LISN e os terminais do equipamento em ensaio foi ajustada para 0,8 m.</p>
+    <p class="rel-p indent">As medições foram realizadas tanto no condutor fase como no condutor neutro, um de cada vez.</p>
+
+    <p class="rel-p" style="margin-top:5px;"><b>1.1 Limites (Item 4 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <p class="rel-p indent"><b>1.1.1. Terminais de alimentação (Item 4.3.1 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <table class="rel-table">
+      <thead><tr><th>FAIXA DE FREQUÊNCIA (MHz)</th><th>LIMITE DE QUASE PICO (dBµV)</th><th>LIMITE MÉDIO (dBµV)</th></tr></thead>
+      <tbody>
+        <tr><td>0,009 a 0,05</td><td>110</td><td>─</td></tr>
+        <tr><td>0,05 a 0,15</td><td>90 a 80</td><td>─</td></tr>
+        <tr><td>0,15 a 0,5</td><td>66 a 56</td><td>56 a 46</td></tr>
+        <tr><td>0,5 a 5</td><td>56</td><td>46</td></tr>
+        <tr><td>5 a 30</td><td>60</td><td>50</td></tr>
+        <tr><td class="nota" colspan="3">(1) - Na frequência de transição, o limite inferior se aplica &nbsp; (2) - O limite decresce linearmente com o logaritmo da frequência nas faixas de 50 a 150 kHz e de 150 a 500 kHz</td></tr>
+      </tbody>
+    </table>
+
+    <p class="rel-p indent"><b>1.1.2. Terminais de carga (Item 4.3.2 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <table class="rel-table">
+      <thead><tr><th>FAIXA DE FREQUÊNCIA (MHz)</th><th>LIMITE DE QUASE PICO (dBµV)</th><th>LIMITE MÉDIO (dBµV)</th></tr></thead>
+      <tbody>
+        <tr><td>0,15 a 0,5</td><td>80</td><td>70</td></tr>
+        <tr><td>0,5 a 30</td><td>74</td><td>64</td></tr>
+        <tr><td class="nota" colspan="3">(1) - Na frequência de transição, o limite inferior se aplica</td></tr>
+      </tbody>
+    </table>
+
+    <p class="rel-p indent"><b>1.1.3 Terminais de controle (Item 4.3.3 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <table class="rel-table">
+      <thead><tr><th>FAIXA DE FREQUÊNCIA (MHz)</th><th>LIMITE DE QUASE PICO (dBµV)</th><th>LIMITE MÉDIO (dBµV)</th></tr></thead>
+      <tbody>
+        <tr><td>0,15 a 0,5</td><td>84 a 74</td><td>74 a 64</td></tr>
+        <tr><td>0,5 a 30</td><td>74</td><td>64</td></tr>
+        <tr><td class="nota" colspan="3">(1) - Os limites diminuem linearmente com o logaritmo da frequência na faixa de 0,15 a 0,5 MHz</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Picos conduzidos -->
+    <p class="rel-p" style="margin-top:6px;"><b>Tensões de perturbação conduzidas nos terminais de alimentação em ${tensaoE} V</b></p>
+    ${tabelaPicosCond(fasePeaks,'Line 1')}
+    ${graficoBox(`Gráfico — Conduzidos FASE (Line 1) — ${tensaoE} V`,'prev-graf-fase')}
+    ${tabelaPicosCond(neutroPeaks,'Neutral')}
+    ${graficoBox(`Gráfico — Conduzidos NEUTRO (Neutral) — ${tensaoE} V`,'prev-graf-neutro')}
+
+    <!-- 2. Radiados 9-30MHz -->
+    <p class="rel-p" style="margin-top:8px;"><b>2. Método de medição das perturbações eletromagnéticas radiadas na faixa de 9 kHz a 30 MHz (Item 9 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <p class="rel-p indent" style="text-align:justify;">O equipamento em ensaio foi posicionado sobre uma mesa não condutora no centro da antena loop de 2.0 m.</p>
+    <p class="rel-p indent" style="text-align:justify;">O receptor de medição foi conectado à antena loop por cabo coaxial blindado e a seleção de cada loop das 3 direções do campo a ser medido foi efetuada através de uma chave coaxial.</p>
+    <p class="rel-p indent" style="text-align:justify;">As medições foram feitas na faixa de frequências de 9 kHz a 30 MHz. As medições de quase-pico foram realizadas apenas nas frequências em que as emissões de pico estavam próximas ou ultrapassaram a uma margem de 6 dB abaixo da linha de limite de quase-pico.</p>
+
+    <p class="rel-p" style="margin-top:4px;"><b>2.1 Limites (Item 4 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <p class="rel-p indent"><b>2.1.1. Faixa de 9 kHz a 30 MHz (Item 4.4.1 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <table class="rel-table">
+      <thead><tr><th>FAIXA DE FREQUÊNCIA (MHz)</th><th>LIMITE PARA ANTENA LOOP DE 2m (dBµA)</th></tr></thead>
+      <tbody>
+        <tr><td>0,009 a 0,07</td><td>88</td></tr>
+        <tr><td>0,07 a 0,15</td><td>88 a 58</td></tr>
+        <tr><td>0,15 a 3</td><td>58 a 22</td></tr>
+        <tr><td>3 a 30</td><td>22</td></tr>
+        <tr><td class="nota" colspan="2">(1) - Na frequência de transição, o limite inferior se aplica &nbsp; (2) - O limite decresce linearmente com o logaritmo da frequência nas faixas de 70 kHz a 150 kHz e de 150 kHz a 3 MHz</td></tr>
+      </tbody>
+    </table>
+
+    <p class="rel-p" style="margin-top:4px;"><b>Perturbações eletromagnéticas radiadas na faixa de 9 kHz a 30 MHz em ${tensaoE} V</b></p>
+    <p class="rel-p indent"><b>Loop A</b></p>
+    ${loopA===null?`<p class="rel-p indent"><i>Nenhum pico detectado</i></p>`:tabelaPicosRad(loopA)}
+    <p class="rel-p indent"><b>Loop B</b></p>
+    ${loopB===null?`<p class="rel-p indent"><i>Nenhum pico detectado</i></p>`:tabelaPicosRad(loopB)}
+    <p class="rel-p indent"><b>Loop C</b></p>
+    ${loopC===null?`<p class="rel-p indent"><i>Nenhum pico detectado</i></p>`:tabelaPicosRad(loopC)}
+    ${graficoBox('Gráfico — Radiados 9 kHz a 30 MHz','prev-graf-rad9')}
+
+    <!-- 3. Radiados 30-300MHz -->
+    <p class="rel-p" style="margin-top:8px;"><b>3. Método de medição das perturbações eletromagnéticas radiadas na faixa de 30 MHz a 300 MHz (Item 9 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <p class="rel-p indent" style="text-align:justify;">Ensaios na faixa de 30 MHz a 300 MHz podem ser realizados através das especificações do Anexo B e com os limites apresentados abaixo, conforme a norma.</p>
+    <p class="rel-p indent" style="text-align:justify;">O equipamento em ensaio foi colocado sobre blocos não condutivos, com altura de 10 cm, que por sua vez foram colocados em uma placa de metal ligada à terra, com dimensões pelo menos 20 cm maiores que o equipamento em ensaio.</p>
+    <p class="rel-p indent" style="text-align:justify;">O equipamento em ensaio foi ligado a uma rede de acoplamento/desacoplamento (CDN), montado sobre uma placa de metal conectada ao terra.</p>
+
+    <p class="rel-p" style="margin-top:4px;"><b>3.1 Faixa de 30 MHz a 300 MHz (Item 4.4.2 da Norma NBR IEC/CISPR 15/2014)</b></p>
+    <table class="rel-table">
+      <thead><tr><th>FAIXA DE FREQUÊNCIA (MHz)</th><th>LIMITE DE QUASE PICO (dBµV)</th></tr></thead>
+      <tbody>
+        <tr><td>30 a 100</td><td>64 a 54</td></tr>
+        <tr><td>100 a 230</td><td>54</td></tr>
+        <tr><td>230 a 300</td><td>61</td></tr>
+        <tr><td class="nota" colspan="2">(1) - Na frequência de transição, o limite inferior se aplica &nbsp; (2) - O limite decresce linearmente com o logaritmo da frequência na faixa de 30 a 100 MHz</td></tr>
+      </tbody>
+    </table>
+
+    <p class="rel-p" style="margin-top:4px;"><b>Perturbações eletromagnéticas radiadas na faixa de 30 MHz a 300 MHz em ${tensaoE} V</b></p>
+    ${tabelaPicosRad(rad300)}
+    ${graficoBox('Gráfico — Radiados 30 MHz a 300 MHz','prev-graf-rad300')}
+
+    <!-- Incertezas -->
+    <p class="rel-p" style="margin-top:8px;"><b>Incertezas de Medição (IM)</b></p>
+    <p class="rel-p indent" style="text-align:justify;">A incerteza expandida de medição relatada é declarada como a incerteza padrão de medição multiplicada pelo fator de abrangência "k", para uma distribuição de probabilidade tipo t-Student, com graus de liberdade efetivos (veff) correspondentes a um nível de confiança de aproximadamente 95%. A incerteza padrão da medição foi determinada de acordo com o "Guia para Expressão da Incerteza de Medição", Terceira Edição Brasileira.</p>
+    <table class="rel-table" style="margin-top:4px;">
+      <thead><tr><th>Item(ns) da norma</th><th>Mensurando</th><th>Faixa ou ponto de medição</th><th>Incerteza de medição</th><th>Fator de abrangência (k)</th></tr></thead>
+      <tbody>
+        <tr><td>4.3.1</td><td>Distúrbios conduzidos</td><td>9 kHz - 150 kHz</td><td>4,5 dB</td><td>2,00</td></tr>
+        <tr><td></td><td>Distúrbios conduzidos</td><td>150 kHz - 30 MHz</td><td>4,4 dB</td><td>2,00</td></tr>
+        <tr><td>4.4.1</td><td>Distúrbios radiados</td><td>9 kHz - 30 MHz</td><td>4,8 dB</td><td>2,00</td></tr>
+        <tr><td>4.4.2</td><td>Distúrbios radiados</td><td>30 MHz - 300 MHz</td><td>3,7 dB</td><td>2,00</td></tr>
+      </tbody>
+    </table>
+
+    <!-- Fotos -->
+    ${fotosHtml}
+
+    <!-- Resultado -->
+    <div class="resultado-box" style="margin-top:10px;">
+      <div class="resultado-label">Resultado do Ensaio CISPR 15:</div>
+      <div class="resultado-val ${resClass}">${res}</div>
+    </div>
+    ${obsFinalExtra?`<p class="rel-p indent" style="margin-top:4px;">${obsFinalExtra}</p>`:''}
+
+    <!-- Obs finais padrão -->
+    <p class="rel-p" style="margin-top:8px;"><b>Observações finais:</b></p>
+    <p class="rel-p indent">- Este relatório de ensaio atende aos requisitos de acreditação da Cgcre, que avaliou a competência do laboratório.</p>
+    <p class="rel-p indent">- O fornecimento da amostra pelo cliente isenta o LABELO-PUCRS de responsabilidade quanto à sua representatividade em relação a lotes de fabricação e comercialização.</p>
+    <p class="rel-p indent">- O presente relatório de ensaio é medido exclusivamente para a amostra ensaiada, nas condições em que foram realizados os ensaios e não sendo extensivo a quaisquer lotes, mesmo que similares.</p>
+    <p class="rel-p indent">- A partir do momento em que a amostra é retirada do laboratório, esgota-se a possibilidade de contestação dos resultados ou mesmo de repetição dos ensaios, já que o LABELO deixa de ser responsável pela sua manutenção.</p>
+    <p class="rel-p indent">- É vedada a reprodução do presente relatório de ensaio, no todo ou em parte, sem prévia autorização do LABELO-PUCRS originada por solicitação formal do contratante.</p>
+    <p class="rel-p indent">- A Cgcre é signatária do Acordo de Reconhecimento Mútuo da ILAC (International Laboratory Accreditation Cooperation).</p>
+    <p class="rel-p indent">- A Cgcre é signatária do Acordo de Reconhecimento Mútuo da IAAC (InterAmerican Accreditation Cooperation).</p>
+    <p class="rel-p indent">- Os ensaios foram realizados nas instalações do LABELO-PUCRS.</p>
+
+    <div class="assinatura">
+      <div class="linha"></div>
+      <p>Signatário Autorizado</p>
+    </div>
+  </div>
+  <div class="rel-footer">Av. Ipiranga nº 6681, Prédio 30 Bloco A, Sala 210 – Partenon – CEP 90619-900 – Porto Alegre – RS – Brasil &nbsp;|&nbsp; Telefone: (51) 3320 3551 – Fax: (51) 3320 3883 &nbsp;|&nbsp; E-mail: labelo@pucrs.br – Website: www.labelo.com.br</div>
+</div>`;
+
+  document.getElementById('relatorio-output').innerHTML=html;
+  document.getElementById('preview-status').textContent=`✓ EMC ${numEmc}/${ano} — ${fmtDate(v('f-emissao'))} — Pronto para imprimir`;
+  document.getElementById('preview-panel').scrollTop=0;
+}
+
+// ════════════════════════════════════════════════════════════
+// SALVAR / CARREGAR JSON
+// ════════════════════════════════════════════════════════════
+function coletarDados(){
+  return{
+    relatorio:{nEmc:v('f-num'),ano:v('f-ano'),protocolo:v('f-proto'),dataInicio:v('f-ini'),dataFim:v('f-fim'),dataEmissao:v('f-emissao')},
+    cliente:{nome:v('f-cli'),endereco:v('f-end')},
+    amostra:{fabricante:v('f-fab'),modelo:v('f-mod'),serie:v('f-serie'),tensao:v('f-tensao'),potencia:v('f-pot'),orcamento:v('f-orc'),lacre:v('f-lacre'),docAmostra:v('f-doc-am'),obsAmostra:v('f-obs-am')},
+    ambiental:{temp:v('f-temp'),tempTol:v('f-temp-tol'),umid:v('f-umid'),umidTol:v('f-umid-tol'),tensaoEnsaio:v('f-tensao-e')},
+    conduzidos:{fase:getPeaksCond('fase'),neutro:getPeaksCond('neutro')},
+    radiados9_30:{loopA:getPeaksRad('loopA'),loopB:getPeaksRad('loopB'),loopC:getPeaksRad('loopC')},
+    radiados30_300:{peaks:getPeaksRad('rad300')},
+    resultado:{geral:v('f-resultado'),obs:v('f-obs-final')},
+  };
+}
+
+function salvarJSON(){
+  const d=coletarDados();
+  const n=`relatorio-EMC-${d.relatorio.nEmc||'x'}-${d.relatorio.ano||'2026'}.json`;
+  const b=new Blob([JSON.stringify(d,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;a.click();
+}
+
+function carregarJSON(input){
+  const f=input.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=e=>{
+    try{
+      const d=JSON.parse(e.target.result);
+      const rel=d.relatorio||{};
+      const am=d.amostra||{};
+      const amb=d.ambiental||{};
+      const cli=d.cliente||{};
+      const res=d.resultado||{};
+      if(rel.nEmc) document.getElementById('f-num').value=rel.nEmc;
+      if(rel.ano) document.getElementById('f-ano').value=rel.ano;
+      if(rel.protocolo) document.getElementById('f-proto').value=rel.protocolo;
+      if(rel.dataInicio) document.getElementById('f-ini').value=rel.dataInicio;
+      if(rel.dataFim) document.getElementById('f-fim').value=rel.dataFim;
+      if(rel.dataEmissao) document.getElementById('f-emissao').value=rel.dataEmissao;
+      if(cli.nome) document.getElementById('f-cli').value=cli.nome;
+      if(cli.endereco) document.getElementById('f-end').value=cli.endereco;
+      if(am.fabricante) document.getElementById('f-fab').value=am.fabricante;
+      if(am.modelo) document.getElementById('f-mod').value=am.modelo;
+      if(am.serie) document.getElementById('f-serie').value=am.serie;
+      if(am.tensao) document.getElementById('f-tensao').value=am.tensao;
+      if(am.potencia) document.getElementById('f-pot').value=am.potencia;
+      if(am.orcamento) document.getElementById('f-orc').value=am.orcamento;
+      if(am.lacre) document.getElementById('f-lacre').value=am.lacre;
+      if(am.docAmostra) document.getElementById('f-doc-am').value=am.docAmostra;
+      if(am.obsAmostra) document.getElementById('f-obs-am').value=am.obsAmostra;
+      if(amb.temp) document.getElementById('f-temp').value=amb.temp;
+      if(amb.tempTol) document.getElementById('f-temp-tol').value=amb.tempTol;
+      if(amb.umid) document.getElementById('f-umid').value=amb.umid;
+      if(amb.umidTol) document.getElementById('f-umid-tol').value=amb.umidTol;
+      if(amb.tensaoEnsaio) document.getElementById('f-tensao-e').value=amb.tensaoEnsaio;
+      if(res.obs) document.getElementById('f-obs-final').value=res.obs;
+      // Picos conduzidos
+      if(d.conduzidos){
+        if(d.conduzidos.fase===null){document.getElementById('chk-fase-none').checked=true;}
+        else if(d.conduzidos.fase){document.getElementById('chk-fase-none').checked=false;document.getElementById('tbody-fase').innerHTML='';d.conduzidos.fase.forEach(()=>addPeakCond('fase'));populatePeaksCond('fase',d.conduzidos.fase);}
+        if(d.conduzidos.neutro===null){document.getElementById('chk-neutro-none').checked=true;}
+        else if(d.conduzidos.neutro){document.getElementById('chk-neutro-none').checked=false;document.getElementById('tbody-neutro').innerHTML='';d.conduzidos.neutro.forEach(()=>addPeakCond('neutro'));populatePeaksCond('neutro',d.conduzidos.neutro);}
+      }
+      alert('✅ Dados carregados! Clique em "Atualizar Preview" para visualizar.');
+    }catch(e){alert('Erro ao carregar: '+e.message);}
+  };
+  r.readAsText(f);
+  input.value='';
+}
+
+function populatePeaksCond(id,peaks){
+  const rows=[...document.querySelectorAll('#tbody-'+id+' tr')];
+  peaks.forEach((p,i)=>{
+    if(!rows[i]) return;
+    const ins=[...rows[i].querySelectorAll('input,select')];
+    if(ins[0]) ins[0].value=p.freq||'';
+    if(ins[1]) ins[1].value=p.avg||'';
+    if(ins[2]) ins[2].value=p.avgLim||'';
+    if(ins[3]) ins[3].value=p.qp||'';
+    if(ins[4]) ins[4].value=p.qpLim||'';
+    if(ins[5]) ins[5].value=p.status||'Pass';
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// SEED EXEMPLO
+// ════════════════════════════════════════════════════════════
+function seedExemplo(){
+  document.getElementById('f-num').value='0822';
+  document.getElementById('f-ano').value='2026';
+  document.getElementById('f-proto').value='026031535';
+  document.getElementById('f-ini').value='2026-03-23';
+  document.getElementById('f-fim').value='2026-03-26';
+  document.getElementById('f-emissao').value='2026-03-27';
+  document.getElementById('f-cli').value='CEB Iluminação Pública e Serviços S.A. - CEB - IPES';
+  document.getElementById('f-end').value='SGAN Quadra 601, bloco H, Asa Norte, Salas 004SE a 006SE, Edifício ÍON\nBrasília – DF\nCEP: 70.830-010';
+  document.getElementById('f-fab').value='TRADETEK';
+  document.getElementById('f-mod').value='AGN7120D4';
+  document.getElementById('f-serie').value='000045';
+  document.getElementById('f-tensao').value='90 – 305VAC';
+  document.getElementById('f-pot').value='120W';
+  document.getElementById('f-orc').value='887f';
+  document.getElementById('f-lacre').value='Amostra Recebida Lacrada';
+  document.getElementById('f-tensao-e').value='220';
+
+  // Picos FASE
+  document.getElementById('chk-fase-none').checked=false;
+  document.getElementById('tbody-fase').innerHTML='';
+  [
+    ['0,241','35,8','52,1','40,5','62,1','Pass'],
+    ['3,309','32,5','46,0','37,7','56,0','Pass'],
+    ['5,007','32,9','49,0','37,9','60,0','Pass'],
+    ['5,872','33,0','50,0','37,8','60,0','Pass'],
+    ['7,532','33,0','50,0','38,1','60,0','Pass'],
+    ['8,434','32,5','50,0','37,6','60,0','Pass'],
+    ['10,263','32,5','50,0','37,6','60,0','Pass'],
+    ['11,625','32,1','50,0','37,5','60,0','Pass'],
+    ['21,544','32,0','50,0','36,7','60,0','Pass'],
+    ['25,684','32,5','50,0','37,3','60,0','Pass'],
+  ].forEach(r=>{
+    addPeakCond('fase');
+    const rows=[...document.querySelectorAll('#tbody-fase tr')];
+    const ins=[...rows[rows.length-1].querySelectorAll('input,select')];
+    ins.forEach((el,i)=>{if(r[i])el.value=r[i];});
+  });
+
+  // Picos NEUTRO
+  document.getElementById('chk-neutro-none').checked=false;
+  document.getElementById('tbody-neutro').innerHTML='';
+  [
+    ['0,235','35,7','52,3','40,6','62,3','Pass'],
+    ['0,372','35,5','48,5','40,4','58,5','Pass'],
+    ['2,437','32,4','46,0','37,1','56,0','Pass'],
+    ['3,013','33,3','46,0','37,7','56,0','Pass'],
+    ['5,133','32,9','50,0','37,8','60,0','Pass'],
+    ['5,822','32,7','50,0','38,4','60,0','Pass'],
+    ['6,922','33,0','50,0','38,0','60,0','Pass'],
+    ['11,175','32,6','50,0','37,6','60,0','Pass'],
+    ['22,386','31,8','50,0','37,0','60,0','Pass'],
+    ['29,119','32,7','50,0','37,4','60,0','Pass'],
+  ].forEach(r=>{
+    addPeakCond('neutro');
+    const rows=[...document.querySelectorAll('#tbody-neutro tr')];
+    const ins=[...rows[rows.length-1].querySelectorAll('input,select')];
+    ins.forEach((el,i)=>{if(r[i])el.value=r[i];});
+  });
+
+  // Loops nenhum
+  ['loopA','loopB','loopC'].forEach(id=>{
+    document.getElementById('chk-'+id+'-none').checked=true;
+    const w=document.getElementById('peaks-'+id+'-wrap');
+    if(w) w.style.display='none';
+  });
+
+  // Rad 30-300
+  document.getElementById('chk-rad300-none').checked=false;
+  document.getElementById('tbody-rad300').innerHTML='';
+  [
+    ['91,739','53,5','54,7','-1,3','Pass'],
+    ['126,157','33,2','54,0','-20,8','Pass'],
+    ['151,035','33,4','54,0','-20,6','Pass'],
+    ['171,819','33,6','54,0','-20,4','Pass'],
+    ['180,314','34,0','54,0','-20,0','Pass'],
+    ['200,621','34,3','54,0','-19,7','Pass'],
+    ['231,048','35,1','61,0','-25,9','Pass'],
+  ].forEach(r=>{
+    addPeakRad('rad300');
+    const rows=[...document.querySelectorAll('#tbody-rad300 tr')];
+    const ins=[...rows[rows.length-1].querySelectorAll('input,select')];
+    ins.forEach((el,i)=>{if(r[i])el.value=r[i];});
+  });
+
+  atualizarPreview();
+}
+
+// Init
+atualizarPreview();
+
+// ════════════════════════════════════════════════════════════
+// ELECTRON: mostrar seção DOCX e hooks de integração
+// ════════════════════════════════════════════════════════════
+(function initElectron(){
+  if (!window.electronAPI) return;
+  // Mostrar seção DOCX (só no app Electron)
+  const s = document.getElementById('section-docx');
+  if (s) s.style.display = '';
+})();
+
+// Carregar DOCX via Electron IPC (mammoth)
+let docxHtml = null;
+async function carregarDocx(input) {
+  const file = input.files[0];
+  if (!file || !window.electronAPI) return;
+  const reader = new FileReader();
+  reader.onload = async function(e) {
+    const arr = new Uint8Array(e.target.result);
+    const result = await window.electronAPI.parseDocx(Array.from(arr));
+    const status = document.getElementById('docx-status');
+    if (result.error) {
+      if (status) { status.style.display=''; status.style.color='#ef4444'; status.textContent = 'Erro: ' + result.error; }
+      return;
+    }
+    docxHtml = result.html;
+    if (status) { status.style.display=''; status.style.color='#22D3C8'; status.textContent = '✓ ' + file.name; }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+// Gerar PDF
+async function gerarPDF(filename) {
+  if (window.electronAPI) {
+    const result = await window.electronAPI.salvarPDF(filename || 'relatorio-cispr15.pdf');
+    if (!result.ok && !result.canceled) alert('Erro ao gerar PDF: ' + result.error);
+  } else {
+    window.print();
+  }
+}
+
+// Gerar Relatório (registra Excel + gera PDF)
+async function gerarRelatorio() {
+  const btn = document.getElementById('btn-gerar-rel');
+  const status = document.getElementById('rel-status');
+
+  // Sem Electron: só preview
+  if (!window.electronAPI) { atualizarPreview(); return; }
+
+  const numAtual = (document.getElementById('f-num')||{}).value||'';
+  const ano      = (document.getElementById('f-ano')||{}).value || new Date().getFullYear();
+  const proto    = v('f-proto');
+  const cliente  = v('f-cli');
+  const fab      = v('f-fab');
+  const mod      = v('f-mod');
+  const orc      = v('f-orc');
+  const resp     = v('f-responsavel');
+
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Registrando...'; }
+  if (status) { status.textContent = ''; }
+
+  try {
+    if (!numAtual) {
+      // Verificar protocolo duplicado
+      if (proto) {
+        const chk = await window.electronAPI.checkProtocolo(proto);
+        if (chk.exists) {
+          const ok = confirm('Protocolo "' + proto + '" já registrado' + (chk.numRelatorio ? ' (' + chk.numRelatorio + ')' : '') + '.\n\nContinuar mesmo assim?');
+          if (!ok) return;
+        }
+      }
+      // Buscar próximo número
+      const prox = await window.electronAPI.proximoNumero();
+      if (prox.error) {
+        const ok = confirm('Aviso planilha: ' + prox.error + '\n\nGerar PDF sem registrar na planilha?');
+        if (!ok) return;
+      } else {
+        // Registrar na planilha
+        const reg = await window.electronAPI.registrarExcel({ cliente, produto: fab + ' ' + mod, protocolo: proto, orcamento: orc, responsavel: resp });
+        if (reg.error) {
+          const ok = confirm('Aviso planilha: ' + reg.error + '\n\nGerar PDF mesmo assim?');
+          if (!ok) return;
+        } else {
+          // Preencher nº do relatório
+          const numInput = document.getElementById('f-num');
+          const anoInput = document.getElementById('f-ano');
+          if (numInput) numInput.value = String(reg.numero);
+          if (anoInput) anoInput.value = String(new Date().getFullYear());
+          if (status) { status.style.color='#22D3C8'; status.textContent = '✓ Registrado: ' + reg.numRelatorio; }
+        }
+      }
+    }
+
+    // Atualizar preview e gerar PDF
+    atualizarPreview();
+    const numFinal = (document.getElementById('f-num')||{}).value || 'SEM-NUM';
+    const clienteParte = cliente.split(' ')[0] || 'cliente';
+    const filename = 'EMC' + numFinal + '_' + ano + '_' + clienteParte + '_CISPR15.pdf';
+    await gerarPDF(filename);
+
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📋 Gerar Relatório'; }
+  }
+}
+</script>
+</body>
+</html>

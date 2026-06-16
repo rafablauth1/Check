@@ -1,0 +1,336 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ── Design tokens ── */
+:root {
+  --sidebar-w: 220px;
+  --topbar-h: 52px;
+  /* Backgrounds */
+  --bg:     #0B0E14;
+  --bg2:    #111620;
+  --deep:   #060911;
+  /* Fixed palette */
+  --gold:   #E8B94B;
+  --teal:   #22D3C8;
+  --acc:    #4F8EF7;
+  --gn:     #22C55E;
+  --am:     #F59E0B;
+  --rd:     #F87171;
+  /* Accent (follows theme) */
+  --accent:     #E8B94B;
+  --accent-2:   #F5D27A;
+  --accent-dim: #C49A2E;
+  --accent-rgb: 232, 185, 75;
+  /* Border radius */
+  --radius-card: 12px;
+  --radius-btn:  7px;
+}
+
+/* ── Accent themes ── */
+[data-accent="teal"]  { --accent: #22D3C8; --accent-2: #45E8DF; --accent-dim: #0FA89E; --accent-rgb: 34, 211, 200; }
+[data-accent="blue"]  { --accent: #4F8EF7; --accent-2: #7AACFF; --accent-dim: #3872D8; --accent-rgb: 79, 142, 247; }
+[data-accent="green"] { --accent: #22C55E; --accent-2: #4ADE80; --accent-dim: #16A34A; --accent-rgb: 34, 197, 94;  }
+[data-accent="rose"]  { --accent: #FB7185; --accent-2: #FCA5A5; --accent-dim: #E11D48; --accent-rgb: 251, 113, 133; }
+
+/* ── Background themes ── */
+[data-bg="black"] { --bg: #040507; --bg2: #090C12; --deep: #020204; }
+[data-bg="slate"] { --bg: #0E1119; --bg2: #141B2A; --deep: #080B12; }
+[data-bg="warm"]  { --bg: #100E0B; --bg2: #181410; --deep: #0A0807; }
+
+/* ── Border radius themes ── */
+[data-radius="sharp"] { --radius-card: 4px;  --radius-btn: 3px;  }
+[data-radius="pill"]  { --radius-card: 18px; --radius-btn: 12px; }
+
+/* Override das classes Tailwind rounded-* inline (rounded-lg, rounded-xl, etc.)
+   que não passam pelo @apply nos componentes e ficariam com valor fixo.
+   rounded-full (círculos, dots, avatares) é preservado intencionalmente.
+   rounded sem sufixo (4px, estilo sutil em tags/badges) também é preservado. */
+[data-radius="sharp"] .rounded-sm                                        { border-radius: 2px !important; }
+[data-radius="sharp"] .rounded-md,
+[data-radius="sharp"] .rounded-lg                                        { border-radius: var(--radius-btn) !important; }
+[data-radius="sharp"] .rounded-xl,
+[data-radius="sharp"] .rounded-2xl,
+[data-radius="sharp"] .rounded-3xl                                       { border-radius: var(--radius-card) !important; }
+
+[data-radius="pill"]  .rounded-sm                                        { border-radius: 6px !important; }
+[data-radius="pill"]  .rounded-md                                        { border-radius: var(--radius-btn) !important; }
+[data-radius="pill"]  .rounded-lg,
+[data-radius="pill"]  .rounded-xl,
+[data-radius="pill"]  .rounded-2xl,
+[data-radius="pill"]  .rounded-3xl                                       { border-radius: var(--radius-card) !important; }
+
+/* ── Padrões de fundo ── */
+/* Padrão padrão (dots) — definido em .dot-grid abaixo */
+[data-pattern="none"] .dot-grid  { background-image: none !important; }
+/* dots = padrão — sem override necessário */
+[data-pattern="grid"] .dot-grid  {
+  background-image:
+    repeating-linear-gradient(rgba(255,255,255,0.026) 0px, rgba(255,255,255,0.026) 1px, transparent 1px, transparent 28px),
+    repeating-linear-gradient(90deg, rgba(255,255,255,0.026) 0px, rgba(255,255,255,0.026) 1px, transparent 1px, transparent 28px) !important;
+  background-size: 28px 28px !important;
+}
+[data-pattern="lines"] .dot-grid {
+  background-image: repeating-linear-gradient(
+    -45deg,
+    transparent 0px, transparent 14px,
+    rgba(255,255,255,0.024) 14px, rgba(255,255,255,0.024) 15px
+  ) !important;
+  background-size: 20px 20px !important;
+}
+[data-pattern="glow"] .dot-grid  {
+  background-image:
+    radial-gradient(ellipse 80% 55% at 50% -5%, rgba(var(--accent-rgb,232,185,75),0.09) 0%, transparent 65%),
+    radial-gradient(circle, rgba(255,255,255,0.03) 1px, transparent 1px) !important;
+  background-size: 100% 100%, 28px 28px !important;
+}
+
+/* Compat. legada — dotgrid=0 equivale a pattern=none */
+[data-dotgrid="0"] .dot-grid { background-image: none !important; }
+
+/* Print: oculta elementos marcados e remove padrão */
+@media print {
+  .no-print { display: none !important; }
+}
+
+@layer base {
+  * { border-color: rgba(255,255,255,0.07); box-sizing: border-box; }
+
+  /* Previne fundo branco padrão do sistema em botões/inputs no Windows */
+  button, input, select, textarea {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+  }
+
+  html, body {
+    background-color: var(--bg, #0B0E14);
+  }
+  body {
+    /* Cor explícita sem variável Tailwind para não vazar em filhos */
+    color: rgba(255,255,255,0.88);
+    font-feature-settings: 'cv11', 'ss01';
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scrollbar fina e discreta */
+  ::-webkit-scrollbar       { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.16); }
+}
+
+@layer components {
+
+  /* ── CARDS ───────────────────────────────────────────────── */
+  .card {
+    background: linear-gradient(145deg, rgba(255,255,255,0.038) 0%, rgba(255,255,255,0.012) 100%);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius-card, 12px);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.04);
+  }
+  .card:hover { border-color: rgba(255,255,255,0.11); }
+
+  .card-accent {
+    @apply card;
+    border-top: 2px solid var(--accent, #E8B94B);
+  }
+
+  /* Stat card — grande, horizontal */
+  .stat-card {
+    @apply card flex items-center gap-4 px-5 py-4;
+    min-width: 0;
+  }
+
+  /* ── BOTÕES ──────────────────────────────────────────────── */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 font-bold text-sm text-navy
+           transition-all duration-150 active:scale-95;
+    border-radius: var(--radius-btn, 7px);
+    background: linear-gradient(135deg, var(--accent-2, #F5D27A) 0%, var(--accent, #E8B94B) 50%, var(--accent-dim, #C49A2E) 100%);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.4), inset 0 1px 0 rgba(255,255,255,0.25);
+    color: #0B0E14;
+  }
+  .btn-primary:hover {
+    box-shadow: 0 4px 12px rgba(var(--accent-rgb, 232,185,75), 0.35), inset 0 1px 0 rgba(255,255,255,0.3);
+    filter: brightness(1.08);
+  }
+  /* Texto branco para acentos não-dourados (contraste melhor) */
+  [data-accent="teal"] .btn-primary,
+  [data-accent="blue"] .btn-primary,
+  [data-accent="green"] .btn-primary,
+  [data-accent="rose"] .btn-primary { color: rgba(255,255,255,0.95); }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-white/70
+           border border-white/10 transition-all duration-150 active:scale-95;
+    border-radius: var(--radius-btn, 7px);
+    background: rgba(255,255,255,0.04);
+  }
+  .btn-secondary:hover {
+    @apply text-white border-white/20;
+    background: rgba(255,255,255,0.07);
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-2 px-4 py-2 text-sm font-medium text-danger
+           border border-danger/20 transition-all duration-150 active:scale-95;
+    border-radius: var(--radius-btn, 7px);
+    background: rgba(248,113,113,0.06);
+  }
+  .btn-danger:hover { background: rgba(248,113,113,0.14); @apply border-danger/40; }
+
+  .btn-ghost {
+    @apply inline-flex items-center gap-2 px-3 py-2 text-sm font-medium text-white/50
+           transition-all duration-150 active:scale-95;
+    border-radius: var(--radius-btn, 7px);
+  }
+  .btn-ghost:hover { @apply text-white; background: rgba(255,255,255,0.06); }
+
+  /* ── INPUTS ─────────────────────────────────────────────── */
+  .input {
+    @apply w-full placeholder:text-white/25 text-sm px-3 py-2
+           transition-all duration-150 focus:outline-none;
+    border-radius: var(--radius-btn, 7px);
+    /* Cor explícita (não via Tailwind opacity) para não afetar option */
+    color: rgba(255,255,255,0.88);
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.10);
+  }
+  .input:focus {
+    border-color: rgba(var(--accent-rgb, 232,185,75), 0.6);
+    box-shadow: 0 0 0 3px rgba(var(--accent-rgb, 232,185,75), 0.08);
+    background: rgba(255,255,255,0.06);
+  }
+  select.input { cursor: pointer; }
+
+  /* Fix crítico Windows Chrome: <select> herda color branco do tema escuro
+     mas o dropdown nativo usa fundo branco do sistema → texto invisível */
+  select option {
+    background-color: var(--bg2, #141B28);
+    color: rgba(255,255,255,0.85);
+  }
+  select option:disabled { color: rgba(255,255,255,0.30); }
+
+  /* ── BADGES ─────────────────────────────────────────────── */
+  .badge {
+    @apply inline-flex items-center px-2 py-0.5 rounded-full font-mono text-[10px] font-semibold tracking-wider;
+  }
+  .badge-gold    { @apply badge; background: rgba(232,185,75,0.12); color: #E8B94B; border: 1px solid rgba(232,185,75,0.2); }
+  .badge-teal    { @apply badge; background: rgba(34,211,200,0.10); color: #22D3C8; border: 1px solid rgba(34,211,200,0.18); }
+  .badge-success { @apply badge; background: rgba(34,197,94,0.10);  color: #22C55E; border: 1px solid rgba(34,197,94,0.18); }
+  .badge-warning { @apply badge; background: rgba(245,158,11,0.10); color: #F59E0B; border: 1px solid rgba(245,158,11,0.18); }
+  .badge-danger  { @apply badge; background: rgba(248,113,113,0.10); color: #F87171; border: 1px solid rgba(248,113,113,0.18); }
+  .badge-accent  { @apply badge; background: rgba(79,142,247,0.10); color: #4F8EF7; border: 1px solid rgba(79,142,247,0.18); }
+
+  /* ── TAG CHIP ───────────────────────────────────────────── */
+  .tag-chip {
+    @apply inline-flex items-center px-2 py-0.5 font-mono text-[10px] font-bold tracking-widest;
+    background: rgba(232,185,75,0.10);
+    color: #E8B94B;
+    border: 1px solid rgba(232,185,75,0.22);
+    border-radius: var(--radius-btn, 4px);
+    letter-spacing: 0.08em;
+  }
+
+  /* ── PULSE DOT ──────────────────────────────────────────── */
+  .pulse-dot {
+    @apply w-1.5 h-1.5 rounded-full;
+    animation: pulseDot 2s ease-in-out infinite;
+  }
+
+  /* ── FORM UTILITIES ─────────────────────────────────────── */
+  .form-section {
+    @apply font-mono text-[8.5px] tracking-[2.5px] uppercase pt-4 pb-2 border-t mt-1;
+    border-color: rgba(255,255,255,0.06);
+    color: rgba(var(--accent-rgb, 232,185,75), 0.70);
+  }
+
+  /* ── NAV ITEM (sidebar) ─────────────────────────────────── */
+  .nav-item {
+    @apply flex items-center gap-2.5 px-3 py-2 text-[11.5px] font-medium
+           transition-all duration-150 cursor-pointer select-none;
+    border-radius: var(--radius-btn, 7px);
+    color: rgba(255,255,255,0.42);
+  }
+  .nav-item:hover {
+    color: rgba(255,255,255,0.80);
+    background: rgba(255,255,255,0.05);
+  }
+  .nav-item.active {
+    color: #fff;
+    background: rgba(var(--accent-rgb, 232,185,75), 0.10);
+    box-shadow: inset 2px 0 0 var(--accent, #E8B94B);
+  }
+  .nav-item.active .nav-icon { color: var(--accent, #E8B94B); }
+  .nav-item:not(.active) .nav-icon { color: rgba(255,255,255,0.22); }
+
+  /* ── PAGE HEADER ────────────────────────────────────────── */
+  .page-header {
+    @apply flex items-start justify-between mb-7;
+  }
+  .page-eyebrow {
+    @apply font-mono text-[8.5px] tracking-[3px] text-gold/70 uppercase mb-1;
+  }
+  .page-title {
+    @apply font-display font-bold text-[22px] text-white leading-tight;
+  }
+  .page-sub {
+    @apply text-white/35 text-[12px] mt-1;
+  }
+
+  /* ── TABLE ──────────────────────────────────────────────── */
+  .tbl-head th {
+    @apply px-4 py-2.5 text-left font-mono text-[8px] tracking-[2px] uppercase;
+    /* Cor explícita sem variável Tailwind para não vazar --tw-text-opacity */
+    color: rgba(255,255,255,0.28);
+    background: rgba(0,0,0,0.22);
+  }
+  .tbl-row {
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    transition: background 100ms;
+  }
+  .tbl-row:hover { background: rgba(255,255,255,0.025); }
+  .tbl-row td {
+    @apply px-4 py-2.5;
+    /* Cor base explícita para toda célula — evita herança de --tw-text-opacity */
+    color: rgba(255,255,255,0.68);
+  }
+
+  /* ── SCANLINE (global, muito sutil) ─────────────────────── */
+  .scanline-overlay::after {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      rgba(0,0,0,0.015) 2px,
+      rgba(0,0,0,0.015) 4px
+    );
+    pointer-events: none;
+    z-index: 9998;
+  }
+
+  /* ── ANIMATIONS ─────────────────────────────────────────── */
+  .animate-fade-in  { animation: fadeIn 0.18s ease both; }
+  .animate-slide-up { animation: slideUp 0.22s ease both; }
+}
+
+/* ── Sidebar width via data attribute (evita flash de hidratação) ── */
+.lab-sidebar          { width: 220px; }
+[data-sidebar="collapsed"] .lab-sidebar { width: 56px; }
+
+/* ── Dot grid background ── */
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(255,255,255,0.035) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ── Keyframes ── */
+/* transform:none no 'to' é crítico: evita criar containing-block para position:fixed (modais, overlays) */
+@keyframes fadeIn   { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+@keyframes slideUp  { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:none; } }
+@keyframes pulseDot { 0%,100% { opacity:1; transform:scale(1); } 50% { opacity:0.35; transform:scale(0.75); } }
+@keyframes scan     { 0% { transform:translateY(-100%); } 100% { transform:translateY(100vh); } }

@@ -1,10 +1,12 @@
 {
   "name": "cispr15-labelo",
-  "version": "1.0.97",
+  "version": "1.0.99",
   "description": "Gerador de Relatórios CISPR 15 — LABELO/PUCRS",
   "main": "electron/main.js",
   "scripts": {
+    "predev": "node scripts/copy-dicionario.js",
     "dev": "next dev",
+    "prebuild": "node scripts/copy-dicionario.js",
     "build": "next build",
     "postbuild": "node scripts/copy-standalone-assets.js",
     "start": "next start",
@@ -18,6 +20,7 @@
     "@anthropic-ai/sdk": "^0.95.2",
     "@signpdf/placeholder-plain": "^3.3.0",
     "@signpdf/signpdf": "^3.3.0",
+    "hunspell-asm": "^4.0.2",
     "mammoth": "^1.12.0",
     "node-forge": "^1.4.0",
     "pdf-parse": "^1.1.1",
@@ -33,6 +36,7 @@
     "cheerio": "^1.2.0",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
+    "dictionary-pt": "^4.0.0",
     "electron": "^31.7.7",
     "electron-builder": "^24.13.3",
     "lucide-react": "^0.379.0",
@@ -49,7 +53,7 @@
     "productName": "CISPR 15 LABELO",
     "copyright": "LABELO/PUCRS",
     "directories": {
-      "output": "C:\\Temp\\cispr15-dist"
+      "output": "dist"
     },
     "forceCodeSigning": false,
     "win": {

@@ -23,6 +23,7 @@ export default function LaboratoriosPage() {
   const CAMPOS_MODELO = [
     ['nome', 'Nome'], ['fabricante', 'Fabricante'], ['modelo', 'Modelo'],
     ['serie', 'Série'], ['tag', 'TAG'], ['dataCalibracao', 'Data de calibração'],
+    ['numero', 'Número do certificado'],
   ] as const
 
   const setCampo = (i: number, campo: string, val: string) => {
@@ -31,10 +32,13 @@ export default function LaboratoriosPage() {
 
   // Importar amostra do lab: mostra as linhas extraídas (pra você ver os rótulos).
   async function importarAmostra(file: File) {
-    const api = (window as unknown as { electronAPI?: { extractPdfText?: (b: string) => Promise<{ text?: string }> } }).electronAPI
-    if (!api?.extractPdfText) { alert('Disponível apenas no aplicativo.'); return }
+    const api = (window as unknown as { electronAPI?: { extractPdfPage1?: (b: string) => Promise<{ text?: string }> } }).electronAPI
+    if (!api?.extractPdfPage1) { alert('Disponível apenas no aplicativo.'); return }
     setLendoAmostra(true)
-    try { const r = await api.extractPdfText(await fileToBase64(file)); setAmostraTxt(r?.text || '(sem texto extraído)') }
+    // Identificação do laboratório (CAL, nome, rótulos dos campos) normalmente
+    // está na 1ª página (capa) do certificado — extract-text ignora essa página
+    // (foi pensado pra dados do equipamento, que ficam no corpo/última página).
+    try { const r = await api.extractPdfPage1(await fileToBase64(file)); setAmostraTxt(r?.text || '(sem texto extraído)') }
     finally { setLendoAmostra(false) }
   }
 
@@ -51,8 +55,8 @@ export default function LaboratoriosPage() {
   /* Cadastro via UPLOAD: lê os PDFs, extrai o CAL (selinho de acreditação) e o
      nome do laboratório emissor, e associa CAL → nome no registro. */
   async function importarCertificados(files: FileList) {
-    const api = (window as unknown as { electronAPI?: { extractPdfText?: (b: string) => Promise<{ text?: string }> } }).electronAPI
-    if (!api?.extractPdfText) { alert('Disponível apenas no aplicativo.'); return }
+    const api = (window as unknown as { electronAPI?: { extractPdfPage1?: (b: string) => Promise<{ text?: string }> } }).electronAPI
+    if (!api?.extractPdfPage1) { alert('Disponível apenas no aplicativo.'); return }
     setImportando(true)
     try {
       const achados = new Map<string, string>()   // CAL → melhor nome encontrado
@@ -61,7 +65,7 @@ export default function LaboratoriosPage() {
         if (!f.name.toLowerCase().endsWith('.pdf')) continue
         lidos++
         try {
-          const res = await api.extractPdfText(await fileToBase64(f))
+          const res = await api.extractPdfPage1(await fileToBase64(f))
           const texto = res?.text || ''
           const cal = extrairAcreditacao(texto)
           if (!cal) { semCal++; continue }

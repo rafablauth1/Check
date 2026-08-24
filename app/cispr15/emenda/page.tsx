@@ -13,9 +13,10 @@ import {
   RELATORIOS_KEY, EMENDA_DRAFT_KEY, RELATORIO_DOCX_PFX, today, formatEmendaNumero,
 } from '../types'
 import { filterDocxForResult } from '../docx-filter'
+import { savePhotos } from '@/lib/cispr15/photo-store'
 
 /* ─── resize helper ───────────────────────────────────────────────────────── */
-async function resizeToBase64(file: File, maxW = 1000, maxH = 1000): Promise<string> {
+async function resizeToBase64(file: File, maxW = 800, maxH = 800): Promise<string> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const url = URL.createObjectURL(file)
@@ -29,7 +30,7 @@ async function resizeToBase64(file: File, maxW = 1000, maxH = 1000): Promise<str
       canvas.width = w; canvas.height = h
       canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
       URL.revokeObjectURL(url)
-      resolve(canvas.toDataURL('image/jpeg', 0.82))
+      resolve(canvas.toDataURL('image/jpeg', 0.75))
     }
     img.onerror = reject
     img.src = url
@@ -300,7 +301,7 @@ export default function EmendaPage() {
     [selected, cfg, photosAlteradas, photosNovas, resultados],
   )
 
-  function gerarEmenda() {
+  async function gerarEmenda() {
     if (!selected) return
     if (alteracoes.length === 0) {
       alert('Nenhuma alteração detectada. Edite pelo menos um campo.')
@@ -366,7 +367,7 @@ export default function EmendaPage() {
         mergedPhotos.push(selected.photos[i]) // original unchanged
       }
     }
-    try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(mergedPhotos)) } catch {}
+    await savePhotos(PHOTOS_KEY, mergedPhotos)
 
     const htmlParts: string[] = []
     const nameParts: string[] = []
@@ -402,6 +403,72 @@ export default function EmendaPage() {
     }
 
     router.push('/cispr15/relatorio')
+  }
+
+  // Corrige o registro salvo (currentCfg + fotos/docx) sem contar como emenda
+  // formal: não mexe em `emendas`, não gera PDF de emenda. Serve para acertar
+  // um erro de digitação sem abrir um processo de emenda pra isso.
+  const [salvandoSemEmenda, setSalvandoSemEmenda] = useState(false)
+  async function salvarSemEmenda() {
+    if (!selected) return
+    if (alteracoes.length === 0) {
+      alert('Nenhuma alteração detectada. Edite pelo menos um campo.')
+      return
+    }
+    if (!confirm(
+      'Isso corrige o registro salvo direto, sem gerar uma emenda formal ' +
+      '(não entra no histórico de emendas nem gera PDF de emenda). Confirma a correção?',
+    )) return
+
+    setSalvandoSemEmenda(true)
+    try {
+      const mergedPhotos: PhotoEntry[] = []
+      for (let i = 0; i < totalFotos; i++) {
+        const entry = photosNovas[i]
+        if (entry === null) continue
+        if (entry !== undefined) mergedPhotos.push(entry)
+        else if (selected.photos[i]) mergedPhotos.push(selected.photos[i])
+      }
+
+      const base: RelatorioSalvo[] = relatorios.length
+        ? relatorios
+        : (() => { try { return JSON.parse(localStorage.getItem(RELATORIOS_KEY) || '[]') } catch { return [] } })()
+      const lista: RelatorioSalvo[] = base.map(r => ({ ...r }))
+      const idx = lista.findIndex(r => r.id === selected.id)
+      if (idx >= 0) {
+        // Também reescreve `cfg` (o baseline original) — não só `currentCfg` —
+        // pra correção não ficar marcada como "alterado" pra sempre toda vez
+        // que a tela de emenda for reaberta (o diff compara contra `cfg`).
+        lista[idx] = { ...lista[idx], cfg, currentCfg: cfg }
+        setRelatorios(lista)
+        const api = (window as any).electronAPI
+        if (api?.saveRelatorios) {
+          try { await api.saveRelatorios(lista.map((r: RelatorioSalvo) => ({ ...r, photos: [] }))) } catch {}
+        }
+        try {
+          const rawLocal = localStorage.getItem(RELATORIOS_KEY)
+          if (rawLocal) {
+            const localList: RelatorioSalvo[] = JSON.parse(rawLocal)
+            const li = localList.findIndex(r => r.id === selected.id)
+            if (li >= 0) {
+              localList[li] = { ...localList[li], cfg, currentCfg: cfg }
+              localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
+            }
+          }
+        } catch {}
+      }
+
+      const api2 = (window as any).electronAPI
+      const docxAtual = selectedDocxHtml ?? localStorage.getItem(RELATORIO_DOCX_PFX + selected.id)
+      if (api2?.saveRelatorioAssets) {
+        try { await api2.saveRelatorioAssets(selected.id, mergedPhotos, docxAtual ?? null) } catch {}
+      }
+
+      setPhotosNovas([])
+      alert('Correção salva — não é uma emenda formal.')
+    } finally {
+      setSalvandoSemEmenda(false)
+    }
   }
 
   if (relatorios.length === 0) {
@@ -724,6 +791,14 @@ export default function EmendaPage() {
           Cancelar
         </button>
         <div className="flex-1" />
+        <button
+          onClick={salvarSemEmenda}
+          disabled={alteracoes.length === 0 || salvandoSemEmenda}
+          title="Corrige o registro salvo direto, sem gerar emenda formal nem PDF de emenda"
+          className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm disabled:opacity-40">
+          {salvandoSemEmenda ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle2 size={14} />}
+          Salvar sem emenda
+        </button>
         <button
           onClick={gerarEmenda}
           disabled={alteracoes.length === 0}

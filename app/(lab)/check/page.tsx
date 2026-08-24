@@ -1,8 +1,10 @@
 'use client'
 
 import { useState, useEffect, useRef, useCallback } from 'react'
+import { useRouter } from 'next/navigation'
 import {
   Plus, Search, Download, X, Trash2, Pencil, Paperclip, Send, FileText, FileSpreadsheet, Image as ImageIcon,
+  Play, ArrowUpRight, GitBranch,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -16,6 +18,15 @@ const COLS: { st: StatusTarefa; label: string }[] = [
   { st: 'done', label: 'Concluído' },
 ]
 const MAX_FILE = 4 * 1024 * 1024
+
+// Área da demanda → rota da tela correspondente (pra "Revisar"). Áreas criadas
+// pelo usuário (fora das padrão) não têm rota conhecida — o botão some.
+const ROTA_POR_AREA: Record<string, string> = {
+  'Instruções de Trabalho': '/procedimentos/instrucoes',
+  'Certificados': '/certificados',
+  'Grupos': '/equipamentos/grupos',
+  'Equipamentos': '/equipamentos',
+}
 
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
 const now = () =>
@@ -48,6 +59,7 @@ interface FormState {
 const FORM_VAZIO: FormState = { title: '', desc: '', cat: 'Geral', type: 'feature', prio: 'media', status: 'todo', files: [] }
 
 export default function CheckPage() {
+  const router = useRouter()
   const [board, setBoard] = useState<BoardCheck>({ tarefas: [], categorias: {} })
   const [carregando, setCarregando] = useState(true)
   const [filterCat, setFilterCat] = useState<string>('all')
@@ -61,6 +73,7 @@ export default function CheckPage() {
   const [detailId, setDetailId] = useState<string | null>(null)
   const [novaArea, setNovaArea] = useState<{ nome: string; cor: string } | null>(null)
   const [nota, setNota] = useState('')
+  const [gitModal, setGitModal] = useState<{ msg: string; enviando: boolean } | null>(null)
 
   const formFileRef = useRef<HTMLInputElement>(null)
   const detailFileRef = useRef<HTMLInputElement>(null)
@@ -182,6 +195,58 @@ export default function CheckPage() {
     setNota('')
   }
 
+  // Abre um terminal novo (visível) já rodando o Claude Code com a demanda como
+  // prompt — só disponível no app (Electron) em modo desenvolvimento. A demanda
+  // é instruída a reportar o progresso de volta via /api/check/progress, o mesmo
+  // endpoint que o refresh "ao vivo" já escuta.
+  async function executarNoClaude(t: Tarefa) {
+    const api = (window as unknown as { electronAPI?: { executarTarefaClaude?: (p: string, ti: string) => Promise<{ ok: boolean; error?: string }> } }).electronAPI
+    if (!api?.executarTarefaClaude) { flash('Disponível só no app, em modo desenvolvimento.'); return }
+    const origem = window.location.origin
+    const prompt = `Demanda do gerenciador de tarefas do app (Check) — id ${t.id}.
+
+Título: ${t.title}
+Área: ${t.cat} · Tipo: ${TIPO[t.type]} · Prioridade: ${PRIO[t.prio]}
+
+Descrição:
+${t.desc || '(sem descrição)'}
+
+Ao COMEÇAR a trabalhar nesta demanda, registre o início:
+POST ${origem}/api/check/progress   body: {"id":"${t.id}","status":"doing"}
+
+Ao TERMINAR (ou se não der pra concluir), registre o resultado:
+POST ${origem}/api/check/progress   body: {"id":"${t.id}","status":"done","note":"<resumo do que foi feito>"}
+Se dar erro, poste com "level":"error" e não mude o status.`
+    const r = await api.executarTarefaClaude(prompt, t.title)
+    if (r?.ok) {
+      // status + anotação num único update (evita ler estado desatualizado
+      // entre duas chamadas separadas de setTarefas).
+      setTarefas((ts) => ts.map((x) => {
+        if (x.id !== t.id) return x
+        const log = [{ when: now(), what: '▶ Aba aberta no Claude Code (VSCode) — aguardando envio.' }, ...x.log]
+        if (x.status !== 'doing') log.unshift({ when: now(), what: `Status → ${STATUS.doing.l}.` })
+        return { ...x, status: 'doing', log }
+      }), 'Aba aberta no VSCode — confira o prompt e aperte Enter pra enviar ✓')
+    } else flash(r?.error || 'Falha ao iniciar')
+  }
+
+  // ── Git ──
+  function abrirGit() {
+    setGitModal({ msg: `Check: atualização ${now()}`, enviando: false })
+  }
+  async function enviarGit() {
+    if (!gitModal) return
+    const api = (window as unknown as {
+      electronAPI?: { gitPush?: (message: string) => Promise<{ ok: boolean; error?: string; committed?: boolean; output?: string }> }
+    }).electronAPI
+    if (!api?.gitPush) { flash('Disponível só no app, em modo desenvolvimento.'); return }
+    setGitModal({ ...gitModal, enviando: true })
+    const r = await api.gitPush(gitModal.msg)
+    setGitModal(null)
+    if (r?.ok) flash(r.committed ? 'Alterações enviadas pro Git ✓' : 'Já estava tudo enviado ✓')
+    else flash(r?.error || 'Falha ao subir pro Git')
+  }
+
   // ── anexos ──
   async function anexarNoForm(files: FileList | null) {
     if (!files || !form) return
@@ -271,7 +336,7 @@ export default function CheckPage() {
   const temErro = (t: Tarefa) => t.log?.[0]?.what?.startsWith('⚠️')
 
   // pausa o refresh ao vivo enquanto há modal aberto ou arraste em curso
-  busyRef.current = !!form || !!detailId || !!novaArea || drag.id != null
+  busyRef.current = !!form || !!detailId || !!novaArea || !!gitModal || drag.id != null
 
   return (
     <div className="pb-20">
@@ -309,6 +374,7 @@ export default function CheckPage() {
           <input className="input pl-9" placeholder="Buscar demanda…" value={busca} onChange={(e) => setBusca(e.target.value)} />
         </div>
         <button className="btn-secondary" onClick={exportar}><Download size={15} /> Exportar</button>
+        <button className="btn-secondary" onClick={abrirGit}><GitBranch size={15} /> Subir pro Git</button>
         <button className="btn-primary" onClick={abrirNova}><Plus size={15} /> Nova demanda</button>
       </div>
 
@@ -533,9 +599,19 @@ export default function CheckPage() {
               <button className="btn-primary" onClick={() => addNota(detalhe.id)}><Send size={14} /> Anotar</button>
             </div>
           </div>
-          <div className="flex justify-between items-center px-5 py-4 border-t border-white/8">
+          <div className="flex justify-between items-center px-5 py-4 border-t border-white/8 gap-2 flex-wrap">
             <button className="btn-danger" onClick={() => excluir(detalhe.id)}><Trash2 size={14} /> Excluir</button>
-            <button className="btn-secondary" onClick={() => abrirEdicao(detalhe)}><Pencil size={14} /> Editar</button>
+            <div className="flex gap-2 flex-wrap justify-end">
+              {ROTA_POR_AREA[detalhe.cat] && (
+                <button className="btn-secondary" onClick={() => router.push(ROTA_POR_AREA[detalhe.cat])}>
+                  <ArrowUpRight size={14} /> Revisar em {detalhe.cat}
+                </button>
+              )}
+              <button className="btn-secondary" onClick={() => executarNoClaude(detalhe)} title="Abre um terminal novo já rodando o Claude Code com esta demanda">
+                <Play size={14} /> Executar no Claude Code
+              </button>
+              <button className="btn-secondary" onClick={() => abrirEdicao(detalhe)}><Pencil size={14} /> Editar</button>
+            </div>
           </div>
         </Overlay>
       )}
@@ -566,6 +642,30 @@ export default function CheckPage() {
           <div className="flex justify-end gap-2 px-5 py-4 border-t border-white/8">
             <button className="btn-ghost" onClick={() => setNovaArea(null)}>Cancelar</button>
             <button className="btn-primary" onClick={criarArea}>Criar área</button>
+          </div>
+        </Overlay>
+      )}
+
+      {/* MODAL SUBIR PRO GIT */}
+      {gitModal && (
+        <Overlay onClose={() => { if (!gitModal.enviando) setGitModal(null) }} maxW="max-w-[480px]">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+            <h2 className="text-[15px] font-bold text-white">Subir pro Git</h2>
+            <CloseBtn onClick={() => setGitModal(null)} />
+          </div>
+          <div className="p-5 space-y-4">
+            <Field label="Mensagem do commit">
+              <textarea className="input min-h-[72px] resize-y" autoFocus value={gitModal.msg}
+                onChange={(e) => setGitModal({ ...gitModal, msg: e.target.value })}
+                placeholder="Descreva o que mudou…" />
+            </Field>
+            <p className="text-[11px] text-white/35">Faz commit de tudo que mudou no projeto e dá push pro repositório remoto. Disponível só no app, em modo desenvolvimento.</p>
+          </div>
+          <div className="flex justify-end gap-2 px-5 py-4 border-t border-white/8">
+            <button className="btn-ghost" disabled={gitModal.enviando} onClick={() => setGitModal(null)}>Cancelar</button>
+            <button className="btn-primary" disabled={gitModal.enviando} onClick={enviarGit}>
+              <GitBranch size={14} /> {gitModal.enviando ? 'Enviando…' : 'Enviar'}
+            </button>
           </div>
         </Overlay>
       )}

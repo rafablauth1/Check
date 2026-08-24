@@ -4,6 +4,7 @@ const http    = require('http')
 const https   = require('https')
 const fs      = require('fs')
 const os      = require('os')
+const crypto  = require('crypto')
 const { execFile, spawn } = require('child_process')
 const XLSX    = require('xlsx')
 const mammoth = require('mammoth')
@@ -75,7 +76,40 @@ let eutFolderPath = null
 
 /* ─── settings ────────────────────────────────────────────────────────────── */
 
-const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: '', agendaFolder: '', pdfCopyFolder: '', pdfAutoSaveToEut: true, updateFolder: '', certThumbprint: '', pfxPath: '', pfxPassword: '', backupFolder: '', autoBackup: true }
+// Pasta de rede única pra TODOS os dados (cadastros, agenda, relatórios,
+// clientes) — mesma pasta em todos os PCs, sem precisar configurar nada.
+// Mantida em sincronia com lib/settings-server.ts (CADASTROS_FOLDER_PADRAO).
+const CADASTROS_FOLDER_PADRAO = 'R:\\Compartilhado\\CISPR15'
+const DATA_FOLDER_PADRAO       = 'R:\\Compartilhado\\CISPR15'
+const AGENDA_FOLDER_PADRAO     = 'R:\\Compartilhado\\CISPR15\\agenda'
+
+// Pasta espelho padrão: recebe cópia automática de TODOS os dados (cadastros,
+// agenda, relatórios, clientes) a cada save — best-effort, sem bloquear o save
+// principal (ver espelharArquivo). Existe pra PCs que só conseguem escrever
+// na pasta de Alta Tecnologia, mas continuam enxergando os dados atualizados
+// através do espelho.
+const MIRROR_FOLDER_PADRAO =
+  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15'
+
+// Pasta de rede com o instalador mais recente + version.json — o app confere
+// aqui (silenciosamente, ver ipcMain 'update:check') se há versão mais nova e
+// oferece instalar sem precisar copiar nada manualmente em cada PC. Mantida
+// atualizada automaticamente pelo script scripts/publish-update.js a cada
+// "npm run dist".
+const UPDATE_FOLDER_PADRAO =
+  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15\\instalador'
+
+const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: DATA_FOLDER_PADRAO, agendaFolder: AGENDA_FOLDER_PADRAO, pdfCopyFolder: '', cadastrosFolder: CADASTROS_FOLDER_PADRAO, mirrorFolder: MIRROR_FOLDER_PADRAO, pdfAutoSaveToEut: true, updateFolder: UPDATE_FOLDER_PADRAO, certThumbprint: '', pfxPath: '', pfxPassword: '', backupFolder: '', autoBackup: true }
+
+// Pastas de rede da Iluminação onde ficam as pastas por protocolo (uma pasta
+// por ano) — usadas pra importar fotos de amostras pra nossa rede (EMC). O
+// tipo do item na agenda ('lampada'/'luminaria') decide qual base usar.
+const ILUMINACAO_LAMPADA_BASE   = 'T:\\Laboratórios\\Iluminação\\2 - Lâmpadas\\!Protocolos'
+const ILUMINACAO_LUMINARIA_BASE = 'T:\\Laboratórios\\Iluminação\\5 - Luminárias\\!Protocolos'
+// Pasta de rede EMC onde as pastas por protocolo (com "fotos" dentro) são criadas.
+const FOTOS_DESTINO_BASE =
+  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios'
+const IMG_EXTENSOES = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tif', '.tiff'])
 
 /* pasta raiz do app:
    - dev:       …/cispr15-standalone/
@@ -85,16 +119,14 @@ function getAppRoot() {
   return path.join(__dirname, '..')
 }
 
-/* defaults de pasta — dados em userData (sobrevive a updates/reinstalações) */
+/* defaults de pasta que NÃO têm padrão de rede — dataFolder/agendaFolder/
+   cadastrosFolder/mirrorFolder/updateFolder já vêm de SETTINGS_DEFAULTS
+   (pasta de rede, igual em todos os PCs) e NÃO devem ser sobrescritos aqui. */
 function getDefaultPaths() {
-  const root     = getAppRoot()
   const userData = app.getPath('userData')
   return {
     excelPath:     'C:\\Users\\Notla\\OneDrive\\Área de Trabalho\\Compatibilidade eletromagnética_2026.xlsx',
-    dataFolder:    path.join(userData, 'dados'),
-    agendaFolder:  path.join(userData, 'agenda'),
     pdfCopyFolder: path.join(userData, 'pdfs'),
-    updateFolder:  path.join(root, 'updates'),
   }
 }
 
@@ -143,8 +175,53 @@ function migrateDataFolders() {
   }
 }
 
+/* Migra cadastros/catálogos (equipamentos, grupos, normas, procedimentos,
+   certificados, laboratórios, planos, taxonomia, glossário, demandas, checagens)
+   do local antigo (onde "dataFolder" apontava antes de existir "cadastrosFolder")
+   para a pasta de rede padrão — assim quem já usava o app não vê os cadastros
+   "sumirem" após a atualização. Só copia o que ainda não existe no destino. */
+function migrateCadastrosParaRede() {
+  const userData = app.getPath('userData')
+  const s = readSettings()
+  const oldDir = s.dataFolder || path.join(userData, 'dados') // fórmula antiga de getDadosDir()
+  const newDir = s.cadastrosFolder
+  if (!newDir || !fs.existsSync(oldDir) || path.resolve(oldDir) === path.resolve(newDir)) return
+
+  const files = [
+    'equipamentos.json', 'grupos.json', 'instrucoes.json', 'it-template.json',
+    'certificados.json', 'laboratorios.json', 'planos.json', 'taxonomia.json',
+    'glossario.json', 'check.json', 'checagens.json', 'rascunho-equipamentos.json',
+  ]
+  try {
+    fs.mkdirSync(newDir, { recursive: true })
+    for (const file of files) {
+      const src = path.join(oldDir, file)
+      const dst = path.join(newDir, file)
+      if (fs.existsSync(src) && !fs.existsSync(dst)) {
+        try { fs.copyFileSync(src, dst) } catch {}
+      }
+    }
+    const oldNormas = path.join(oldDir, 'normas')
+    const newNormas = path.join(newDir, 'normas')
+    if (fs.existsSync(oldNormas)) {
+      fs.mkdirSync(newNormas, { recursive: true })
+      for (const f of fs.readdirSync(oldNormas)) {
+        const src = path.join(oldNormas, f), dst = path.join(newNormas, f)
+        if (!fs.existsSync(dst)) { try { fs.copyFileSync(src, dst) } catch {} }
+      }
+    }
+  } catch { /* pasta de rede indisponível no momento — tenta de novo no próximo início */ }
+}
+
 function writeSettings(partial) {
-  const merged = { ...readSettings(), ...partial }
+  // Remove espaços acidentais nos caminhos de pasta (ex.: colar com espaço no
+  // final) — um caminho com espaço sobrando aponta pra uma pasta que não
+  // existe, e o erro fica difícil de perceber só olhando a tela.
+  const limpo = { ...partial }
+  for (const k of Object.keys(limpo)) {
+    if (typeof limpo[k] === 'string') limpo[k] = limpo[k].trim()
+  }
+  const merged = { ...readSettings(), ...limpo }
   const f = getSettingsFile()
   fs.mkdirSync(path.dirname(f), { recursive: true })
   fs.writeFileSync(f, JSON.stringify(merged, null, 2), 'utf-8')
@@ -153,8 +230,57 @@ function writeSettings(partial) {
 
 /* ─── dados (rede ou local) ───────────────────────────────────────────────── */
 
+// Criptografia em repouso — mesma lógica/chave de lib/dados.ts (arquivos de
+// cadastros, que passam pelo servidor Next). Aqui cobre agenda/relatórios/
+// clientes, que são lidos/gravados direto pelo processo principal via IPC.
+// Objetivo: impedir edição casual/acidental abrindo o .json fora do app (não é
+// proteção contra alguém disposto a extrair a chave do próprio executável).
+const ENC_MAGIC = 'CISPR15ENC1:'
+const ENC_KEY = crypto.scryptSync('cispr15-labelo-dados-em-repouso', 'cispr15-labelo-salt-fixo', 32)
+
+function encriptar(json) {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv)
+  const enc = Buffer.concat([cipher.update(json, 'utf-8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return ENC_MAGIC + Buffer.concat([iv, tag, enc]).toString('base64')
+}
+
+function decriptar(conteudo) {
+  const buf = Buffer.from(conteudo.slice(ENC_MAGIC.length), 'base64')
+  const iv = buf.subarray(0, 12)
+  const tag = buf.subarray(12, 28)
+  const dados = buf.subarray(28)
+  const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, iv)
+  decipher.setAuthTag(tag)
+  return Buffer.concat([decipher.update(dados), decipher.final()]).toString('utf-8')
+}
+
+// Interpreta o conteúdo lido do disco: criptografado (formato novo) ou JSON
+// puro (arquivo legado, de antes desta mudança — segue funcionando, e é
+// migrado no próximo save).
+function parseConteudo(bruto) {
+  if (bruto.startsWith(ENC_MAGIC)) return JSON.parse(decriptar(bruto))
+  return JSON.parse(bruto)
+}
+
+// Espelha o arquivo (já criptografado) numa segunda pasta de rede, se
+// configurada — best-effort: nunca lança, nunca atrasa o save principal.
+async function espelharArquivo(relPath, conteudo) {
+  const { mirrorFolder } = readSettings()
+  if (!mirrorFolder) return
+  try {
+    const mp = path.join(mirrorFolder, relPath)
+    await fs.promises.mkdir(path.dirname(mp), { recursive: true })
+    await fs.promises.writeFile(mp, conteudo, 'utf-8')
+  } catch {}
+}
+
+// Fallback de último recurso (pasta local) — só entra em jogo se dataFolder
+// tiver sido explicitamente esvaziado nas configurações (o padrão normal já
+// vem preenchido com a pasta de rede via SETTINGS_DEFAULTS).
 function getDefaultDataDir() {
-  return getDefaultPaths().dataFolder
+  return path.join(app.getPath('userData'), 'dados')
 }
 
 function dataFilePath(filename) {
@@ -167,18 +293,46 @@ function agendaFilePath() {
   return path.join(agendaFolder || dataFolder || getDefaultDataDir(), 'cispr15_agenda.json')
 }
 
+// Lê um arquivo já decriptografando; se o principal estiver corrompido/ilegível
+// (ex.: PC ainda no build antigo lendo um arquivo já migrado por outro PC),
+// tenta o .bak antes de desistir — mesma proteção que lib/dados.ts já tinha
+// para os cadastros. Evita que a agenda/relatórios/clientes "sumam" (vejam
+// lista vazia) durante a janela de atualização entre PCs.
+async function lerArquivoComFallback(fp) {
+  try { return parseConteudo(await fs.promises.readFile(fp, 'utf-8')) }
+  catch {
+    try { return parseConteudo(await fs.promises.readFile(fp + '.bak', 'utf-8')) }
+    catch { return null }
+  }
+}
+
+// Grava com backup da versão anterior antes de sobrescrever (mesmo padrão do
+// escreverJSON de lib/dados.ts) — best-effort, não impede o save principal.
+async function gravarComBackup(fp, conteudo) {
+  try { await fs.promises.copyFile(fp, fp + '.bak') } catch {}
+  await fs.promises.writeFile(fp, conteudo, 'utf-8')
+}
+
 // ASSÍNCRONOS (fs.promises): escrita/leitura síncrona no processo PRINCIPAL congela
 // a janela inteira (inclusive a digitação) durante o I/O — pior em pasta de rede.
 async function readAgendaFile() {
-  try { return JSON.parse(await fs.promises.readFile(agendaFilePath(), 'utf-8')) } catch { return [] }
+  return (await lerArquivoComFallback(agendaFilePath())) ?? []
 }
 
 async function writeAgendaFile(data) {
   const fp = agendaFilePath()
   await fs.promises.mkdir(path.dirname(fp), { recursive: true })
+  const conteudo = encriptar(JSON.stringify(data, null, 2))
   let lastErr = null
   for (let i = 0; i < 4; i++) {
-    try { await fs.promises.writeFile(fp, JSON.stringify(data, null, 2), 'utf-8'); return }
+    try {
+      await gravarComBackup(fp, conteudo)
+      // Mirror da agenda vai para a subpasta "agenda/" dentro da pasta espelho —
+      // mesma convenção de subpasta que agendaFolder já usa na pasta principal,
+      // em vez de cair solto na raiz da pasta espelho (misturado com cadastros).
+      espelharArquivo('agenda/cispr15_agenda.json', conteudo).catch(() => {})
+      return
+    }
     catch (e) { lastErr = e }
   }
   throw lastErr
@@ -216,15 +370,20 @@ function listPdfsDeep(root) {
 }
 
 async function readDataFile(filename) {
-  try { return JSON.parse(await fs.promises.readFile(dataFilePath(filename), 'utf-8')) } catch { return [] }
+  return (await lerArquivoComFallback(dataFilePath(filename))) ?? []
 }
 
 async function writeDataFile(filename, data) {
   const fp = dataFilePath(filename)
   await fs.promises.mkdir(path.dirname(fp), { recursive: true })
+  const conteudo = encriptar(JSON.stringify(data, null, 2))
   let lastErr = null
   for (let i = 0; i < 4; i++) {
-    try { await fs.promises.writeFile(fp, JSON.stringify(data, null, 2), 'utf-8'); return }
+    try {
+      await gravarComBackup(fp, conteudo)
+      espelharArquivo(filename, conteudo).catch(() => {})
+      return
+    }
     catch (e) { lastErr = e }
   }
   throw lastErr
@@ -259,7 +418,6 @@ function getBackupSources() {
   }
   add('dados',         s.dataFolder,    'dir')
   add('agenda',        s.agendaFolder,  'dir')
-  add('pdfs',          s.pdfCopyFolder, 'dir')
   add('settings.json', getSettingsFile(), 'file')
   return out
 }
@@ -284,7 +442,7 @@ function listBackups(destBase) {
   } catch { return [] }
 }
 
-function pruneBackups(destBase, keep = 20) {
+function pruneBackups(destBase, keep = 4) {
   const root = backupRootDir(destBase)
   const all = listBackups(destBase)
   for (const b of all.slice(keep)) {
@@ -326,7 +484,6 @@ function restoreBackup(destBase, which) {
   const map = {
     'dados':         { to: s.dataFolder,    type: 'dir'  },
     'agenda':        { to: s.agendaFolder,  type: 'dir'  },
-    'pdfs':          { to: s.pdfCopyFolder, type: 'dir'  },
     'settings.json': { to: getSettingsFile(), type: 'file' },
   }
   const restored = []
@@ -342,7 +499,7 @@ function restoreBackup(destBase, which) {
   return { ok: true, restored, from: chosen.path, date: chosen.date }
 }
 
-/* Auto-backup ao abrir: roda no máximo 1×/dia (compara com o backup mais recente).
+/* Auto-backup ao abrir: roda no máximo 1×/semana (compara com o backup mais recente).
    Assíncrono e adiado (não bloqueia o carregamento nem a digitação). */
 async function maybeAutoBackup() {
   try {
@@ -350,7 +507,7 @@ async function maybeAutoBackup() {
     if (!s.autoBackup) return
     const all = listBackups()
     const last = all[0]?.date ? new Date(all[0].date).getTime() : 0
-    if (Date.now() - last < 20 * 3600 * 1000) return // já há backup recente (<20h)
+    if (Date.now() - last < 7 * 24 * 3600 * 1000) return // já há backup recente (<7 dias)
     await runBackup()
   } catch {}
 }
@@ -442,7 +599,9 @@ async function createWindow() {
     win.webContents.insertCSS(HIDE_CHROME_CSS).catch(() => {})
   })
 
-  win.loadFile(path.join(__dirname, 'loading.html'))
+  // Tela de "iniciando": versão divertida só no modo dev (não empacotado) —
+  // não sai no build de produção.
+  win.loadFile(path.join(__dirname, app.isPackaged ? 'loading.html' : 'loading-dev.html'))
   win.maximize()
   win.show()
 
@@ -471,7 +630,16 @@ async function createWindow() {
     catch (err) { dialog.showErrorBox('Erro ao iniciar CISPR 15', String(err)); app.quit(); return }
   }
 
-  win.loadURL('http://127.0.0.1:' + port + APP_PATH)
+  currentAppPort = port
+
+  // Pasta arrastada pro atalho no cold start → abre direto no formulário do
+  // CISPR15 (em vez do dashboard) e manda o conteúdo assim que a página carrega.
+  const folderToOpen = pendingFolderPath
+  pendingFolderPath = null
+  win.loadURL('http://127.0.0.1:' + port + (folderToOpen ? '/cispr15' : APP_PATH))
+  if (folderToOpen) {
+    win.webContents.once('did-finish-load', () => processarPastaArrastada(win, folderToOpen))
+  }
 }
 
 /* Conversão WMF/EMF→PNG agora é feita pelo bin/wmf2png.exe (autocontido),
@@ -863,15 +1031,70 @@ function setupAutoUpdater() {
   setTimeout(() => runUpdateCheck(false), 4000)
 }
 
+/* ─── abrir pasta arrastada pro atalho do app (sem dialog, sem registro do
+   Windows) — Windows chama o exe com a pasta como argumento (argv[1]) quando
+   você arrasta uma pasta pro ícone/atalho. Aqui só aceita caminho ABSOLUTO
+   (descarta '.' do modo dev "electron .") e que já exista como diretório. ─── */
+function extrairPastaDoArgv(argv) {
+  for (const a of argv.slice(1)) {
+    if (!a || a.startsWith('-') || !path.isAbsolute(a)) continue
+    try { if (fs.existsSync(a) && fs.statSync(a).isDirectory()) return a } catch {}
+  }
+  return null
+}
+
+// Lê a pasta (docx + fotos + certificado) e manda pro renderer abrir no
+// formulário — usado tanto no cold start quanto quando uma 2ª pasta é
+// arrastada com o app já aberto (evento 'second-instance').
+function processarPastaArrastada(win, folderPath) {
+  try {
+    eutFolderPath = folderPath
+    const conteudo = lerConteudoPastaEut(folderPath)
+    win.webContents.send('eut:folder-dropped', conteudo)
+  } catch (err) {
+    dialog.showErrorBox('Erro ao abrir pasta', String(err))
+  }
+}
+
+let pendingFolderPath = extrairPastaDoArgv(process.argv)
+let currentAppPort = null   // porta do server em uso nesta janela (setada em createWindow)
+
+// Só uma instância — arrastar uma 2ª pasta com o app já aberto reaproveita a
+// janela existente em vez de abrir outro processo/servidor.
+const gotSingleInstanceLock = app.requestSingleInstanceLock()
+if (!gotSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', (_event, argv) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+    const folder = extrairPastaDoArgv(argv)
+    if (!folder) return
+    // Força ir pro formulário do CISPR15 mesmo se a janela estava em outra
+    // página — é lá (e só lá) que o listener de pasta arrastada existe.
+    if (currentAppPort) {
+      win.loadURL('http://127.0.0.1:' + currentAppPort + '/cispr15')
+      win.webContents.once('did-finish-load', () => processarPastaArrastada(win, folder))
+    } else {
+      processarPastaArrastada(win, folder)
+    }
+  })
+}
+
 /* ─── ciclo de vida ───────────────────────────────────────────────────────── */
 
 app.whenReady().then(() => {
   // migra dados antigos (dentro do app) para userData, se necessário
   try { migrateDataFolders() } catch {}
-  // garante que as pastas de dados existam
-  const dp = getDefaultPaths()
-  for (const dir of [dp.dataFolder, dp.agendaFolder, dp.pdfCopyFolder, dp.updateFolder]) {
-    try { fs.mkdirSync(dir, { recursive: true }) } catch {}
+  // migra cadastros/catálogos (equipamentos, normas, etc.) para a pasta de rede padrão
+  try { migrateCadastrosParaRede() } catch {}
+  // garante que as pastas de dados existam (valores atuais, não os defaults —
+  // dataFolder/agendaFolder já vêm da pasta de rede via SETTINGS_DEFAULTS)
+  const s = readSettings()
+  for (const dir of [s.dataFolder, s.agendaFolder, s.cadastrosFolder, s.mirrorFolder, s.pdfCopyFolder, s.updateFolder]) {
+    if (dir) { try { fs.mkdirSync(dir, { recursive: true }) } catch {} }
   }
   Menu.setApplicationMenu(buildMenu())
   createWindow()
@@ -957,6 +1180,59 @@ ipcMain.handle('shell:open-path', async (_, { path: p }) => {
   catch (err) { return { ok: false, error: String(err) } }
 })
 
+/* ─── IPC: "Executar no Claude Code" (Check — gerenciador de demandas) ──────
+   Abre uma aba DE VERDADE da extensão Claude Code dentro do VSCode (a mesma
+   interface desta conversa), via o URI handler OFICIAL que a extensão
+   registra: vscode://anthropic.claude-code/open?prompt=... — documentado em
+   https://code.claude.com/docs/en/vs-code.md#launch-a-vs-code-tab-from-other-tools
+   Não depende de `claude` estar no PATH (a extensão usa uma cópia bundled
+   própria) nem de terminal nenhum — resolve o problema de "claude.cmd só
+   funciona dentro do terminal do VSCode". O prompt fica PRÉ-PREENCHIDO na
+   caixa de texto — não é enviado sozinho, o usuário aperta Enter pra mandar
+   (dá uma chance de revisar antes). Só em modo desenvolvimento. */
+ipcMain.handle('check:executar-tarefa', async (_, { prompt, titulo }) => {
+  if (app.isPackaged) return { ok: false, error: 'Disponível só em modo desenvolvimento.' }
+  try {
+    const texto = `[Demanda: ${titulo || 'Demanda'}]\n\n${String(prompt || '')}`
+    const uri = 'vscode://anthropic.claude-code/open?prompt=' + encodeURIComponent(texto)
+    await shell.openExternal(uri)
+    return { ok: true }
+  } catch (err) { return { ok: false, error: String(err) } }
+})
+
+/* ─── IPC: "Subir pro Git" (Check — botão na área de demandas) ─────────────
+   Faz `git add -A` + commit (com a mensagem digitada no modal) + `git push`
+   na raiz do repositório. Só em modo desenvolvimento — o pacote instalado
+   não tem `.git`. Usa execFile (sem shell) para não haver risco de injeção
+   pela mensagem de commit digitada pelo usuário. */
+function runGit(args, cwd) {
+  return new Promise((resolve, reject) => {
+    execFile('git', args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      if (err) { err.stdout = stdout; err.stderr = stderr; reject(err); return }
+      resolve({ stdout, stderr })
+    })
+  })
+}
+
+ipcMain.handle('check:git-push', async (_, { message } = {}) => {
+  if (app.isPackaged) return { ok: false, error: 'Disponível só em modo desenvolvimento.' }
+  const cwd = getAppRoot()
+  try {
+    const status = await runGit(['status', '--porcelain'], cwd)
+    let committed = false
+    if (status.stdout.trim()) {
+      const msg = (message && message.trim()) || `Check: atualização ${new Date().toLocaleString('pt-BR')}`
+      await runGit(['add', '-A'], cwd)
+      await runGit(['commit', '-m', msg], cwd)
+      committed = true
+    }
+    const push = await runGit(['push'], cwd)
+    return { ok: true, committed, output: (push.stdout + push.stderr).trim() }
+  } catch (err) {
+    return { ok: false, error: (err.stderr || err.stdout || err.message || String(err)).toString().trim() }
+  }
+})
+
 /* ─── IPC: extração de texto de PDF (pdf-parse, sem Python) ──────────────── */
 
 /* Layout posicionado: cada item de texto com (x,y). Usado para reconstruir
@@ -1033,9 +1309,18 @@ function ehCertLabelo(text) {
   return /LABELO/i.test(text) && (temNumero || temTitulo)
 }
 
+// É o formulário FOR 6401 (análise crítica de certificado)? Mesma regra do
+// parser TS (ehAnaliseCritica em lib/certificados/parser.ts).
+function ehAnaliseCriticaTexto(text) {
+  return !!text && (/\bFOR\s*6401\b/i.test(text) || /an[áa]lise\s+cr[íi]tica\s+de\s+certificad/i.test(text))
+}
+
 // Lê os PDFs de UMA pasta de TAG e escolhe APENAS o certificado do LABELO como
-// base. Se nenhum for LABELO, devolve o melhor candidato com o texto (a rota
-// explica o motivo → rascunho).
+// base (campo `text`). Se nenhum for LABELO, devolve o melhor candidato com o
+// texto (a rota explica o motivo → rascunho). TAMBÉM procura, entre os demais
+// PDFs da pasta, um FOR 6401 (análise crítica) e devolve o texto dele à parte
+// em `acText` — sem isso, uma pasta com certificado + FOR 6401 só devolvia o
+// texto do certificado e a periodicidade/dados do FOR 6401 nunca eram lidos.
 async function scanUmaPasta(folder, dir) {
   const pdfs = listarPdfs(dir).sort((a, b) => {
     const ca = /certificado/i.test(path.basename(a)) ? 0 : 1
@@ -1043,15 +1328,18 @@ async function scanUmaPasta(folder, dir) {
     return ca - cb
   })
   if (!pdfs.length) return { folder, certPath: null, error: 'Sem PDF na pasta' }
-  let escolhido = null, fallback = null
+  let escolhido = null, fallback = null, acText = null
   for (const pdf of pdfs) {
     try {
       const { items, text } = await pdfTextLayout(fs.readFileSync(pdf))
       if (!fallback) fallback = { folder, certPath: pdf, text, items }
-      if (ehCertLabelo(text)) { escolhido = { folder, certPath: pdf, text, items }; break }
+      if (!escolhido && ehCertLabelo(text)) escolhido = { folder, certPath: pdf, text, items }
+      if (!acText && ehAnaliseCriticaTexto(text)) acText = text
+      if (escolhido && acText) break   // achou os dois — não precisa ler o resto
     } catch {}
   }
-  return escolhido || fallback || { folder, certPath: pdfs[0], error: 'Falha ao ler os PDFs da pasta' }
+  const base = escolhido || fallback || { folder, certPath: pdfs[0], error: 'Falha ao ler os PDFs da pasta' }
+  return acText && acText !== base.text ? { ...base, acText } : base
 }
 
 // Lista só os NOMES das subpastas (rápido) — para processar em lotes.
@@ -1313,6 +1601,218 @@ ipcMain.handle('data:save-agenda', async (_, { agenda }) => {
   catch (err) { return { ok: false, error: String(err) } }
 })
 
+// Acha, dentro de baseDir, a subpasta cujo nome contém o protocolo (ex.: pasta
+// "0887 - Cliente X" casa com protocolo "0887"). Não exige nome exato porque
+// a pasta da Iluminação costuma ter texto extra no nome.
+function acharPastaProtocolo(baseDir, protocolo) {
+  try {
+    const alvo = protocolo.trim().toLowerCase()
+    if (!alvo) return null
+    const entrada = fs.readdirSync(baseDir, { withFileTypes: true })
+      .find(e => e.isDirectory() && e.name.toLowerCase().includes(alvo))
+    return entrada ? path.join(baseDir, entrada.name) : null
+  } catch { return null }
+}
+
+// Dentro da pasta do protocolo, acha uma subpasta chamada "fotos" (qualquer
+// capitalização). Se não achar, a própria pasta do protocolo é usada como
+// origem (só as imagens da raiz, ignorando outros arquivos).
+function acharSubpastaFotos(protocoloDir) {
+  try {
+    const entrada = fs.readdirSync(protocoloDir, { withFileTypes: true })
+      .find(e => e.isDirectory() && e.name.toLowerCase() === 'fotos')
+    return entrada ? path.join(protocoloDir, entrada.name) : null
+  } catch { return null }
+}
+
+async function copiarFotosDir(origemDir, destinoDir, apenasImagens) {
+  await fs.promises.mkdir(destinoDir, { recursive: true })
+  const entradas = await fs.promises.readdir(origemDir, { withFileTypes: true })
+  let copiados = 0
+  for (const e of entradas) {
+    if (!e.isFile()) continue
+    if (apenasImagens && !IMG_EXTENSOES.has(path.extname(e.name).toLowerCase())) continue
+    await fs.promises.copyFile(path.join(origemDir, e.name), path.join(destinoDir, e.name))
+    copiados++
+  }
+  return copiados
+}
+
+// Varre a agenda, casa cada protocolo com a pasta correspondente na rede da
+// Iluminação (por tipo lâmpada/luminária, na pasta do ano atual) e copia as
+// fotos pra nossa rede (Alta Tecnologia), criando <protocolo>\fotos. Best-
+// effort por item — um protocolo sem pasta/foto não impede os demais.
+ipcMain.handle('agenda:importar-fotos-rede', async () => {
+  try {
+    const agenda = await readAgendaFile()
+    const ano = String(new Date().getFullYear())
+    const resultado = { processados: 0, copiados: 0, semPasta: [], semFotos: [], erros: [] }
+    const vistos = new Set()
+    for (const item of agenda) {
+      const protocolo = String(item.protocolo || '').trim()
+      if (!protocolo || vistos.has(protocolo)) continue
+      vistos.add(protocolo)
+      resultado.processados++
+
+      const baseOrigem = path.join(
+        item.tipo === 'luminaria' ? ILUMINACAO_LUMINARIA_BASE : ILUMINACAO_LAMPADA_BASE,
+        ano,
+      )
+      const pastaProtocolo = acharPastaProtocolo(baseOrigem, protocolo)
+      if (!pastaProtocolo) { resultado.semPasta.push(protocolo); continue }
+
+      const pastaFotos    = acharSubpastaFotos(pastaProtocolo)
+      const origemFotos   = pastaFotos || pastaProtocolo
+      const apenasImagens = !pastaFotos
+      const destino       = path.join(FOTOS_DESTINO_BASE, ano, protocolo, 'fotos')
+
+      try {
+        const n = await copiarFotosDir(origemFotos, destino, apenasImagens)
+        if (n > 0) resultado.copiados++
+        else resultado.semFotos.push(protocolo)
+      } catch (err) {
+        resultado.erros.push(`${protocolo}: ${err.message}`)
+      }
+    }
+    return { ok: true, ...resultado }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
+})
+
+// Move (corta) um arquivo pra outro caminho; se a origem/destino estiverem em
+// volumes diferentes (rede vs local), rename falha com EXDEV — nesse caso
+// copia e apaga o original, simulando o mesmo efeito de "recortar".
+async function moverArquivo(src, dest) {
+  try {
+    await fs.promises.rename(src, dest)
+  } catch (err) {
+    if (err.code !== 'EXDEV') throw err
+    await fs.promises.copyFile(src, dest)
+    await fs.promises.unlink(src)
+  }
+}
+
+// Lista, recursivamente, o caminho completo de todo arquivo sob `dir` (em
+// qualquer profundidade) — permite escolher a pasta-mãe (que contém várias
+// subpastas, do jeito que estiverem organizadas) em vez de exigir que os
+// arquivos já estejam soltos numa única pasta.
+function listarArquivosRecursivo(dir) {
+  const out = []
+  let entradas
+  try { entradas = fs.readdirSync(dir, { withFileTypes: true }) } catch { return out }
+  for (const e of entradas) {
+    const full = path.join(dir, e.name)
+    if (e.isDirectory()) out.push(...listarArquivosRecursivo(full))
+    else if (e.isFile()) out.push(full)
+  }
+  return out
+}
+
+// Pede pro usuário escolher a pasta-mãe com os resultados (pode ter subpastas
+// em qualquer organização) e move cada .docx achado (em qualquer profundidade)
+// pra pasta do protocolo correspondente (já criada em FOTOS_DESTINO_BASE —
+// mesma pasta usada pelo "Importar Fotos"). Casa pelo nome do ARQUIVO conter
+// o número do protocolo (não pelo nome da subpasta); entre protocolos
+// candidatos, prefere o mais específico (nome mais longo), pra "88" não
+// roubar um arquivo que é do protocolo "0887".
+ipcMain.handle('agenda:organizar-resultados', async () => {
+  const win = BrowserWindow.getFocusedWindow()
+  const escolha = await dialog.showOpenDialog(win, {
+    title: 'Selecionar a pasta-mãe com os resultados (.docx)',
+    properties: ['openDirectory'],
+  })
+  if (escolha.canceled || !escolha.filePaths.length) return { ok: false, canceled: true }
+  const origemDir = escolha.filePaths[0]
+  const ano = String(new Date().getFullYear())
+  const destBaseAno = path.join(FOTOS_DESTINO_BASE, ano)
+
+  let protocolos
+  try {
+    protocolos = fs.readdirSync(destBaseAno, { withFileTypes: true })
+      .filter(e => e.isDirectory())
+      .map(e => e.name)
+      .sort((a, b) => b.length - a.length)
+  } catch (err) {
+    return { ok: false, error: 'Não consegui ler a pasta de destino (' + destBaseAno + '): ' + err.message }
+  }
+
+  const arquivos = listarArquivosRecursivo(origemDir)
+    .filter(f => f.toLowerCase().endsWith('.docx') && !path.basename(f).startsWith('~'))
+
+  const resultado = { total: arquivos.length, movidos: 0, semPasta: [], erros: [] }
+  for (const caminho of arquivos) {
+    const nome = path.basename(caminho)
+    const alvo = nome.toLowerCase()
+    const protocolo = protocolos.find(p => alvo.includes(p.toLowerCase()))
+    if (!protocolo) { resultado.semPasta.push(nome); continue }
+    try {
+      const destDir = path.join(destBaseAno, protocolo)
+      await fs.promises.mkdir(destDir, { recursive: true })
+      await moverArquivo(caminho, path.join(destDir, nome))
+      resultado.movidos++
+    } catch (err) {
+      resultado.erros.push(`${nome}: ${err.message}`)
+    }
+  }
+  return { ok: true, ...resultado }
+})
+
+// Pede uma pasta-mãe (ex.: a pasta do ano em "3.2 - Registros de ensaios") e,
+// pra cada protocolo informado, acha a subpasta correspondente, lê as fotos
+// (de "fotos/" ou da raiz) e o .docx (da raiz) e devolve tudo já em base64 —
+// tudo lido aqui no processo principal (Node puro), bem mais rápido/confiável
+// em pasta de rede grande do que o <input type="file" webkitdirectory> do
+// navegador, que precisa enumerar a árvore inteira antes de disparar o onChange.
+ipcMain.handle('lote:importar-pasta-mae', async (_, { protocolos }) => {
+  const win = BrowserWindow.getFocusedWindow()
+  const escolha = await dialog.showOpenDialog(win, {
+    title: 'Selecionar a pasta-mãe (ex.: pasta do ano)',
+    properties: ['openDirectory'],
+  })
+  if (escolha.canceled || !escolha.filePaths.length) return { ok: false, canceled: true }
+  const baseDir = escolha.filePaths[0]
+
+  const resultados = {}
+  const naoEncontrados = []
+  for (const protocolo of protocolos || []) {
+    const proto = String(protocolo || '').trim()
+    if (!proto) continue
+    const pastaProtocolo = acharPastaProtocolo(baseDir, proto)
+    if (!pastaProtocolo) { naoEncontrados.push(proto); continue }
+
+    const pastaFotos  = acharSubpastaFotos(pastaProtocolo)
+    const origemFotos = pastaFotos || pastaProtocolo
+
+    let photos = []
+    try {
+      const entradas = await fs.promises.readdir(origemFotos, { withFileTypes: true })
+      for (const e of entradas) {
+        if (!e.isFile() || !IMG_EXTENSOES.has(path.extname(e.name).toLowerCase())) continue
+        try {
+          const buf = await fs.promises.readFile(path.join(origemFotos, e.name))
+          photos.push({ name: e.name, base64: buf.toString('base64') })
+        } catch {}
+      }
+    } catch {}
+
+    let docx = null
+    try {
+      const entradas = await fs.promises.readdir(pastaProtocolo, { withFileTypes: true })
+      const arquivoDocx = entradas.find(e => e.isFile() && e.name.toLowerCase().endsWith('.docx') && !e.name.startsWith('~'))
+      if (arquivoDocx) {
+        const buf = await fs.promises.readFile(path.join(pastaProtocolo, arquivoDocx.name))
+        docx = { name: arquivoDocx.name, base64: buf.toString('base64') }
+      }
+    } catch {}
+
+    if (photos.length === 0 && !docx) { naoEncontrados.push(proto); continue }
+    resultados[proto] = { photos, docx }
+  }
+
+  return { ok: true, resultados, naoEncontrados }
+})
+
 /* ─── lote em andamento (arquivo local — não depende da cota do localStorage,
    por isso datas e fotos sobrevivem à navegação entre telas) ──────────────── */
 function loteFilePath() {
@@ -1342,6 +1842,44 @@ ipcMain.handle('lote:clear', async () => {
     await fs.promises.rm(loteFilePath(), { force: true })
     return { ok: true }
   } catch (err) { return { ok: false, error: String(err) } }
+})
+
+/* ─── lotes em andamento (coleção, na pasta de rede — dataFolder) ────────────
+   Substitui o arquivo local único acima: agora ficam na mesma pasta de rede
+   de clientes/relatórios (já com criptografia + espelho automáticos), como
+   uma coleção — permite mais de um lote em andamento ao mesmo tempo, cada um
+   identificado pelo orçamento, e visível em qualquer PC configurado com a
+   mesma pasta de rede. */
+ipcMain.handle('data:get-lotes', async () => {
+  try {
+    let lotes = await readDataFile('cispr15_lotes.json')
+    if (!Array.isArray(lotes)) lotes = []
+
+    // Migração única do lote antigo (armazenamento local, um só por vez) —
+    // preserva o trabalho em andamento na primeira vez que isso rodar.
+    try {
+      const legacyPath = loteFilePath()
+      const legacy = JSON.parse(await fs.promises.readFile(legacyPath, 'utf-8'))
+      if (legacy && Array.isArray(legacy.amostras) && legacy.amostras.length > 0) {
+        const id = legacy.id || crypto.randomUUID()
+        if (!lotes.some(l => l.id === id)) {
+          const migrado = { orcamento: legacy.amostras[0]?.orcamento || '', ...legacy, id }
+          lotes = [...lotes, migrado]
+          await writeDataFile('cispr15_lotes.json', lotes)
+        }
+        await fs.promises.rename(legacyPath, legacyPath + '.migrado')
+      }
+    } catch {}
+
+    return { ok: true, lotes }
+  } catch (err) {
+    return { ok: false, error: String(err), lotes: [] }
+  }
+})
+
+ipcMain.handle('data:save-lotes', async (_, { lotes }) => {
+  try { await writeDataFile('cispr15_lotes.json', lotes); return { ok: true } }
+  catch (err) { return { ok: false, error: String(err) } }
 })
 
 /* Grava o PDF (+ DOCX + fotos) de uma amostra na subpasta do protocolo,
@@ -1427,7 +1965,7 @@ ipcMain.handle('pdf:save', async (_, { filename }) => {
   } catch (err) { return { ok: false, error: String(err) } }
 })
 
-ipcMain.handle('pdf:save-eut', async (_, { filename, folderPath }) => {
+ipcMain.handle('pdf:save-eut', async (_, { filename, folderPath, force }) => {
   const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   if (!win) return { ok: false, error: 'sem janela' }
   try {
@@ -1443,15 +1981,23 @@ ipcMain.handle('pdf:save-eut', async (_, { filename, folderPath }) => {
       }
     }
     const outPath = path.join(outDir, (filename || 'relatorio.pdf').replace(/[\\/:"*?<>|]/g, '_'))
-    // Se já existe, apenas abre a pasta sem regerar
-    if (fs.existsSync(outPath)) {
+    // Se já existe, apenas abre a pasta sem regerar — a menos que "force" (ex.:
+    // reimprimir com o carimbo de assinatura já posicionado, antes de assinar).
+    if (fs.existsSync(outPath) && !force) {
       shell.showItemInFolder(outPath)
       return { ok: true, filePath: outPath, skipped: true, usedDocuments }
     }
     try { await win.webContents.executeJavaScript(`new Promise(function(r){ var imgs=[].slice.call(document.images); var pend=imgs.filter(function(i){return !i.complete}); function go(){ var f=(document.fonts&&document.fonts.ready)?document.fonts.ready:Promise.resolve(); f.then(function(){ requestAnimationFrame(function(){ requestAnimationFrame(function(){ setTimeout(r,150) }) }) }) } if(pend.length===0){go();return} var n=0,t=setTimeout(go,8000); function chk(){ if(++n>=pend.length){clearTimeout(t);go()} } pend.forEach(function(i){ i.addEventListener("load",chk); i.addEventListener("error",chk) }) })`) } catch (e) {}
     const data = await win.webContents.printToPDF(PDF_PRINT_OPTS)
-    await writeWithRetry(outPath, data)
-    shell.showItemInFolder(outPath)
+    try {
+      await writeWithRetry(outPath, data)
+    } catch (err) {
+      if (err && (err.code === 'EBUSY' || err.code === 'EPERM')) {
+        return { ok: false, error: `O arquivo PDF está aberto em outro programa (leitor de PDF, Explorer, etc.):\n${outPath}\n\nFeche-o e tente novamente.` }
+      }
+      throw err
+    }
+    if (!force) shell.showItemInFolder(outPath) // regeração pra assinar: não abre o Explorer, é um passo interno
     return { ok: true, filePath: outPath, usedDocuments }
   } catch (err) { return { ok: false, error: String(err) } }
 })
@@ -1525,6 +2071,37 @@ ipcMain.handle('pdf:publish', async (_, { eutFolderPath: eutPath, pdfFilename, a
     fs.mkdirSync(destDir, { recursive: true })
     const dest = path.join(destDir, pdfFilename)
     fs.copyFileSync(src, dest)
+    return { ok: true, dest }
+  } catch (err) { return { ok: false, error: String(err) } }
+})
+
+// Pasta fixa de cópia dos relatórios CISPR 15 (LABELO) — mesma pasta em todos
+// os PCs, sem depender da "Pasta de destino" configurável em Configurações
+// (essa é usada só pelo fluxo de assinatura/publicação acima).
+const RELATORIOS_COPIA_FOLDER = 'T:\\Relatórios\\Compatibilidade eletromagnética'
+
+// Botão "Enviar cópia" da aba Relatórios: manda o PDF mais recente da pasta da
+// EUT pra pasta fixa acima, organizada por ano (uma subpasta "2026", "2027" etc.
+// — a pasta-mãe já existe na rede, só a subpasta do ano pode não existir ainda).
+// Não presume o nome do arquivo — se a pasta tiver mais de um PDF (ex.: revisão,
+// versão assinada à parte), pega o de modificação mais recente.
+ipcMain.handle('pdf:send-copy', async (_, { eutFolderPath: eutPath, ano }) => {
+  if (!eutPath) return { ok: false, error: 'Pasta EUT não associada — carregue a pasta da EUT primeiro.' }
+  if (!fs.existsSync(eutPath)) return { ok: false, error: `Pasta não encontrada:\n${eutPath}` }
+  if (!fs.existsSync(RELATORIOS_COPIA_FOLDER)) return { ok: false, error: `Pasta de destino não encontrada:\n${RELATORIOS_COPIA_FOLDER}` }
+  try {
+    const pdfs = fs.readdirSync(eutPath, { withFileTypes: true })
+      .filter(e => e.isFile() && /\.pdf$/i.test(e.name))
+      .map(e => path.join(eutPath, e.name))
+    if (!pdfs.length) return { ok: false, error: 'Nenhum PDF encontrado na pasta da EUT.' }
+    const maisRecente = pdfs
+      .map(p => ({ p, mtime: fs.statSync(p).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime)[0].p
+    const anoStr = ano ? String(ano).replace(/\D/g, '').slice(0, 4) : ''
+    const destDir = anoStr ? path.join(RELATORIOS_COPIA_FOLDER, anoStr) : RELATORIOS_COPIA_FOLDER
+    fs.mkdirSync(destDir, { recursive: true })
+    const dest = path.join(destDir, path.basename(maisRecente))
+    fs.copyFileSync(maisRecente, dest)
     return { ok: true, dest }
   } catch (err) { return { ok: false, error: String(err) } }
 })
@@ -1679,16 +2256,10 @@ ipcMain.handle('docx:parse', async (_, { buffer }) => {
 
 const IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.bmp', '.gif', '.webp', '.tif', '.tiff'])
 
-ipcMain.handle('eut:open-folder', async () => {
-  const win = BrowserWindow.getFocusedWindow()
-  const { filePaths, canceled } = await dialog.showOpenDialog(win, {
-    title: 'Selecionar pasta da EUT (protocolo)',
-    properties: ['openDirectory'],
-  })
-  if (canceled || !filePaths.length) return { canceled: true }
-
-  const folderPath = filePaths[0]
-  eutFolderPath = folderPath
+// Lê o .docx e as fotos de uma pasta da EUT já resolvida (por diálogo manual ou
+// por match automático de protocolo — ver eut:find-by-protocolo). Compartilhada
+// pelos dois fluxos pra não duplicar a leitura.
+function lerConteudoPastaEut(folderPath) {
   const entries = fs.readdirSync(folderPath)
 
   let docxName = null, docxBuffer = null
@@ -1725,7 +2296,53 @@ ipcMain.handle('eut:open-folder', async () => {
     base64: fs.readFileSync(filePath).toString('base64'),
   }))
 
-  return { ok: true, folderPath, folderName: path.basename(folderPath), docxName, docxBuffer, images }
+  // "Certificado" da pasta — o PDF que fica junto do docx/fotos (não presume
+  // nome; se tiver mais de um PDF na raiz, pega o de modificação mais recente,
+  // mesmo critério do botão "Enviar cópia").
+  let certPath = null, certName = null
+  try {
+    const pdfs = entries
+      .filter(f => /\.pdf$/i.test(f))
+      .map(f => path.join(folderPath, f))
+      .filter(p => { try { return fs.statSync(p).isFile() } catch { return false } })
+    if (pdfs.length) {
+      certPath = pdfs.map(p => ({ p, mtime: fs.statSync(p).mtimeMs })).sort((a, b) => b.mtime - a.mtime)[0].p
+      certName = path.basename(certPath)
+    }
+  } catch {}
+
+  return { folderPath, folderName: path.basename(folderPath), docxName, docxBuffer, images, certPath, certName }
+}
+
+ipcMain.handle('eut:open-folder', async () => {
+  const win = BrowserWindow.getFocusedWindow()
+  const { filePaths, canceled } = await dialog.showOpenDialog(win, {
+    title: 'Selecionar pasta da EUT (protocolo)',
+    properties: ['openDirectory'],
+  })
+  if (canceled || !filePaths.length) return { canceled: true }
+
+  const folderPath = filePaths[0]
+  eutFolderPath = folderPath
+  return { ok: true, ...lerConteudoPastaEut(folderPath) }
+})
+
+// Acha automaticamente a pasta da EUT pelo protocolo — mesma convenção usada
+// em toda a rede: T:\...\3.2 - Registros de ensaios\<ano>\<pasta com o nome
+// do protocolo>. Usado ao carregar um relatório salvo, pra não depender de
+// abrir a pasta manualmente toda vez (ver FOTOS_DESTINO_BASE).
+ipcMain.handle('eut:find-by-protocolo', async (_, { protocolo, ano }) => {
+  const proto = String(protocolo || '').trim()
+  const anoStr = String(ano || '').replace(/\D/g, '').slice(0, 4)
+  if (!proto || !anoStr) return { ok: false, error: 'Protocolo ou ano ausente.' }
+  const baseDir = path.join(FOTOS_DESTINO_BASE, anoStr)
+  if (!fs.existsSync(baseDir)) return { ok: false, error: `Pasta do ano não encontrada:\n${baseDir}` }
+  const folderPath = acharPastaProtocolo(baseDir, proto)
+  if (!folderPath) return { ok: false, error: `Nenhuma pasta com o protocolo "${proto}" em:\n${baseDir}` }
+  try {
+    eutFolderPath = folderPath
+    return { ok: true, ...lerConteudoPastaEut(folderPath) }
+  } catch (err) { return { ok: false, error: String(err) } }
 })
 
 ipcMain.handle('eut:get-folder',   () => ({ folderPath: eutFolderPath }))

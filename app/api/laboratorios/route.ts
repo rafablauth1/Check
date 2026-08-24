@@ -5,7 +5,7 @@ import { lerLaboratorios, salvarLaboratorios, type LaboratorioCal } from '@/lib/
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  return NextResponse.json(lerLaboratorios())
+  return NextResponse.json(await lerLaboratorios())
 }
 
 export async function PUT(req: NextRequest) {
@@ -24,8 +24,10 @@ export async function PUT(req: NextRequest) {
         modelo: l.modelo?.trim() || undefined,
         campos: limparCampos(l.campos),   // preserva o MODELO DE EXTRAÇÃO por lab
       }))
-      .filter(l => l.cal)
-    salvarLaboratorios(limpo)
+      // mantém labs sem CAL (Alutal, Keysight, Inmetro… não têm acreditação Cgcre e
+      // são identificados só pelo nome) — só descarta linha totalmente vazia.
+      .filter(l => l.cal || l.nome)
+    await salvarLaboratorios(limpo)
     return NextResponse.json(limpo)
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

@@ -302,6 +302,10 @@ export default function EquipamentoDetalhePage() {
 
   if (!equip) return <div className="flex items-center justify-center py-20 text-white/25 text-sm">Carregando...</div>
 
+  // Certificado mais recente COM pdf anexado (pra abrir direto do cabeçalho).
+  const ultimoCertPdf = [...certificados].filter(c=>c.pdfPath)
+    .sort((a,b)=>(b.dataEmissao||'').localeCompare(a.dataEmissao||''))[0]
+
   const TABS: { id: Tab; label: string; badge?: number }[] = [
     { id:'info',         label:'Dados gerais' },
     { id:'grandezas',    label:'Grandezas', badge: equip.grandezas.length },
@@ -323,6 +327,13 @@ export default function EquipamentoDetalhePage() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          {ultimoCertPdf && (
+            <button type="button" title={ultimoCertPdf.pdfNome ? `Abrir ${ultimoCertPdf.pdfNome}` : ultimoCertPdf.pdfPath}
+              onClick={async()=>{ const api=(window as any).electronAPI; if(!api?.openPath){alert('Disponível apenas no aplicativo.');return} const r=await api.openPath(ultimoCertPdf.pdfPath); if(r && r.ok===false) alert('Não foi possível abrir:\n'+ultimoCertPdf.pdfPath) }}
+              className="btn-secondary flex items-center gap-2 text-sm">
+              <FileText size={13}/> Ver PDF
+            </button>
+          )}
           <button type="button" onClick={()=>router.push(`/equipamentos/novo?edit=${equip.id}`)}
             className="btn-secondary flex items-center gap-2 text-sm">
             <Save size={13}/> Editar

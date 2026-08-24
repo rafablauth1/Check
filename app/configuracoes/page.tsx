@@ -116,6 +116,13 @@ export default function ConfiguracoesPage() {
     if (!res.canceled) setSettings(s => ({ ...s, dataFolder: res.folderPath }))
   }
 
+  async function browseCadastrosFolder() {
+    const api = (window as any).electronAPI
+    if (!api) return
+    const res = await api.browseFolder('Selecionar pasta de cadastros e catálogos (rede)')
+    if (!res.canceled) setSettings(s => ({ ...s, cadastrosFolder: res.folderPath }))
+  }
+
   async function browseAgendaFolder() {
     const api = (window as any).electronAPI
     if (!api) return
@@ -142,6 +149,13 @@ export default function ConfiguracoesPage() {
     if (!api) return
     const res = await api.browseFolder('Selecionar diretório de backup do banco de dados')
     if (!res.canceled) setSettings(s => ({ ...s, backupFolder: res.folderPath }))
+  }
+
+  async function browseMirrorFolder() {
+    const api = (window as any).electronAPI
+    if (!api) return
+    const res = await api.browseFolder('Selecionar pasta espelho (cópia automática dos dados)')
+    if (!res.canceled) setSettings(s => ({ ...s, mirrorFolder: res.folderPath }))
   }
 
   async function loadBackups() {
@@ -335,6 +349,33 @@ export default function ConfiguracoesPage() {
           </div>
         </Section>
 
+        {/* Pasta de Cadastros e Catálogos */}
+        <Section title="Pasta de Cadastros e Catálogos">
+          <div className="space-y-2">
+            <Label>Pasta de rede (equipamentos, normas, certificados e afins)</Label>
+            <div className="flex gap-2">
+              <input
+                className="input flex-1 text-sm font-mono"
+                value={settings.cadastrosFolder}
+                onChange={e => setSettings(s => ({ ...s, cadastrosFolder: e.target.value }))}
+                placeholder="Ex: T:\Laboratórios\...\CISPR15\dados-app"
+              />
+              {isElectron && (
+                <button type="button" onClick={browseCadastrosFolder}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 transition-all text-xs shrink-0">
+                  <FolderOpen size={13} /> Procurar
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-white/25 font-mono">
+              Pasta onde ficam equipamentos, grupos, normas, procedimentos, certificados,
+              laboratórios, planos de calibração, áreas &amp; siglas, glossário, demandas e checagens.
+              Já vem apontando para a pasta de rede do laboratório — todos os PCs enxergam os mesmos
+              cadastros sem precisar configurar nada. Separada da pasta de clientes/relatórios acima.
+            </p>
+          </div>
+        </Section>
+
         {/* Pasta da Agenda */}
         <Section title="Pasta da Agenda de Execução">
           <div className="space-y-2">
@@ -366,6 +407,35 @@ export default function ConfiguracoesPage() {
               <span className="ml-auto shrink-0 text-[9px] text-white/25 font-mono uppercase tracking-widest">local</span>
             </div>
           )}
+        </Section>
+
+        {/* Pasta espelho */}
+        <Section title="Pasta Espelho (cópia automática dos dados)">
+          <div className="space-y-2">
+            <Label>Pasta secundária <span className="normal-case text-white/20">(opcional)</span></Label>
+            <div className="flex gap-2">
+              <input
+                className="input flex-1 text-sm font-mono"
+                value={settings.mirrorFolder ?? ''}
+                onChange={e => setSettings(s => ({ ...s, mirrorFolder: e.target.value }))}
+                placeholder="Ex: \\servidor\projetos\CISPR15\copia"
+              />
+              {isElectron && (
+                <button type="button" onClick={browseMirrorFolder}
+                  className="flex items-center gap-1.5 px-3 py-2 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 transition-all text-xs shrink-0">
+                  <FolderOpen size={13} /> Procurar
+                </button>
+              )}
+            </div>
+            <p className="text-[10px] text-white/25 font-mono">
+              Se preenchida, toda vez que este PC salvar qualquer dado (cadastros, agenda,
+              relatórios ou clientes), uma cópia é gravada automaticamente aqui também — além da
+              pasta principal configurada acima. Útil quando este PC só tem permissão de escrita
+              numa das duas pastas de rede, mas os dois locais precisam ficar sincronizados. A
+              gravação na pasta espelho é best-effort: se falhar (sem permissão, rede fora do ar),
+              o salvamento principal não é afetado.
+            </p>
+          </div>
         </Section>
 
         {/* Pasta de cópias de PDF */}

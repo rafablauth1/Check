@@ -6,7 +6,7 @@ import {
   Lightbulb, Lamp, ArrowRight, Upload, X, Loader2,
   Trash2, CheckCircle2, FileText, FolderOpen, Users, Database, History,
   BookOpen, AlertTriangle, Lock, Settings, ScanText, RefreshCw, Plus, ChevronDown, Search,
-  Shield, ShieldCheck, ShieldX,
+  Shield, ShieldCheck, ShieldX, RotateCw,
 } from 'lucide-react'
 import { cn, normWatts } from '@/lib/utils'
 import {
@@ -15,15 +15,17 @@ import {
   CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, LOTE_KEY, CLIENTES_KEY,
   RELATORIOS_KEY, RELATORIO_DOCX_PFX, EMENDA_DRAFT_KEY, LOCKED_KEY, formatEmendaNumero,
   AGENDA_KEY, SETTINGS_KEY, SESSION_KEY, AUTH_KEY,
-  newAmostra, docxTemFail,
+  newAmostra, docxTemFail, tensaoDeclaradaExcedeEnsaio, TENSAO_CONFIG_MAX,
+  getTensoes, validarSecoesRadimation, extrairTensaoMaxima, docxTensoesTestadas,
 } from './types'
 import { ClientesTab }     from './ClientesTab'
 import { RelatoriosTab }   from './RelatoriosTab'
 import { EmendasTab }      from './EmendasTab'
 import { iniciarMarcador, iniciarMarcadorSeAusente } from '@/lib/tempos'
+import { loadPhotos, savePhotos, clearPhotos } from '@/lib/cispr15/photo-store'
 
 /* ─── helpers ─────────────────────────────────────────────────────────────── */
-async function resizeToBase64(file: File, maxW = 1024): Promise<{ base64: string; url: string }> {
+async function resizeToBase64(file: File, maxW = 800): Promise<{ base64: string; url: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const obj = URL.createObjectURL(file)
@@ -33,13 +35,40 @@ async function resizeToBase64(file: File, maxW = 1024): Promise<{ base64: string
       canvas.width  = Math.round(img.width  * r)
       canvas.height = Math.round(img.height * r)
       canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
-      const base64 = canvas.toDataURL('image/jpeg', 0.82).split(',')[1]
+      const base64 = canvas.toDataURL('image/jpeg', 0.75).split(',')[1]
       URL.revokeObjectURL(obj)
       resolve({ base64, url: `data:image/jpeg;base64,${base64}` })
     }
     img.onerror = reject
     img.src = obj
   })
+}
+
+// Gira uma foto (já em base64) 90° no sentido horário, redesenhando num canvas
+// com largura/altura trocadas — usado no botão de girar das miniaturas.
+async function rotarFotoBase64(base64: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width  = img.height
+      canvas.height = img.width
+      const ctx = canvas.getContext('2d')!
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate(Math.PI / 2)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+      resolve(canvas.toDataURL('image/jpeg', 0.92).split(',')[1])
+    }
+    img.onerror = reject
+    img.src = `data:image/jpeg;base64,${base64}`
+  })
+}
+
+function moverItem<T>(arr: T[], from: number, to: number): T[] {
+  const copy = [...arr]
+  const [item] = copy.splice(from, 1)
+  copy.splice(to, 0, item)
+  return copy
 }
 
 
@@ -70,6 +99,7 @@ export default function Cispr15ConfigPage() {
   const router = useRouter()
   const [cfg,    setCfg]    = useState<Cispr15Config>(DEFAULTS)
   const [photos, setPhotos] = useState<Photo[]>([])
+  const [dragPhoto, setDragPhoto] = useState<number | null>(null)
   const [docx,   setDocx]   = useState<VoltData>({ loading: false, html: null, filename: null })
   const [confResult, setConfResult] = useState<'conforme' | 'reprovado' | null>(null)
   const [flash,        setFlash]       = useState<string | null>(null)
@@ -96,6 +126,7 @@ export default function Cispr15ConfigPage() {
   const [relatoriosList, setRelatoriosList] = useState<RelatorioSalvo[]>([])
   const [isElectron,   setIsElectron]  = useState(false)
   const [eutFolder,    setEutFolder]   = useState<string | null>(null)
+  const [certificadoPdf, setCertificadoPdf] = useState<{ path: string; nome: string } | null>(null)
   const [analisando,    setAnalisando]   = useState(false)
   const [aiSugestao,    setAiSugestao]  = useState<AiSugestao | null>(null)
   const [ocrTexto,      setOcrTexto]    = useState<string | null>(null)
@@ -107,11 +138,14 @@ export default function Cispr15ConfigPage() {
   const pastaRef  = useRef<HTMLInputElement>(null)
   const cfgLoaded = useRef(false)
   const trocarRefs = useRef<(HTMLInputElement | null)[]>([])
+  const lockedRef = useRef(false)   // leitura fresca dentro do listener de pasta arrastada (registrado 1x)
 
   useEffect(() => {
     photoRef.current?.setAttribute('webkitdirectory', '')
     pastaRef.current?.setAttribute('webkitdirectory', '')
   }, [])
+
+  useEffect(() => { lockedRef.current = locked }, [locked])
 
   useEffect(() => {
     const check = (e: KeyboardEvent) => setCapsLock(e.getModifierState('CapsLock'))
@@ -123,30 +157,42 @@ export default function Cispr15ConfigPage() {
   useEffect(() => {
     // Marca abertura do formulário de emissão (métrica de tempo até gerar o PDF)
     iniciarMarcadorSeAusente('emissao')
-    // Detecta lote em andamento (amostras ainda não emitidas)
-    try {
-      const raw = localStorage.getItem(LOTE_KEY)
-      const lote = raw ? JSON.parse(raw) : null
-      setLoteAtivo(Array.isArray(lote?.amostras) ? lote.amostras.filter((a: any) => !a?.numRelatorio).length : 0)
-    } catch { setLoteAtivo(0) }
+    // Detecta lote(s) em andamento (amostras ainda não emitidas, somando todos
+    // os lotes da coleção — pode haver mais de um em andamento agora).
+    async function detectarLoteAtivo() {
+      const api = (window as any).electronAPI
+      if (api?.getLotes) {
+        try {
+          const res = await api.getLotes()
+          if (res?.ok && Array.isArray(res.lotes)) {
+            const total = res.lotes.reduce((soma: number, l: any) =>
+              soma + (Array.isArray(l.amostras) ? l.amostras.filter((a: any) => !a?.numRelatorio).length : 0), 0)
+            setLoteAtivo(total)
+            return
+          }
+        } catch {}
+      }
+      try {
+        const raw = localStorage.getItem(LOTE_KEY)
+        const lote = raw ? JSON.parse(raw) : null
+        setLoteAtivo(Array.isArray(lote?.amostras) ? lote.amostras.filter((a: any) => !a?.numRelatorio).length : 0)
+      } catch { setLoteAtivo(0) }
+    }
+    detectarLoteAtivo()
     // Sessão nova: limpa o formulário ao reiniciar o app
     const isFresh = !sessionStorage.getItem(SESSION_KEY)
     if (isFresh) {
       sessionStorage.setItem(SESSION_KEY, '1')
-      ;[CFG_KEY, PHOTOS_KEY, LOCKED_KEY].forEach(k => localStorage.removeItem(k))
+      ;[CFG_KEY, LOCKED_KEY].forEach(k => localStorage.removeItem(k)); void clearPhotos(PHOTOS_KEY)
       ;[DOCX_HTML_KEY, DOCX_NAME_KEY].forEach(k => sessionStorage.removeItem(k))
     } else {
       try {
         const raw = localStorage.getItem(CFG_KEY)
         if (raw) setCfg({ ...DEFAULTS, ...JSON.parse(raw) })
       } catch {}
-      try {
-        const rawP = localStorage.getItem(PHOTOS_KEY)
-        if (rawP) {
-          const arr: { name: string; base64: string }[] = JSON.parse(rawP)
-          setPhotos(arr.map(p => ({ ...p, url: `data:image/jpeg;base64,${p.base64}` })))
-        }
-      } catch {}
+      loadPhotos(PHOTOS_KEY).then(arr => {
+        if (arr.length) setPhotos(arr.map(p => ({ ...p, url: `data:image/jpeg;base64,${p.base64}` })))
+      }).catch(() => {})
       const dHtml = sessionStorage.getItem(DOCX_HTML_KEY)
       const dName = sessionStorage.getItem(DOCX_NAME_KEY)
       if (dHtml) setDocx({ loading: false, html: dHtml, filename: dName })
@@ -271,6 +317,7 @@ export default function Cispr15ConfigPage() {
       fabricante: item.fabricante || prev.fabricante,
       modelo: item.modelo || prev.modelo,
       identificador: item.identificador || prev.identificador,
+      lacre: item.lacre || prev.lacre,
       potencia: item.potencia || prev.potencia,
       tensaoAlim: item.tensaoAlim || prev.tensaoAlim,
       frequencia: item.frequencia || prev.frequencia,
@@ -344,16 +391,23 @@ export default function Cispr15ConfigPage() {
     }
   }
 
-  function novoRelatorio() {
-    if (!confirm('Fechar formulário atual e iniciar um novo em branco?')) return
+  function resetFormulario() {
     ;[CFG_KEY, PHOTOS_KEY, LOCKED_KEY].forEach(k => localStorage.removeItem(k))
     ;[DOCX_HTML_KEY, DOCX_NAME_KEY].forEach(k => sessionStorage.removeItem(k))
     sessionStorage.removeItem('relatorioAtualId')
+    sessionStorage.removeItem('eutFolderPath')
     setCfg(DEFAULTS)
     setPhotos([])
     setDocx({ loading: false, html: null, filename: null })
     setLocked(false)
+    setEutFolder(null)
+    setCertificadoPdf(null)
     iniciarMarcador('emissao') // reinicia o cronômetro para a nova emissão
+  }
+
+  function novoRelatorio() {
+    if (!confirm('Fechar formulário atual e iniciar um novo em branco?')) return
+    resetFormulario()
   }
 
   function limparDados() {
@@ -361,10 +415,13 @@ export default function Cispr15ConfigPage() {
     ;[CFG_KEY, PHOTOS_KEY, LOCKED_KEY].forEach(k => localStorage.removeItem(k))
     ;[DOCX_HTML_KEY, DOCX_NAME_KEY].forEach(k => sessionStorage.removeItem(k))
     sessionStorage.removeItem('relatorioAtualId')
+    sessionStorage.removeItem('eutFolderPath')
     setCfg(DEFAULTS)
     setPhotos([])
     setDocx({ loading: false, html: null, filename: null })
     setLocked(false)
+    setEutFolder(null)
+    setCertificadoPdf(null)
     setFlash(null)
   }
 
@@ -375,8 +432,7 @@ export default function Cispr15ConfigPage() {
       try { next.push({ ...(await resizeToBase64(f)), name: f.name }) } catch {}
     }
     setPhotos(next)
-    try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(next.map(({ name, base64 }) => ({ name, base64 })))) }
-    catch { alert('Armazenamento cheio — reduza o número de fotos.') }
+    void savePhotos(PHOTOS_KEY, next)
   }
 
   async function handlePhotos(files: FileList) {
@@ -405,6 +461,53 @@ export default function Cispr15ConfigPage() {
     } finally { setPastaLoading(false) }
   }
 
+  /* Aplica o conteúdo (docx + fotos + certificado) de uma pasta da EUT já
+     resolvida — usada pela escolha manual (handleAbrirPastaEut), pela
+     auto-resolução por protocolo (handleCarregarRelatorio) e pela pasta
+     arrastada pro app (handleFolderDropped). `res` vem de eut:open-folder,
+     eut:find-by-protocolo ou eut:folder-dropped — mesmo formato dos três. */
+  async function aplicarConteudoPastaEut(res: any) {
+    setCertificadoPdf(res.certPath ? { path: res.certPath, nome: res.certName || 'certificado.pdf' } : null)
+    if (res.docxBuffer) {
+      setDocx({ loading: true, html: null, filename: null })
+      try {
+        const blob = new Blob([new Uint8Array(res.docxBuffer)], {
+          type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        })
+        const fd = new FormData()
+        fd.append('file', new File([blob], res.docxName || 'ensaio.docx', { type: blob.type }))
+        const resp = await fetch('/api/parse-docx', { method: 'POST', body: fd })
+        const result = await resp.json()
+        if (result.html) {
+          const erros = validarSecoesDocx(result.html)
+          if (erros.length > 0) {
+            alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
+            setDocx({ loading: false, html: null, filename: null })
+          } else {
+            setDocx({ loading: false, html: result.html, filename: res.docxName })
+            sessionStorage.setItem(DOCX_HTML_KEY, result.html)
+            sessionStorage.setItem(DOCX_NAME_KEY, res.docxName)
+          }
+        } else {
+          setDocx({ loading: false, html: null, filename: null })
+          alert('Erro ao processar DOCX: ' + (result.error ?? 'desconhecido'))
+        }
+      } catch (e: any) {
+        setDocx({ loading: false, html: null, filename: null })
+        alert('Erro ao processar DOCX: ' + e.message)
+      }
+    }
+    if (res.images?.length > 0) {
+      const next: Photo[] = res.images.map((img: any) => ({
+        name: img.name,
+        base64: img.base64,
+        url: `data:image/${img.ext === 'png' ? 'png' : 'jpeg'};base64,${img.base64}`,
+      }))
+      setPhotos(next)
+      void savePhotos(PHOTOS_KEY, next)
+    }
+  }
+
   async function handleAbrirPastaEut() {
     setPastaLoading(true)
     try {
@@ -414,45 +517,7 @@ export default function Cispr15ConfigPage() {
       setEutFolder(res.folderPath)
       sessionStorage.setItem('eutFolderPath', res.folderPath)
       applyFolderProtocolo(res.folderName)
-      if (res.docxBuffer) {
-        setDocx({ loading: true, html: null, filename: null })
-        try {
-          const blob = new Blob([new Uint8Array(res.docxBuffer)], {
-            type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-          })
-          const fd = new FormData()
-          fd.append('file', new File([blob], res.docxName || 'ensaio.docx', { type: blob.type }))
-          const resp = await fetch('/api/parse-docx', { method: 'POST', body: fd })
-          const result = await resp.json()
-          if (result.html) {
-            const erros = validarSecoesDocx(result.html)
-            if (erros.length > 0) {
-              alert(`DOCX com medições repetidas — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
-              setDocx({ loading: false, html: null, filename: null })
-            } else {
-              setDocx({ loading: false, html: result.html, filename: res.docxName })
-              sessionStorage.setItem(DOCX_HTML_KEY, result.html)
-              sessionStorage.setItem(DOCX_NAME_KEY, res.docxName)
-            }
-          } else {
-            setDocx({ loading: false, html: null, filename: null })
-            alert('Erro ao processar DOCX: ' + (result.error ?? 'desconhecido'))
-          }
-        } catch (e: any) {
-          setDocx({ loading: false, html: null, filename: null })
-          alert('Erro ao processar DOCX: ' + e.message)
-        }
-      }
-      if (res.images?.length > 0) {
-        const next: Photo[] = res.images.map((img: any) => ({
-          name: img.name,
-          base64: img.base64,
-          url: `data:image/${img.ext === 'png' ? 'png' : 'jpeg'};base64,${img.base64}`,
-        }))
-        setPhotos(next)
-        try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(next.map(p => ({ name: p.name, base64: p.base64 })))) }
-        catch { alert('Armazenamento cheio — reduza o número de fotos.') }
-      }
+      await aplicarConteudoPastaEut(res)
       flash4(`Pasta carregada: ${res.folderName}`)
     } catch (e: any) {
       alert('Erro ao abrir pasta: ' + e.message)
@@ -461,10 +526,54 @@ export default function Cispr15ConfigPage() {
     }
   }
 
+  /* Pasta arrastada pro ícone/atalho do app (fora do app, no Explorer) —
+     Electron recebe o caminho e manda pra cá via IPC (ver electron/main.js).
+     Reaproveita a mesma aplicação de conteúdo do "Carregar pasta EUT" manual. */
+  async function handleFolderDropped(res: any) {
+    if (lockedRef.current && !confirm(
+      'Uma pasta foi arrastada pro app — isso vai fechar o relatório atual ' +
+      '(alterações não emitidas se perdem) e abrir um novo com os dados dessa pasta. Continuar?'
+    )) return
+    resetFormulario()
+    setTab('formulario')
+    setEutFolder(res.folderPath)
+    sessionStorage.setItem('eutFolderPath', res.folderPath)
+    applyFolderProtocolo(res.folderName)
+    await aplicarConteudoPastaEut(res)
+    flash4(`Pasta carregada: ${res.folderName}`)
+  }
+
+  useEffect(() => {
+    const api = (window as any).electronAPI
+    if (!api?.onFolderDropped) return
+    api.onFolderDropped((data: any) => { void handleFolderDropped(data) })
+  }, [])
+
+  /* Acha automaticamente a pasta da EUT pelo protocolo (T:\...\3.2 - Registros
+     de ensaios\<ano>\<pasta do protocolo>) — evita ter que escolher a pasta
+     manualmente toda vez que um relatório salvo é carregado. Só carrega
+     docx/fotos da pasta se o relatório ainda não tem nada (senão pisaria em
+     dados já resolvidos por resolverAssets). */
+  async function autoResolverPastaEut(entry: RelatorioSalvo, temAssets: boolean): Promise<boolean> {
+    const api = (window as any).electronAPI
+    if (!api?.buscarPastaEutPorProtocolo || !entry.protocolo) return false
+    const ano = (entry.dataEmissao || '').match(/\d{4}/)?.[0]
+    if (!ano) return false
+    try {
+      const res = await api.buscarPastaEutPorProtocolo(entry.protocolo, ano)
+      if (!res?.ok) return false
+      setEutFolder(res.folderPath)
+      sessionStorage.setItem('eutFolderPath', res.folderPath)
+      setCertificadoPdf(res.certPath ? { path: res.certPath, nome: res.certName || 'certificado.pdf' } : null)
+      if (!temAssets) await aplicarConteudoPastaEut(res)
+      return true
+    } catch { return false }
+  }
+
   function removePhoto(i: number) {
     const updated = photos.filter((_, j) => j !== i)
     setPhotos(updated)
-    localStorage.setItem(PHOTOS_KEY, JSON.stringify(updated.map(({ name, base64 }) => ({ name, base64 }))))
+    void savePhotos(PHOTOS_KEY, updated)
   }
 
   async function replacePhoto(i: number, file: File) {
@@ -472,7 +581,16 @@ export default function Cispr15ConfigPage() {
       const ph = { ...(await resizeToBase64(file)), name: file.name }
       const updated = photos.map((p, j) => j === i ? ph : p)
       setPhotos(updated)
-      localStorage.setItem(PHOTOS_KEY, JSON.stringify(updated.map(({ name, base64 }) => ({ name, base64 }))))
+      void savePhotos(PHOTOS_KEY, updated)
+    } catch {}
+  }
+
+  async function rotatePhoto(i: number) {
+    try {
+      const base64 = await rotarFotoBase64(photos[i].base64)
+      const updated = photos.map((p, j) => j === i ? { ...p, base64, url: `data:image/jpeg;base64,${base64}` } : p)
+      setPhotos(updated)
+      void savePhotos(PHOTOS_KEY, updated)
     } catch {}
   }
 
@@ -485,8 +603,7 @@ export default function Cispr15ConfigPage() {
     }
     const updated = [...photos, ...extras]
     setPhotos(updated)
-    try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(updated.map(({ name, base64 }) => ({ name, base64 })))) }
-    catch { alert('Armazenamento cheio — reduza o número de fotos.') }
+    void savePhotos(PHOTOS_KEY, updated)
   }
 
   function parsearOCR(text: string, tipo: 'lampada' | 'luminaria'): AiSugestao {
@@ -666,26 +783,10 @@ export default function Cispr15ConfigPage() {
     flash4('Campos preenchidos pela IA')
   }
 
-  /* ── validação de seções do DOCX (duplicatas Radimation) ── */
+  /* ── validação de seções do DOCX (pareamento Line1/Neutral, Loop A/B/C,
+     Anexo B por tensão, e picos idênticos entre páginas — ver types.ts) ── */
   function validarSecoesDocx(html: string): string[] {
-    try {
-      const dom = new DOMParser().parseFromString(html, 'text/html')
-      let conduzida = 0, loop = 0, anexoB = 0
-      dom.querySelectorAll('div').forEach(div => {
-        if (!(div.getAttribute('style') ?? '').includes('page-break-before')) return
-        const text = div.textContent ?? ''
-        if (/conduzida|conducted/i.test(text))        conduzida++
-        else if (/\bloop\b/i.test(text))              loop++
-        else if (/anexo\s*b|annex\s*b/i.test(text))  anexoB++
-      })
-      if (conduzida === 0 && loop === 0 && anexoB === 0) return []
-      const v = cfg.tipo === 'luminaria' ? 1 : cfg.tensaoConfig === '127' ? 1 : cfg.tensaoConfig === '127_220_277' ? 3 : 2
-      const erros: string[] = []
-      if (conduzida > v * 2) erros.push(`Conduzida (LISN + NEUTRAL): ${conduzida} seções — máx. ${v * 2} (${v} tensão × 2)`)
-      if (loop      > v * 3) erros.push(`Loop: ${loop} seções — máx. ${v * 3} (${v} tensão × 3)`)
-      if (anexoB    > v)     erros.push(`Anexo B: ${anexoB} seções — máx. ${v} (${v} tensão × 1)`)
-      return erros
-    } catch { return [] }
+    try { return validarSecoesRadimation(html, getTensoes(cfg)) } catch { return [] }
   }
 
   /* ── docx ── */
@@ -698,7 +799,7 @@ export default function Cispr15ConfigPage() {
       if (data.error) throw new Error(data.error)
       const erros = validarSecoesDocx(data.html)
       if (erros.length > 0) {
-        alert(`DOCX com medições repetidas — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
+        alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
         setDocx({ loading: false, html: null, filename: null })
         return
       }
@@ -731,6 +832,18 @@ export default function Cispr15ConfigPage() {
 
   const labelId = cfg.tipo === 'lampada' ? 'Código de Barras' : 'Número de Série'
 
+  /* ── tensão declarada da lâmpada excede a config. de ensaio selecionada? ── */
+  const tensaoMaxDeclarada = useMemo(() => tensaoDeclaradaExcedeEnsaio(cfg), [cfg])
+  const tensaoSugestao = tensaoMaxDeclarada !== null
+    ? (tensaoMaxDeclarada > 220 ? '127 V + 220 V + 277 V' : '127 V + 220 V')
+    : null
+  // docx já tem resultado medido em 220V, mas o campo de tensão só declara 127VAC
+  const docxTem220Mas127 = useMemo(() => {
+    if (cfg.tipo !== 'lampada') return false
+    const max = extrairTensaoMaxima(cfg.tensaoAlim)
+    return max !== null && max <= 127 && docxTensoesTestadas(docx.html).has('220')
+  }, [cfg, docx.html])
+
   /* ── validação ── */
   const validationErrors = useMemo(() => {
     const errs: string[] = []
@@ -755,8 +868,13 @@ export default function Cispr15ConfigPage() {
   /* ── salvar no histórico local + rede ── */
   async function salvarRelatorioLocal(finalCfg: Cispr15Config) {
     try {
-      const raw = localStorage.getItem(RELATORIOS_KEY)
-      const list: RelatorioSalvo[] = raw ? JSON.parse(raw) : []
+      // Base: estado em memória (já sincronizado da rede por loadRelatorios) —
+      // NUNCA parte só do localStorage deste PC, senão um PC com cache desatualizado
+      // sobrescreve o arquivo compartilhado e apaga relatórios feitos em outros PCs.
+      let list: RelatorioSalvo[] = [...relatoriosList]   // cópia — nunca muta o estado por referência
+      if (!list.length) {
+        try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) list = JSON.parse(raw) } catch {}
+      }
       const existingIdx = list.findIndex(r =>
         finalCfg.numRelatorio && r.numRelatorio === finalCfg.numRelatorio
       )
@@ -773,6 +891,8 @@ export default function Cispr15ConfigPage() {
         docxFilename: docx.filename,
         emendas:      existingIdx >= 0 ? list[existingIdx].emendas : [],
         eutFolderPath: eutFolder ?? undefined,
+        certificadoPdfPath: certificadoPdf?.path,
+        certificadoPdfNome: certificadoPdf?.nome,
       }
       if (existingIdx >= 0) list[existingIdx] = entry
       else list.unshift(entry)
@@ -797,8 +917,16 @@ export default function Cispr15ConfigPage() {
       try { sessionStorage.setItem('relatorioAtualId', id) } catch {}   // habilita "Salvar arquivos" a re-vincular
 
       // 2) Cache local (best-effort) — pode estourar a cota sem comprometer o save acima.
+      // Mescla na lista já cacheada (em vez de sobrescrever com `list`, que pode ter
+      // vindo do estado da rede sem fotos) pra não apagar fotos cacheadas de OUTRAS
+      // entradas neste PC.
       try {
-        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(list))
+        const rawLocal = localStorage.getItem(RELATORIOS_KEY)
+        const localList: RelatorioSalvo[] = rawLocal ? JSON.parse(rawLocal) : []
+        const li = localList.findIndex(r => r.id === id)
+        if (li >= 0) localList[li] = entry
+        else localList.unshift(entry)
+        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
         if (docx.html) localStorage.setItem(RELATORIO_DOCX_PFX + id, docx.html)
       } catch (e: any) {
         const msg = String(e)
@@ -868,16 +996,23 @@ export default function Cispr15ConfigPage() {
     setPhotos(relPhotos.map(p => ({ ...p, url: `data:image/jpeg;base64,${p.base64}` })))
     setDocx({ loading: false, html: docxHtml, filename: entry.docxFilename })
     localStorage.setItem(CFG_KEY, JSON.stringify(entry.cfg))
-    try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(relPhotos)) } catch {}
+    await savePhotos(PHOTOS_KEY, relPhotos)
     localStorage.setItem(LOCKED_KEY, '1')
     localStorage.removeItem(EMENDA_DRAFT_KEY)
     if (docxHtml) sessionStorage.setItem(DOCX_HTML_KEY, docxHtml)
     else sessionStorage.removeItem(DOCX_HTML_KEY)
     sessionStorage.setItem(DOCX_NAME_KEY, entry.docxFilename ?? '')
     sessionStorage.setItem('relatorioAtualId', entry.id)   // p/ "Salvar arquivos" vincular assets
-    if (entry.eutFolderPath) {
-      setEutFolder(entry.eutFolderPath)
-      sessionStorage.setItem('eutFolderPath', entry.eutFolderPath)
+    // Sempre tenta achar a pasta da EUT pelo protocolo (pasta de rede por ano) —
+    // não depende de eutFolderPath já ter sido salvo (ex.: relatórios do lote,
+    // que nunca guardam esse campo). Cai pro valor salvo se não achar.
+    const achouPasta = await autoResolverPastaEut(entry, relPhotos.length > 0 || !!docxHtml)
+    if (!achouPasta) {
+      if (entry.eutFolderPath) {
+        setEutFolder(entry.eutFolderPath)
+        sessionStorage.setItem('eutFolderPath', entry.eutFolderPath)
+      }
+      setCertificadoPdf(entry.certificadoPdfPath ? { path: entry.certificadoPdfPath, nome: entry.certificadoPdfNome || 'certificado.pdf' } : null)
     }
     setLocked(true)
     setTab('formulario')
@@ -947,7 +1082,7 @@ export default function Cispr15ConfigPage() {
     setPhotos(relPhotos.map(p => ({ ...p, url: `data:image/jpeg;base64,${p.base64}` })))
     setDocx({ loading: false, html: docxHtml, filename: entry.docxFilename })
     localStorage.setItem(CFG_KEY, JSON.stringify(entry.cfg))
-    try { localStorage.setItem(PHOTOS_KEY, JSON.stringify(relPhotos)) } catch {}
+    await savePhotos(PHOTOS_KEY, relPhotos)
     localStorage.setItem(LOCKED_KEY, '1')
     localStorage.removeItem(EMENDA_DRAFT_KEY)
     if (docxHtml) sessionStorage.setItem(DOCX_HTML_KEY, docxHtml)
@@ -1094,31 +1229,38 @@ export default function Cispr15ConfigPage() {
   /* ── abrir lote ── */
   async function openLote() {
     const api = (window as any).electronAPI
-    // Lote existente? prioriza o arquivo (Electron) e o localStorage
-    let temLote = !!localStorage.getItem(LOTE_KEY)
-    if (!temLote && api?.getLote) {
-      try { const r = await api.getLote(); if (r?.ok && r.lote) temLote = true } catch {}
+    // Já existe algum lote em andamento (na coleção de rede)? manda pra lista,
+    // pra escolher qual continuar — agora pode haver mais de um.
+    if (api?.getLotes) {
+      try {
+        const res = await api.getLotes()
+        if (res?.ok && Array.isArray(res.lotes) && res.lotes.length > 0) {
+          router.push('/cispr15/lotes')
+          return
+        }
+      } catch {}
     }
-    if (!temLote) {
-      const config: LoteConfig = {
-        tipo: cfg.tipo,
-        qtd: 3,
-        cliente: cfg.cliente,
-        clienteRua: cfg.clienteRua,
-        clienteCidade: cfg.clienteCidade,
-        clienteCep: cfg.clienteCep,
-        responsavel: cfg.responsavel,
-        amostras: Array.from({ length: 3 }, newAmostra),
-      }
-      localStorage.setItem(LOTE_KEY, JSON.stringify(config))
-      // grava o arquivo também (sobrescreve qualquer lote antigo do arquivo)
-      if (api?.saveLoteFile) { try { await api.saveLoteFile(config) } catch {} }
+    // Nenhum lote em andamento — cria um novo em branco.
+    const config: LoteConfig = {
+      id: crypto.randomUUID(),
+      orcamento: '',
+      tipo: cfg.tipo,
+      qtd: 3,
+      cliente: cfg.cliente,
+      clienteRua: cfg.clienteRua,
+      clienteCidade: cfg.clienteCidade,
+      clienteCep: cfg.clienteCep,
+      responsavel: cfg.responsavel,
+      amostras: Array.from({ length: 3 }, newAmostra),
     }
-    router.push('/cispr15/lote')
+    localStorage.setItem(LOTE_KEY, JSON.stringify(config))
+    if (api?.saveLotes) { try { await api.saveLotes([config]) } catch {} }
+    router.push(`/cispr15/lote?id=${config.id}`)
   }
 
   const TENSAO_OPTS = [
     { value: '127',         label: '127 V',                sub: 'apenas' },
+    { value: '220',         label: '220 V',                sub: 'apenas' },
     { value: '127_220',     label: '127 V + 220 V',        sub: 'padrão' },
     { value: '127_220_277', label: '127 V + 220 V + 277 V', sub: 'internacional' },
   ] as const
@@ -1247,12 +1389,21 @@ export default function Cispr15ConfigPage() {
                   </span>
                 </label>
               ))}
+              {tensaoMaxDeclarada !== null && (
+                <p className="text-[11px] text-amber-400/80 flex items-center gap-1.5 pt-1">
+                  <AlertTriangle size={11} />
+                  Tensão de alimentação declarada ({cfg.tensaoAlim}) chega a {tensaoMaxDeclarada}V — selecione "{tensaoSugestao}" para cobrir o ensaio.
+                </p>
+              )}
             </div>
           )}
 
-          <div className="flex items-center gap-2 mt-3 px-3 py-2 rounded-lg bg-teal/6 border border-teal/15 text-sm">
-            <span className="font-mono text-[10px] text-teal/60 uppercase tracking-wider">Tensões</span>
-            <span className="text-teal font-bold">
+          <div className={cn(
+            'flex items-center gap-2 mt-3 px-3 py-2 rounded-lg border text-sm',
+            tensaoMaxDeclarada !== null ? 'bg-amber-500/8 border-amber-500/25' : 'bg-teal/6 border-teal/15'
+          )}>
+            <span className={cn('font-mono text-[10px] uppercase tracking-wider', tensaoMaxDeclarada !== null ? 'text-amber-400/70' : 'text-teal/60')}>Tensões</span>
+            <span className={cn('font-bold', tensaoMaxDeclarada !== null ? 'text-amber-400' : 'text-teal')}>
               {cfg.tipo === 'luminaria' ? '220 V' : TENSAO_OPTS.find(o => o.value === cfg.tensaoConfig)?.label ?? '127 V + 220 V'}
             </span>
             <span className="text-white/15">·</span>
@@ -1429,12 +1580,10 @@ export default function Cispr15ConfigPage() {
               <input className="input" value={cfg.identificador} onChange={set('identificador')}
                 placeholder="N° de série" />
             </Row>
-            {cfg.tipo === 'lampada' && (
-              <Row label="Lacre">
-                <input className="input" value={cfg.lacre ?? ''} onChange={set('lacre')}
-                  placeholder="Ex: 123456" />
-              </Row>
-            )}
+            <Row label="Lacre">
+              <input className="input" value={cfg.lacre ?? ''} onChange={set('lacre')}
+                placeholder="Ex: 123456" />
+            </Row>
             <Row label="Potência Nominal">
               <input className="input" value={cfg.potencia} onChange={set('potencia')}
                 onBlur={e => setCfg(prev => ({ ...prev, potencia: normWatts(e.target.value) }))}
@@ -1442,6 +1591,14 @@ export default function Cispr15ConfigPage() {
             </Row>
             <Row label="Tensão de Alimentação">
               <input className="input" value={cfg.tensaoAlim} onChange={set('tensaoAlim')} placeholder="Ex: 90 a 305VAC" />
+              {(tensaoMaxDeclarada !== null || docxTem220Mas127) && (
+                <p className="text-[10px] text-amber-400/80 flex items-center gap-1">
+                  <AlertTriangle size={9} />
+                  {tensaoMaxDeclarada !== null
+                    ? <>Tensão declarada chega a {tensaoMaxDeclarada}V, mas o ensaio está configurado só até {TENSAO_CONFIG_MAX[cfg.tensaoConfig]}V — falta ensaiar em {tensaoMaxDeclarada}V? Confira a config. em "Tipo de DUT".</>
+                    : <>O docx já tem resultado medido em 220V, mas a tensão de alimentação está preenchida como "{cfg.tensaoAlim}" — confira se o campo está correto.</>}
+                </p>
+              )}
             </Row>
             <Row label="Frequência de Rede">
               <input className="input" value={cfg.frequencia} onChange={set('frequencia')} placeholder="Ex: 60Hz" />
@@ -1634,6 +1791,19 @@ export default function Cispr15ConfigPage() {
             </div>
           )}
 
+          {isElectron && certificadoPdf && (
+            <button type="button" title={`Abrir ${certificadoPdf.nome}`}
+              onClick={async () => {
+                const api = (window as any).electronAPI
+                const r = await api?.openPath?.(certificadoPdf.path)
+                if (r && r.ok === false) alert('Não foi possível abrir:\n' + certificadoPdf.path)
+              }}
+              className="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gold/8 border border-gold/20 hover:bg-gold/14 transition-all mb-3">
+              <FileText size={11} className="text-gold shrink-0" />
+              <span className="text-gold text-[10px] font-mono truncate flex-1 text-left">Ver certificado — {certificadoPdf.nome}</span>
+            </button>
+          )}
+
           <p className="text-[10px] text-white/25 font-mono text-center mb-4 -mt-2">
             A pasta deve conter: <span className="text-white/40">1 arquivo .docx</span> na raiz +{' '}
             <span className="text-white/40">subpasta de fotos</span> (1.png, 2.png…)
@@ -1654,7 +1824,7 @@ export default function Cispr15ConfigPage() {
                 <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-green/8 border border-green/20">
                   <CheckCircle2 size={12} className="text-green-400 flex-shrink-0" />
                   <span className="text-green-400 text-[11px] font-mono flex-1">{photos.length} foto(s) carregada(s)</span>
-                  <button onClick={() => { setPhotos([]); localStorage.removeItem(PHOTOS_KEY) }}
+                  <button onClick={() => { setPhotos([]); void clearPhotos(PHOTOS_KEY) }}
                     className="text-white/25 hover:text-red-400 transition-colors flex-shrink-0">
                     <X size={12} />
                   </button>
@@ -1686,9 +1856,27 @@ export default function Cispr15ConfigPage() {
           {photos.length > 0 && (
             <div className="flex flex-wrap gap-2 mb-4">
               {photos.map((ph, i) => (
-                <div key={i} className="relative group">
+                <div key={i}
+                  draggable
+                  onDragStart={() => setDragPhoto(i)}
+                  onDragOver={e => e.preventDefault()}
+                  onDrop={e => {
+                    e.preventDefault()
+                    if (dragPhoto === null || dragPhoto === i) return
+                    setPhotos(prev => {
+                      const updated = moverItem(prev, dragPhoto, i)
+                      void savePhotos(PHOTOS_KEY, updated)
+                      return updated
+                    })
+                    setDragPhoto(null)
+                  }}
+                  onDragEnd={() => setDragPhoto(null)}
+                  className={cn(
+                    'relative group cursor-grab active:cursor-grabbing',
+                    dragPhoto === i && 'opacity-40',
+                  )}>
                   <img src={ph.url} alt={`Foto ${i + 1}`}
-                    className="w-16 h-12 object-cover rounded-lg border border-white/10" />
+                    className="w-16 h-12 object-cover rounded-lg border border-white/10 pointer-events-none" />
                   {/* Botões: trocar (esquerda) e remover (direita) */}
                   <button
                     onClick={() => trocarRefs.current[i]?.click()}
@@ -1700,6 +1888,11 @@ export default function Cispr15ConfigPage() {
                     className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500/90 text-white items-center justify-center hidden group-hover:flex transition-all"
                     title="Remover foto">
                     <X size={10} />
+                  </button>
+                  <button onClick={() => rotatePhoto(i)}
+                    className="absolute -bottom-1.5 -left-1.5 w-5 h-5 rounded-full bg-teal/90 text-white items-center justify-center hidden group-hover:flex transition-all"
+                    title="Girar 90°">
+                    <RotateCw size={9} />
                   </button>
                   <input
                     ref={el => { trocarRefs.current[i] = el }}

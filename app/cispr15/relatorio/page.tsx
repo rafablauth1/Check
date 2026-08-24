@@ -11,6 +11,7 @@ import {
   RELATORIOS_KEY, EMENDA_DRAFT_KEY, formatEmendaNumero,
 } from '../types'
 import { filterDocxForResult, type ResultKey } from '../docx-filter'
+import { loadPhotos } from '@/lib/cispr15/photo-store'
 
 /* ─── tipos ────────────────────────────────────────────────────────────────── */
 interface DocxState { loading: boolean; html: string | null; filename: string | null }
@@ -30,6 +31,25 @@ const emptyPerResult = (): PerResultState => ({
   anexoB:    { html: null, filename: null, loading: false },
 })
 
+
+// Extrai o CN (nome do titular) de uma subject DN de certificado, ex.:
+// "C=BR, O=ICP-Brasil, ..., CN=FULANO DE TAL:12345678900" → "FULANO DE TAL:12345678900"
+function extrairCN(subject: string): string {
+  const m = subject.match(/CN=([^,]+)/)
+  return m ? m[1].trim() : ''
+}
+
+// Formata a data no mesmo padrão do carimbo padrão do Adobe: "AAAA.MM.DD
+// HH:MM:SS -03'00'" (o rótulo "Dados:" em vez de "Data:" é assim mesmo no
+// Adobe em português — mantido igual de propósito, pra ficar idêntico).
+function formatarDataAssinatura(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  const offMin = -d.getTimezoneOffset()
+  const sinal = offMin >= 0 ? '+' : '-'
+  const oh = p(Math.floor(Math.abs(offMin) / 60))
+  const om = p(Math.abs(offMin) % 60)
+  return `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${sinal}${oh}'${om}'`
+}
 
 const LABEL_ID: Record<string, string> = { lampada: 'Número de série', luminaria: 'N° de Série' }
 const BLUE = '#003366'
@@ -180,9 +200,14 @@ export default function Cispr15RelatorioPage() {
   const [savedFile,    setSavedFile]   = useState<string | null>(null)
   const [emendaDraft,  setEmendaDraft] = useState<EmendaDraft | null>(null)
   const [hasCert,      setHasCert]     = useState(false)
+  const [certNome,     setCertNome]    = useState('')
   const [signState,    setSignState]   = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   const [signMsg,      setSignMsg]     = useState('')
   const [savingFiles,  setSavingFiles] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  // Carimbo visual de assinatura, no local do "Signatário Autorizado" (última
+  // página) — só o visual, no estilo padrão do Adobe. A assinatura criptográfica
+  // de verdade continua sendo aplicada via signPdf/pfx por baixo, no PDF já gerado.
+  const [carimboVisivel, setCarimboVisivel] = useState(false)
   const photoRef    = useRef<HTMLInputElement>(null)
   const pastaRef    = useRef<HTMLInputElement>(null)
   const isPrintMode = useRef(false)
@@ -278,13 +303,25 @@ export default function Cispr15RelatorioPage() {
       return
     }
 
-    // Verifica certificado digital
+    // Verifica certificado digital (token/Windows OU .pfx) e extrai o nome (CN)
+    // do titular pro carimbo visual da assinatura.
     ;(async () => {
       try {
         const api = (window as any).electronAPI
-        if (api?.getSettings) {
-          const s = await api.getSettings()
-          setHasCert(!!(s?.certThumbprint))
+        if (!api?.getSettings) return
+        const s = await api.getSettings()
+        setHasCert(!!(s?.certThumbprint || s?.pfxPath))
+        if (s?.pfxPath && api?.validatePfx) {
+          try {
+            const r = await api.validatePfx(s.pfxPath, s.pfxPassword)
+            if (r?.ok) setCertNome(extrairCN(r.subject))
+          } catch {}
+        } else if (s?.certThumbprint && api?.listCerts) {
+          try {
+            const r = await api.listCerts()
+            const c = r?.certs?.find((c: any) => c.thumbprint === s.certThumbprint)
+            if (c?.subject) setCertNome(extrairCN(c.subject))
+          } catch {}
         }
       } catch {}
     })()
@@ -302,13 +339,9 @@ export default function Cispr15RelatorioPage() {
     if (dHtml) setDocx({ loading: false, html: dHtml, filename: dName })
     const eutP = sessionStorage.getItem('eutFolderPath')   // pasta do docx → onde salvar o PDF
     if (eutP) setEutFolder(eutP)
-    try {
-      const rawP = localStorage.getItem(PHOTOS_KEY)
-      if (rawP) {
-        const arr: { name: string; base64: string }[] = JSON.parse(rawP)
-        setPhotos(arr.map(ph => ({ url: `data:image/jpeg;base64,${ph.base64}`, name: ph.name })))
-      }
-    } catch {}
+    loadPhotos(PHOTOS_KEY).then(arr => {
+      if (arr.length) setPhotos(arr.map(ph => ({ url: `data:image/jpeg;base64,${ph.base64}`, name: ph.name })))
+    }).catch(() => {})
   }, [router])
 
   // Sinaliza puppeteer quando o DOM estiver pronto (modo print_token)
@@ -427,9 +460,21 @@ export default function Cispr15RelatorioPage() {
 
   async function commitEmenda(draft: EmendaDraft, currentCfg?: Cispr15Config) {
     try {
-      const raw = localStorage.getItem(RELATORIOS_KEY)
-      if (!raw) return
-      const lista: RelatorioSalvo[] = JSON.parse(raw)
+      // Base: lista da rede (índice compartilhado) — NUNCA só do localStorage
+      // deste PC, senão um PC com cache desatualizado sobrescreve o arquivo
+      // compartilhado e apaga relatórios feitos em outros PCs.
+      const api0 = (window as any).electronAPI
+      let lista: RelatorioSalvo[] = []
+      if (api0?.getRelatorios) {
+        try {
+          const res = await api0.getRelatorios()
+          if (res?.ok && Array.isArray(res.relatorios) && res.relatorios.length) lista = res.relatorios
+        } catch {}
+      }
+      if (!lista.length) {
+        try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) lista = JSON.parse(raw) } catch {}
+      }
+      if (!lista.length) return
       const idx = lista.findIndex(r => r.id === draft.relatorioId)
       if (idx < 0) return
       const emendas = [...lista[idx].emendas]
@@ -438,7 +483,6 @@ export default function Cispr15RelatorioPage() {
       }
       emendas[emendas.length - 1] = { ...emendas[emendas.length - 1], ...(currentCfg ? { cfgSnapshot: currentCfg } : {}) }
       lista[idx] = { ...lista[idx], emendas, ...(currentCfg ? { currentCfg } : {}) }
-      localStorage.setItem(RELATORIOS_KEY, JSON.stringify(lista))
       localStorage.removeItem(EMENDA_DRAFT_KEY)
       // Sincronizar com pasta de rede
       const api = (window as any).electronAPI
@@ -446,6 +490,17 @@ export default function Cispr15RelatorioPage() {
         const netList = lista.map(r => ({ ...r, photos: [] }))
         await api.saveRelatorios(netList)
       }
+      // Cache local: atualiza só a entrada deste id (a lista pode ter vindo da
+      // rede sem fotos — não sobrescrever o cache local inteiro, ou apaga as
+      // fotos que outras entradas tinham cacheadas neste PC).
+      try {
+        const rawLocal = localStorage.getItem(RELATORIOS_KEY)
+        const localList: RelatorioSalvo[] = rawLocal ? JSON.parse(rawLocal) : []
+        const li = localList.findIndex(r => r.id === draft.relatorioId)
+        if (li >= 0) localList[li] = { ...localList[li], emendas, ...(currentCfg ? { currentCfg } : {}) }
+        else localList.push(lista[idx])
+        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
+      } catch {}
     } catch {}
   }
 
@@ -489,34 +544,52 @@ export default function Cispr15RelatorioPage() {
     }
   }
 
-  async function assinarEPublicarEmenda() {
-    if (!cfg || !emendaDraft) return
+  // Fluxo em dois passos: 1º clique revela o carimbo (arrastável) pra
+  // posicionar; 2º clique gera o PDF já com o carimbo no lugar, assina de
+  // verdade (pfx/token) e publica. Funciona tanto pra emenda quanto relatório normal.
+  async function assinarComCarimbo() {
+    if (!cfg) return
     if (!hasCert) {
       setSignState('error')
       setSignMsg('Nenhum certificado configurado. Configure em Configurações → Assinatura Digital.')
       return
     }
-    const eutPath = emendaDraft.eutFolderPath
+    if (!carimboVisivel) {
+      setCarimboVisivel(true)
+      setSignState('idle')
+      setSignMsg('')
+      return
+    }
+    const eutPath = emendaDraft?.eutFolderPath ?? eutFolder ?? null
     if (!eutPath) {
       setSignState('error')
       setSignMsg('Pasta EUT não associada — carregue a pasta da EUT primeiro.')
       return
     }
     const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
-    const emNum = emendaDraft ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum) : cfg.numRelatorio
-    const filename = `${san(emNum || cfg.protocolo)}_${cfg.tipo}_${san(cfg.fabricante)}.pdf`
+    const numParaArquivo = emendaDraft ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum) : (displayNum || cfg.numRelatorio)
+    const filename = `${san(numParaArquivo || cfg.protocolo)}_${cfg.tipo}_${san(cfg.fabricante)}.pdf`
     const api = (window as any).electronAPI
-    if (!api?.signPdf || !api?.publishPdf) return
+    if (!api?.salvarPDFNaEut || !api?.signPdf || !api?.publishPdf) return
     setSignState('loading')
     setSignMsg('')
     try {
+      // Regera o PDF com o carimbo já no DOM (force: sobrescreve mesmo se já existir)
+      const genRes = await api.salvarPDFNaEut(filename, eutPath, true)
+      if (!genRes.ok) {
+        setSignState('error')
+        setSignMsg('Erro ao gerar PDF: ' + (genRes.error ?? 'desconhecido'))
+        return
+      }
       const signRes = await api.signPdf(eutPath, filename)
       if (!signRes.ok) {
         setSignState('error')
         setSignMsg(signRes.error ?? 'Erro ao assinar')
         return
       }
-      const pubRes = await api.publishPdf(eutPath, filename)
+      const ano = (cfg.dataEmissao || '').slice(0, 4)
+      const pubRes = await api.publishPdf(eutPath, filename, ano)
+      setCarimboVisivel(false)
       if (pubRes.ok) {
         setSignState('ok')
         setSignMsg('Assinado e publicado com sucesso')
@@ -953,24 +1026,28 @@ export default function Cispr15RelatorioPage() {
           {savingFiles === 'ok' ? 'Arquivos vinculados' : 'Salvar arquivos'}
         </button>
 
-        {/* Assinar e Publicar — apenas em modo emenda */}
-        {emendaDraft && (
+        {/* Assinar e Publicar — pra qualquer relatório com certificado configurado */}
+        {hasCert && (
           <button
-            onClick={assinarEPublicarEmenda}
+            onClick={assinarComCarimbo}
             disabled={signState === 'loading'}
-            title={signMsg || (signState === 'ok' ? 'Publicado com sucesso' : 'Assinar digitalmente e publicar o PDF da emenda')}
+            title={signMsg || (signState === 'ok' ? 'Publicado com sucesso' : carimboVisivel
+              ? 'Confira o carimbo de assinatura na última página e clique de novo pra confirmar'
+              : 'Mostrar prévia do carimbo de assinatura antes de assinar')}
             className={cn(
               'flex items-center gap-2 px-4 py-2 text-sm rounded-lg border transition-all font-semibold',
               signState === 'ok'      && 'border-green/30 bg-green/8 text-green-400',
               signState === 'error'   && 'border-red-500/30 bg-red-500/8 text-red-400',
               signState === 'loading' && 'border-blue-500/30 bg-blue-500/8 text-blue-400 opacity-70 cursor-wait',
-              (signState === 'idle')  && 'border-white/12 text-white/50 hover:border-white/25 hover:text-white/80',
+              signState === 'idle'    && 'border-white/12 text-white/50 hover:border-white/25 hover:text-white/80',
             )}>
             {signState === 'loading'
               ? <><Loader2 size={14} className="animate-spin" /> Processando…</>
               : signState === 'ok'
                 ? <><CheckCircle2 size={14} /> Publicado</>
-                : <><PenLine size={14} /> Assinar e Publicar</>}
+                : carimboVisivel
+                  ? <><PenLine size={14} /> Confirmar e Assinar</>
+                  : <><PenLine size={14} /> Assinar e Publicar</>}
           </button>
         )}
       </div>
@@ -1435,8 +1512,33 @@ export default function Cispr15RelatorioPage() {
           {/* Signatário — em fluxo (margin-top empurra pro fundo). Em fluxo dá
               altura real à página, evitando que o Chromium colapse/descarte a
               última página por ser "fina" (só conteúdo absoluto). */}
-          <div style={{ marginTop: '85mm', display: 'flex', justifyContent: 'center' }}>
+          <div style={{ marginTop: carimboVisivel ? '55mm' : '85mm', display: 'flex', justifyContent: 'center' }}>
             <div style={{ textAlign: 'center', minWidth: 260 }}>
+              {carimboVisivel && (
+                <div style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10,
+                  marginBottom: 10, fontFamily: 'Arial, Helvetica, sans-serif',
+                }}>
+                  <div style={{ position: 'relative', textAlign: 'right' }}>
+                    <p style={{
+                      fontSize: '13pt', fontWeight: 700, color: '#111',
+                      lineHeight: 1.15, margin: 0, maxWidth: 150, wordBreak: 'break-word',
+                    }}>
+                      {certNome || 'Certificado configurado'}
+                    </p>
+                    {/* rabisco decorativo, simulando a tinta da assinatura do Adobe */}
+                    <svg width="160" height="46" viewBox="0 0 160 46"
+                      style={{ position: 'absolute', top: -10, right: -6, opacity: 0.55, pointerEvents: 'none' }}>
+                      <path d="M8,32 C 25,4 38,44 55,18 S 88,2 102,28 S 132,44 152,12"
+                        stroke="#c0405a" strokeWidth="2.2" fill="none" strokeLinecap="round" />
+                    </svg>
+                  </div>
+                  <div style={{ borderLeft: '1px solid #999', paddingLeft: 10, textAlign: 'left', fontSize: '7.3pt', color: '#222', lineHeight: 1.45 }}>
+                    <div>Assinado de forma digital<br />por {certNome || 'certificado configurado'}</div>
+                    <div>Dados: {formatarDataAssinatura(new Date())}</div>
+                  </div>
+                </div>
+              )}
               <div style={{ borderTop: '1px solid #333', paddingTop: 8 }}>
                 <p style={{ fontSize: FS.sm, color: '#333', marginBottom: 2 }}>Signatário Autorizado</p>
                 <p style={{ fontSize: FS.xs, color: '#666' }}>LABELO-PUCRS</p>

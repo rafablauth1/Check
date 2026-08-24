@@ -35,3 +35,9 @@ check-demandas.md
 dados/*.bak
 dados/*.tmp.*
 dados/*.lock
+.dev-lock
+.claude/settings.local.json
+
+# dicionário pt-BR do corretor ortográfico: gerado por scripts/copy-dicionario.js
+# a partir de node_modules/dictionary-pt (ver predev/prebuild em package.json)
+public/dicionario/

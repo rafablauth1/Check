@@ -6,13 +6,13 @@ import { validarChecagem } from '@/lib/checagens/validacao'
 const ARQUIVO = 'checagens.json'
 
 export async function GET() {
-  return NextResponse.json(lerJSON<Checagem[]>(ARQUIVO, []))
+  return NextResponse.json(await lerJSON<Checagem[]>(ARQUIVO, []))
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Omit<Checagem, 'id' | 'status' | 'criadoEm'>
-    const lista = lerJSON<Checagem[]>(ARQUIVO, [])
+    const lista = await lerJSON<Checagem[]>(ARQUIVO, [])
     const status = validarChecagem(body.itens ?? [], body.proximaChecagem ?? '')
     const nova: Checagem = {
       ...body,
@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
       status,
       criadoEm: new Date().toISOString(),
     }
-    escreverJSON(ARQUIVO, [nova, ...lista])
+    await escreverJSON(ARQUIVO, [nova, ...lista])
     return NextResponse.json(nova, { status: 201 })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

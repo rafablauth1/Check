@@ -1,23 +1,45 @@
 ﻿'use client'
 
-import { useState, useEffect, useRef } from 'react'
-import { useRouter } from 'next/navigation'
+import { useState, useEffect, useRef, Suspense } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import {
   ArrowLeft, ArrowRight, X, Loader2, CheckCircle2, AlertTriangle,
   FolderOpen, Upload, ChevronDown, Users,
   Shield, ShieldCheck, ShieldX, Plus, Minus,
-  Lightbulb, Lamp, Trash2, CalendarRange, Download,
+  Lightbulb, Lamp, Trash2, CalendarRange, Download, RotateCw,
 } from 'lucide-react'
 import { cn, normWatts } from '@/lib/utils'
 import { iniciarMarcadorSeAusente, finalizarMarcador, registrarTempo } from '@/lib/tempos'
 import {
   type LoteAmostra, type LoteConfig, type Cispr15Config, type RelatorioSalvo, type EquipamentoSalvo, type AgendaItem,
   newAmostra, today, LOTE_KEY, RELATORIOS_KEY, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, EQUIPAMENTOS_KEY, RELATORIO_DOCX_PFX, AGENDA_KEY,
-  AUTH_KEY, SETTINGS_KEY, docxTemFail, docxOndeFail,
+  AUTH_KEY, SETTINGS_KEY, docxTemFail, docxOndeFail, extrairTensaoMaxima, TENSAO_CONFIG_MAX,
+  validarSecoesRadimation, docxTensoesTestadas,
 } from '../types'
+import { savePhotos } from '@/lib/cispr15/photo-store'
+
+const TENSAO_AMOSTRA_OPTS = [
+  { value: '127' as const,         label: '127V' },
+  { value: '220' as const,         label: '220V' },
+  { value: '127_220' as const,     label: '127V + 220V' },
+  { value: '127_220_277' as const, label: '127V + 220V + 277V' },
+]
+
+/* Tensões de ensaio esperadas pra uma amostra — luminária é sempre fixa em
+   220V; lâmpada depende do tensaoConfig de CADA amostra (um lote pode
+   misturar lâmpadas bivolt com lâmpadas de uma tensão só). */
+function tensoesAmostra(tipoLote: 'lampada' | 'luminaria', am: Pick<LoteAmostra, 'tensaoConfig'>): string[] {
+  if (tipoLote === 'luminaria') return ['220V']
+  switch (am.tensaoConfig) {
+    case '127':         return ['127V']
+    case '220':         return ['220V']
+    case '127_220_277': return ['127V', '220V', '277V']
+    default:            return ['127V', '220V']
+  }
+}
 
 /* ─── helpers ─────────────────────────────────────────────────────────────── */
-async function resizeToBase64(file: File, maxW = 1024): Promise<{ name: string; base64: string }> {
+async function resizeToBase64(file: File, maxW = 800): Promise<{ name: string; base64: string }> {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const obj = URL.createObjectURL(file)
@@ -27,7 +49,7 @@ async function resizeToBase64(file: File, maxW = 1024): Promise<{ name: string; 
       canvas.width  = Math.round(img.width  * r)
       canvas.height = Math.round(img.height * r)
       canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
-      const base64 = canvas.toDataURL('image/jpeg', 0.82).split(',')[1]
+      const base64 = canvas.toDataURL('image/jpeg', 0.75).split(',')[1]
       URL.revokeObjectURL(obj)
       resolve({ name: file.name, base64 })
     }
@@ -37,6 +59,56 @@ async function resizeToBase64(file: File, maxW = 1024): Promise<{ name: string; 
 }
 
 const getNum = (n: string) => parseInt(n.replace(/\.[^/.]+$/, '').replace(/\D/g, ''), 10) || 0
+
+function moverItem<T>(arr: T[], from: number, to: number): T[] {
+  const copy = [...arr]
+  const [item] = copy.splice(from, 1)
+  copy.splice(to, 0, item)
+  return copy
+}
+
+// Gira uma foto (já em base64) 90° no sentido horário, redesenhando num canvas
+// com largura/altura trocadas — usado no botão de girar das miniaturas.
+async function rotarFotoBase64(base64: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const canvas = document.createElement('canvas')
+      canvas.width  = img.height
+      canvas.height = img.width
+      const ctx = canvas.getContext('2d')!
+      ctx.translate(canvas.width / 2, canvas.height / 2)
+      ctx.rotate(Math.PI / 2)
+      ctx.drawImage(img, -img.width / 2, -img.height / 2)
+      resolve(canvas.toDataURL('image/jpeg', 0.92).split(',')[1])
+    }
+    img.onerror = reject
+    img.src = `data:image/jpeg;base64,${base64}`
+  })
+}
+
+function base64ToFile(name: string, base64: string, mime: string): File {
+  const bin = atob(base64)
+  const bytes = new Uint8Array(bin.length)
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+  return new File([bytes], name, { type: mime })
+}
+
+async function resizeBase64Image(name: string, base64: string, maxW = 1024): Promise<{ name: string; base64: string }> {
+  return new Promise((resolve, reject) => {
+    const img = new Image()
+    img.onload = () => {
+      const r = Math.min(1, maxW / img.width)
+      const canvas = document.createElement('canvas')
+      canvas.width  = Math.round(img.width  * r)
+      canvas.height = Math.round(img.height * r)
+      canvas.getContext('2d')!.drawImage(img, 0, 0, canvas.width, canvas.height)
+      resolve({ name, base64: canvas.toDataURL('image/jpeg', 0.82).split(',')[1] })
+    }
+    img.onerror = reject
+    img.src = `data:image/jpeg;base64,${base64}`
+  })
+}
 
 /* ─── sub-componentes ─────────────────────────────────────────────────────── */
 function Label({ children }: { children: React.ReactNode }) {
@@ -68,6 +140,7 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
   const [docxLoading,   setDocxLoading]   = useState(false)
   const [equipSearch,   setEquipSearch]   = useState('')
   const [showEquipPick, setShowEquipPick] = useState(false)
+  const [dragPhoto,     setDragPhoto]     = useState<number | null>(null)
 
   const set = (k: keyof LoteAmostra) => (e: React.ChangeEvent<HTMLInputElement>) =>
     onChange({ ...amostra, [k]: e.target.value })
@@ -84,6 +157,20 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
   }
 
   const labelId = tipoLote === 'lampada' ? 'Código de Barras' : 'Número de Série'
+
+  // Avisa só em dois casos específicos (não em qualquer excedente, ex.: 240V
+  // com config até 220V não é motivo de aviso — não existe tensão de ensaio
+  // intermediária entre 220 e 277):
+  //  a) a amostra chega a 277VAC mas o ensaio está configurado só até 220V;
+  //  b) o docx já tem resultado medido em 220V mas o campo de tensão só
+  //     declara 127VAC — sinal de que o campo pode estar desatualizado.
+  const tensaoMaxDeclarada = tipoLote === 'lampada' ? extrairTensaoMaxima(amostra.tensaoAlim) : null
+  const tensaoConfigMax = TENSAO_CONFIG_MAX[amostra.tensaoConfig ?? '127_220']
+  const chegaA277SemEnsaio = tensaoMaxDeclarada !== null && tensaoMaxDeclarada >= 277 && tensaoConfigMax <= 220
+  const docxTem220Mas127 = tipoLote === 'lampada'
+    && tensaoMaxDeclarada !== null && tensaoMaxDeclarada <= 127
+    && docxTensoesTestadas(amostra.docxHtml).has('220')
+  const tensaoExcede = chegaA277SemEnsaio || docxTem220Mas127
 
   const borderCls =
     amostra.conformidade === 'reprovado' ? 'border-red/25 bg-red/3' :
@@ -112,6 +199,11 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
       const res  = await fetch('/api/parse-docx', { method: 'POST', body: fd })
       const data = await res.json()
       if (data.error) throw new Error(data.error)
+      const erros = validarSecoesRadimation(data.html, tensoesAmostra(tipoLote, amostra))
+      if (erros.length > 0) {
+        alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
+        return
+      }
       onChange({ ...amostra, docxHtml: data.html, docxFilename: file.name })
     } catch (err: any) {
       alert(`Erro ao processar DOCX: ${err.message}`)
@@ -133,7 +225,14 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
         const fd = new FormData(); fd.append('file', docxFile)
         const res  = await fetch('/api/parse-docx', { method: 'POST', body: fd })
         const data = await res.json()
-        if (!data.error) updated = { ...updated, docxHtml: data.html, docxFilename: docxFile.name }
+        if (!data.error) {
+          const erros = validarSecoesRadimation(data.html, tensoesAmostra(tipoLote, amostra))
+          if (erros.length > 0) {
+            alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${erros.join('\n• ')}`)
+          } else {
+            updated = { ...updated, docxHtml: data.html, docxFilename: docxFile.name }
+          }
+        }
       }
 
       if (imageFiles.length > 0) {
@@ -245,6 +344,9 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
             <Row label={labelId}>
               <input className="input text-sm" value={amostra.identificador} onChange={set('identificador')} />
             </Row>
+            <Row label="Lacre">
+              <input className="input text-sm" value={amostra.lacre ?? ''} onChange={set('lacre')} placeholder="Ex: 123456" />
+            </Row>
             <Row label="Potência">
               <input className="input text-sm" value={amostra.potencia} onChange={set('potencia')}
                 onBlur={e => onChange({ ...amostra, potencia: normWatts(e.target.value) })}
@@ -252,7 +354,30 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
             </Row>
             <Row label="Tensão de Alimentação">
               <input className="input text-sm" value={amostra.tensaoAlim} onChange={set('tensaoAlim')} />
+              {tensaoExcede && (
+                <p className="text-[10px] text-amber-400/80 flex items-center gap-1">
+                  <AlertTriangle size={9} />
+                  {chegaA277SemEnsaio
+                    ? <>Chega a {tensaoMaxDeclarada}V — ensaio desta amostra está configurado até {tensaoConfigMax}V, confira se falta ensaiar em tensão maior.</>
+                    : <>O docx já tem resultado medido em 220V, mas a tensão de alimentação está preenchida como "{amostra.tensaoAlim}" — confira se o campo está correto.</>}
+                </p>
+              )}
             </Row>
+            {tipoLote === 'lampada' && (
+              <Row label="Tensão(ões) de Ensaio" span2>
+                <div className="flex gap-4">
+                  {TENSAO_AMOSTRA_OPTS.map(opt => (
+                    <label key={opt.value} className="flex items-center gap-1.5 cursor-pointer group">
+                      <input type="radio" name={`tensaoConfig-${index}`} value={opt.value}
+                        checked={(amostra.tensaoConfig ?? '127_220') === opt.value}
+                        onChange={() => onChange({ ...amostra, tensaoConfig: opt.value })}
+                        className="w-3.5 h-3.5 accent-gold cursor-pointer" />
+                      <span className="text-xs text-white/60 group-hover:text-white/85 transition-colors">{opt.label}</span>
+                    </label>
+                  ))}
+                </div>
+              </Row>
+            )}
             <Row label="Protocolo LABELO">
               <input className="input text-sm" value={amostra.protocolo} onChange={set('protocolo')} />
             </Row>
@@ -382,13 +507,35 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
             {amostra.photos.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {amostra.photos.map((ph, i) => (
-                  <div key={i} className="relative group">
+                  <div key={i}
+                    draggable
+                    onDragStart={() => setDragPhoto(i)}
+                    onDragOver={e => e.preventDefault()}
+                    onDrop={e => {
+                      e.preventDefault()
+                      if (dragPhoto === null || dragPhoto === i) return
+                      onChange({ ...amostra, photos: moverItem(amostra.photos, dragPhoto, i) })
+                      setDragPhoto(null)
+                    }}
+                    onDragEnd={() => setDragPhoto(null)}
+                    className={cn(
+                      'relative group cursor-grab active:cursor-grabbing',
+                      dragPhoto === i && 'opacity-40',
+                    )}>
                     <img src={`data:image/jpeg;base64,${ph.base64}`} alt={`Foto ${i + 1}`}
-                      className="w-14 h-10 object-cover rounded-lg border border-white/10" />
+                      className="w-14 h-10 object-cover rounded-lg border border-white/10 pointer-events-none" />
                     <button type="button"
                       onClick={() => onChange({ ...amostra, photos: amostra.photos.filter((_, j) => j !== i) })}
                       className="absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full bg-red-500/90 text-white items-center justify-center hidden group-hover:flex">
                       <X size={8} />
+                    </button>
+                    <button type="button" title="Girar 90°"
+                      onClick={async () => {
+                        const girada = await rotarFotoBase64(ph.base64)
+                        onChange({ ...amostra, photos: amostra.photos.map((p, j) => j === i ? { ...p, base64: girada } : p) })
+                      }}
+                      className="absolute -top-1.5 -left-1.5 w-4 h-4 rounded-full bg-teal/90 text-white items-center justify-center hidden group-hover:flex">
+                      <RotateCw size={8} />
                     </button>
                     <span className="text-[8px] text-white/30 block text-center">{i + 1}</span>
                   </div>
@@ -446,9 +593,23 @@ function AmostraCard({ index, amostra, expanded, onToggle, onChange, tipoLote, o
 }
 
 /* ─── página ──────────────────────────────────────────────────────────────── */
+// useSearchParams precisa de um Suspense boundary (exigência do Next.js pra
+// renderização estática) — o wrapper abaixo fica só com isso, a lógica real
+// continua toda em LotePageInner.
 export default function LotePage() {
+  return (
+    <Suspense fallback={null}>
+      <LotePageInner />
+    </Suspense>
+  )
+}
+
+function LotePageInner() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const loteId = searchParams.get('id')
   const [lote,        setLote]        = useState<LoteConfig | null>(null)
+  const allLotesRef = useRef<LoteConfig[]>([])
   const [expanded,    setExpanded]    = useState<number | null>(0)
   const [emitindo,    setEmitindo]    = useState(false)
   const [resultado,   setResultado]   = useState<{ reprovados: { protocolo: string; testes: string[]; trechos: string[] }[]; total: number; checked: boolean } | null>(null)
@@ -456,7 +617,6 @@ export default function LotePage() {
   const [equipamentos,setEquipamentos] = useState<EquipamentoSalvo[]>([])
   const [emitModal,   setEmitModal]   = useState<{ conformes: number; reprovadosNomes: string[]; pendentesNomes: string[] } | null>(null)
   const [importMae,   setImportMae]   = useState<{ loading: boolean; msg: string } | null>(null)
-  const maeRef = useRef<HTMLInputElement>(null)
   const [baixando,    setBaixando]    = useState<{ done: number; total: number; erros: string[] } | null>(null)
   const [gateOpen,    setGateOpen]    = useState(false)
   const [gateInput,   setGateInput]   = useState('')
@@ -464,6 +624,9 @@ export default function LotePage() {
   const [appPassword, setAppPassword] = useState('')
   const [capsLock,    setCapsLock]    = useState(false)
   const gateInputRef = useRef<HTMLInputElement>(null)
+  const syncTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const persistTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingLote = useRef<LoteConfig | null>(null)
 
   useEffect(() => {
     async function initGate() {
@@ -489,14 +652,21 @@ export default function LotePage() {
 
   useEffect(() => {
     iniciarMarcadorSeAusente('emissao') // cronômetro de emissão (vale para lote também)
-    // Carrega o lote: no Electron o arquivo é a fonte autoritativa (não sofre com a
-    // cota do localStorage); na web, usa o localStorage.
+    // Carrega o lote: no Electron a coleção de lotes (rede) é a fonte
+    // autoritativa — permite mais de um lote em andamento e visível em
+    // qualquer PC. Na web (sem Electron), cai no localStorage de um lote só.
     async function loadLote() {
       const api = (window as any).electronAPI
-      if (api?.getLote) {
+      if (api?.getLotes) {
         try {
-          const res = await api.getLote()
-          if (res?.ok && res.lote) { setLote(res.lote); return }
+          const res = await api.getLotes()
+          if (res?.ok && Array.isArray(res.lotes)) {
+            allLotesRef.current = res.lotes
+            const achado = loteId ? res.lotes.find((l: LoteConfig) => l.id === loteId) : null
+            if (achado) { setLote(achado); return }
+            router.push('/cispr15/lotes')
+            return
+          }
         } catch {}
       }
       try {
@@ -523,12 +693,20 @@ export default function LotePage() {
     loadEquip()
   }, [])
 
-  function saveLote(next: LoteConfig) {
-    setLote(next)
-    // Persistência robusta em arquivo (Electron) — não depende da cota do localStorage,
-    // então datas/fotos sobrevivem à navegação mesmo com o localStorage cheio.
+  // Grava o lote de verdade — serializar um lote grande (fotos em base64 de
+  // várias amostras) em JSON não é instantâneo, por isso essa parte é
+  // debounced (ver saveLote) e não roda a cada tecla. No Electron, grava a
+  // COLEÇÃO inteira (todos os lotes em andamento, não só este) na pasta de
+  // rede — permite mais de um lote e visível em qualquer PC.
+  function persistirLote(next: LoteConfig) {
     const api = (window as any).electronAPI
-    if (api?.saveLoteFile) api.saveLoteFile(next).catch(() => {})
+    if (api?.saveLotes) {
+      const atualizados = allLotesRef.current.some(l => l.id === next.id)
+        ? allLotesRef.current.map(l => l.id === next.id ? next : l)
+        : [...allLotesRef.current, next]
+      allLotesRef.current = atualizados
+      api.saveLotes(atualizados).catch(() => {})
+    }
     try { localStorage.setItem(LOTE_KEY, JSON.stringify(next)) }
     catch {
       // Quota exceeded: try saving without docxHtml (keep it only in memory)
@@ -536,62 +714,90 @@ export default function LotePage() {
         const compact = { ...next, amostras: next.amostras.map(a => ({ ...a, docxHtml: null })) }
         localStorage.setItem(LOTE_KEY, JSON.stringify(compact))
       } catch {
-        // No Electron o arquivo acima já guardou tudo; só alerta na web
+        // No Electron a coleção acima já guardou tudo; só alerta na web
         if (!api) alert('Armazenamento cheio — reduza o número de fotos.')
       }
     }
   }
 
+  // Atualiza a tela na hora (não trava a digitação); a gravação em disco/rede
+  // fica pra depois de meio segundo sem novas mudanças. Se a tela for fechada
+  // no meio da espera, o cleanup abaixo grava o que ficou pendente.
+  function saveLote(next: LoteConfig) {
+    setLote(next)
+    pendingLote.current = next
+    if (persistTimer.current) clearTimeout(persistTimer.current)
+    persistTimer.current = setTimeout(() => {
+      persistirLote(next)
+      pendingLote.current = null
+    }, 400)
+  }
+
+  useEffect(() => {
+    return () => {
+      if (persistTimer.current) clearTimeout(persistTimer.current)
+      if (pendingLote.current) persistirLote(pendingLote.current)
+    }
+  }, [])
+
   /* Importa uma pasta-mãe contendo subpastas (uma por protocolo). Casa cada
-     subpasta com a amostra do lote pelo protocolo e preenche docx + fotos. */
-  async function handlePastaMae(files: FileList) {
+     subpasta com a amostra do lote pelo protocolo e preenche docx + fotos.
+     Lido pelo processo principal (Node), não pelo <input webkitdirectory> do
+     navegador — que precisa enumerar a árvore inteira antes de disparar o
+     onChange, e trava sem nenhum indicador em pastas de rede grandes. */
+  async function handlePastaMae() {
     if (!lote) return
-    const isImage = (f: File) => f.type.startsWith('image/') || /\.(jpe?g|png|gif|bmp|webp|tiff?)$/i.test(f.name)
+    const api = (window as any).electronAPI
+    if (!api?.importarPastaMae) { alert('Disponível apenas no aplicativo.'); return }
     setImportMae({ loading: true, msg: '' })
     try {
-      // Agrupa arquivos pela 1ª subpasta do caminho relativo
-      const grupos: Record<string, File[]> = {}
-      for (const f of Array.from(files)) {
-        const rel = ((f as any).webkitRelativePath as string) || f.name
-        const parts = rel.split('/')
-        // parts[0] = pasta-mãe; parts[1] = subpasta (protocolo) quando há subpastas
-        const sub = parts.length >= 3 ? parts[1] : parts.length === 2 ? parts[1] : '__root__'
-        ;(grupos[sub] ??= []).push(f)
-      }
+      const protocolos = lote.amostras.map(a => a.protocolo).filter(Boolean)
+      const res = await api.importarPastaMae(protocolos)
+      if (res?.canceled) { setImportMae(null); return }
+      if (!res?.ok) { setImportMae({ loading: false, msg: 'Erro: ' + (res?.error ?? 'desconhecido') }); return }
 
       let casados = 0
-      const naoCasados: string[] = []
+      const naoCasados: string[] = [...(res.naoEncontrados || [])]
+      const problemasDocx: string[] = []
       const novas = await Promise.all(lote.amostras.map(async (am) => {
-        const proto = (am.protocolo || '').replace(/\D/g, '')
-        if (!proto) { naoCasados.push(`amostra sem protocolo`); return am }
-        const subKey = Object.keys(grupos).find(k => k.replace(/\D/g, '').includes(proto))
-        if (!subKey) { naoCasados.push(proto); return am }
-
-        const groupFiles = grupos[subKey]
-        const docxFile = groupFiles.find(f => f.name.toLowerCase().endsWith('.docx') && !f.name.startsWith('~'))
-        const imageFiles = groupFiles.filter(isImage).sort((a, b) => getNum(a.name) - getNum(b.name))
+        const proto = am.protocolo || ''
+        if (!proto) { naoCasados.push('amostra sem protocolo'); return am }
+        const dados = res.resultados[proto]
+        if (!dados) return am // já está em naoEncontrados
 
         let updated = { ...am }
-        if (docxFile) {
+        if (dados.docx) {
           try {
-            const fd = new FormData(); fd.append('file', docxFile)
+            const file = base64ToFile(
+              dados.docx.name, dados.docx.base64,
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            )
+            const fd = new FormData(); fd.append('file', file)
             const data = await fetch('/api/parse-docx', { method: 'POST', body: fd }).then(r => r.json())
-            if (!data.error) updated = { ...updated, docxHtml: data.html, docxFilename: docxFile.name }
+            if (!data.error) {
+              const erros = validarSecoesRadimation(data.html, tensoesAmostra(lote.tipo, am))
+              if (erros.length > 0) problemasDocx.push(`${am.protocolo}: ${erros.join('; ')}`)
+              else updated = { ...updated, docxHtml: data.html, docxFilename: dados.docx.name }
+            }
           } catch {}
         }
-        if (imageFiles.length > 0) {
+        if (dados.photos.length > 0) {
+          const ordenadas = [...dados.photos].sort((a: any, b: any) => getNum(a.name) - getNum(b.name))
           const photos: { name: string; base64: string }[] = []
-          for (const f of imageFiles) { try { photos.push(await resizeToBase64(f)) } catch {} }
+          for (const f of ordenadas) { try { photos.push(await resizeBase64Image(f.name, f.base64)) } catch {} }
           updated = { ...updated, photos }
         }
-        if (docxFile || imageFiles.length > 0) casados++
+        if (dados.docx || dados.photos.length > 0) casados++
         return updated
       }))
 
       saveLote({ ...lote, amostras: novas })
       const msg = `${casados} amostra(s) preenchida(s)` +
-        (naoCasados.length ? ` · ${naoCasados.length} sem pasta correspondente` : '')
+        (naoCasados.length ? ` · ${naoCasados.length} sem pasta correspondente` : '') +
+        (problemasDocx.length ? ` · ${problemasDocx.length} com DOCX rejeitado` : '')
       setImportMae({ loading: false, msg })
+      if (problemasDocx.length > 0)
+        alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${problemasDocx.join('\n• ')}`)
     } catch (e: any) {
       setImportMae({ loading: false, msg: 'Erro: ' + (e?.message || String(e)) })
     }
@@ -629,6 +835,43 @@ export default function LotePage() {
   function updateAmostra(i: number, a: LoteAmostra) {
     if (!lote) return
     saveLote({ ...lote, amostras: lote.amostras.map((x, j) => j === i ? a : x) })
+
+    // Sincroniza os dados do produto de volta pra agenda em "tempo real" —
+    // útil quando o item da agenda ainda estava incompleto e foi preenchido
+    // aqui, no lote. Debounced por amostra pra não gravar na rede a cada
+    // tecla; só atualiza item já existente (não cria, não mexe em status/
+    // datas/observações — só os campos do produto/DUT).
+    const key = String(i)
+    clearTimeout(syncTimers.current[key])
+    syncTimers.current[key] = setTimeout(() => { sincronizarComAgenda(a) }, 1000)
+  }
+
+  async function sincronizarComAgenda(am: LoteAmostra) {
+    const proto = (am.protocolo || '').trim().toLowerCase()
+    if (!proto) return
+    try {
+      const api = (window as any).electronAPI
+      let lista: AgendaItem[] = []
+      if (api) { const r = await api.getAgenda().catch(() => null); if (r?.ok && Array.isArray(r.agenda)) lista = r.agenda }
+      if (!lista.length) { const raw = localStorage.getItem(AGENDA_KEY); if (raw) { try { lista = JSON.parse(raw) } catch {} } }
+
+      const idx = lista.findIndex(it => it.protocolo?.trim().toLowerCase() === proto)
+      if (idx < 0) return // só atualiza item já existente na agenda, não cria
+
+      const patch: Partial<AgendaItem> = {
+        produto: am.produto, fabricante: am.fabricante, modelo: am.modelo,
+        identificador: am.identificador, lacre: am.lacre,
+        potencia: am.potencia, tensaoAlim: am.tensaoAlim, frequencia: am.frequencia,
+        temDriver: am.temDriver,
+        driverProduto: am.driverProduto, driverFabricante: am.driverFabricante, driverModelo: am.driverModelo,
+        driverIdentificador: am.driverIdentificador, driverPotencia: am.driverPotencia,
+        driverTensaoAlim: am.driverTensaoAlim, driverFrequencia: am.driverFrequencia,
+        driverOrcamento: am.driverOrcamento, driverProtocolo: am.driverProtocolo,
+      }
+      const updated = lista.map((it, i) => i === idx ? { ...it, ...patch } : it)
+      if (api) await api.saveAgenda(updated).catch(() => null)
+      localStorage.setItem(AGENDA_KEY, JSON.stringify(updated))
+    } catch {}
   }
 
   function removerAmostra(i: number) {
@@ -649,6 +892,7 @@ export default function LotePage() {
       protocolo: am.protocolo, orcamento: am.orcamento,
       cliente: lote?.cliente ?? '', clienteRua: lote?.clienteRua, clienteCidade: lote?.clienteCidade, clienteCep: lote?.clienteCep,
       produto: am.produto, fabricante: am.fabricante, modelo: am.modelo, identificador: am.identificador,
+      lacre: am.lacre,
       potencia: am.potencia, tensaoAlim: am.tensaoAlim, frequencia: am.frequencia,
       documentacao: 'embalagem com especificações',
       temDriver: am.temDriver,
@@ -786,11 +1030,11 @@ export default function LotePage() {
   async function salvarRelatorioSalvo(am: LoteAmostra, numRelatorio: string) {
     if (!lote) return
     const cfg: Cispr15Config = {
-      tipo: lote.tipo, tensaoConfig: '127_220',
+      tipo: lote.tipo, tensaoConfig: am.tensaoConfig ?? '127_220',
       cliente: lote.cliente, clienteRua: lote.clienteRua ?? '',
       clienteCidade: lote.clienteCidade ?? '', clienteCep: lote.clienteCep ?? '',
       produto: am.produto, fabricante: am.fabricante, modelo: am.modelo,
-      identificador: am.identificador, lacre: '',
+      identificador: am.identificador, lacre: am.lacre ?? '',
       tensaoAlim: am.tensaoAlim, potencia: am.potencia, frequencia: am.frequencia,
       temDriver: am.temDriver,
       driverProduto: am.driverProduto, driverFabricante: am.driverFabricante,
@@ -937,11 +1181,11 @@ export default function LotePage() {
   /* Monta o Cispr15Config de uma amostra (para gerar o PDF). */
   function buildCfg(am: LoteAmostra): Cispr15Config {
     return {
-      tipo: lote!.tipo, tensaoConfig: '127_220',
+      tipo: lote!.tipo, tensaoConfig: am.tensaoConfig ?? '127_220',
       cliente: lote!.cliente, clienteRua: lote!.clienteRua ?? '',
       clienteCidade: lote!.clienteCidade ?? '', clienteCep: lote!.clienteCep ?? '',
       produto: am.produto, fabricante: am.fabricante, modelo: am.modelo,
-      identificador: am.identificador, lacre: '',
+      identificador: am.identificador, lacre: am.lacre ?? '',
       tensaoAlim: am.tensaoAlim, potencia: am.potencia, frequencia: am.frequencia,
       temDriver: am.temDriver,
       driverProduto: am.driverProduto, driverFabricante: am.driverFabricante,
@@ -1010,15 +1254,15 @@ export default function LotePage() {
     setTimeout(() => setBaixando(null), 6000)
   }
 
-  function verPDFAmostra(i: number) {
+  async function verPDFAmostra(i: number) {
     if (!lote) return
     const am = lote.amostras[i]
     const cfg: Cispr15Config = {
-      tipo: lote.tipo, tensaoConfig: '127_220',
+      tipo: lote.tipo, tensaoConfig: am.tensaoConfig ?? '127_220',
       cliente: lote.cliente, clienteRua: lote.clienteRua ?? '',
       clienteCidade: lote.clienteCidade ?? '', clienteCep: lote.clienteCep ?? '',
       produto: am.produto, fabricante: am.fabricante, modelo: am.modelo,
-      identificador: am.identificador, lacre: '',
+      identificador: am.identificador, lacre: am.lacre ?? '',
       tensaoAlim: am.tensaoAlim, potencia: am.potencia, frequencia: am.frequencia,
       temDriver: am.temDriver,
       driverProduto: am.driverProduto, driverFabricante: am.driverFabricante,
@@ -1033,7 +1277,7 @@ export default function LotePage() {
       resultadoConduzida: 'pass', resultadoLoop: 'pass', resultadoAnexoB: 'pass',
     }
     localStorage.setItem(CFG_KEY, JSON.stringify(cfg))
-    localStorage.setItem(PHOTOS_KEY, JSON.stringify(am.photos))
+    await savePhotos(PHOTOS_KEY, am.photos)
 
     // docxHtml: preferir da memória; fallback: buscar no localStorage pelo relatório salvo
     let docxHtml = am.docxHtml
@@ -1068,7 +1312,7 @@ export default function LotePage() {
 
       {/* Header */}
       <div className="mb-6">
-        <button type="button" onClick={() => router.push('/cispr15')}
+        <button type="button" onClick={() => router.push('/cispr15/lotes')}
           className="flex items-center gap-2 text-white/40 hover:text-white/70 text-sm mb-4 transition-colors">
           <ArrowLeft size={14} /> Voltar ao formulário
         </button>
@@ -1120,19 +1364,16 @@ export default function LotePage() {
         {/* Importar pasta-mãe: casa subpastas com os protocolos das amostras */}
         <div className="flex flex-col gap-2">
           <Label>Pasta-mãe</Label>
-          <label className={cn(
-            'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border cursor-pointer transition-all',
-            importMae?.loading
-              ? 'border-blue-300/30 bg-blue-500/8 text-blue-400 pointer-events-none'
-              : 'border-gold/40 bg-gold/8 text-gold hover:bg-gold/14',
-          )}>
+          <button type="button" onClick={handlePastaMae} disabled={importMae?.loading}
+            className={cn(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all',
+              importMae?.loading
+                ? 'border-blue-300/30 bg-blue-500/8 text-blue-400 pointer-events-none'
+                : 'border-gold/40 bg-gold/8 text-gold hover:bg-gold/14',
+            )}>
             {importMae?.loading ? <Loader2 size={12} className="animate-spin" /> : <FolderOpen size={12} />}
             {importMae?.loading ? 'Importando…' : 'Importar Pasta'}
-            <input ref={maeRef} type="file" className="hidden"
-              disabled={importMae?.loading}
-              {...{ webkitdirectory: '' } as any}
-              onChange={e => { if (e.target.files?.length) handlePastaMae(e.target.files); e.target.value = '' }} />
-          </label>
+          </button>
         </div>
       </div>
 
@@ -1225,17 +1466,23 @@ export default function LotePage() {
           <Shield size={13} /> Verificar Conformidade
         </button>
         <button type="button" onClick={() => {
-          if (!confirm('Limpar todos os dados do lote?')) return
+          if (!lote) return
+          if (!confirm('Limpar todos os dados deste lote?')) return
           localStorage.removeItem(LOTE_KEY)
           const api = (window as any).electronAPI
-          if (api?.clearLoteFile) api.clearLoteFile().catch(() => {})
-          router.push('/cispr15')
+          if (api?.saveLotes) {
+            const atualizados = allLotesRef.current.filter(l => l.id !== lote.id)
+            allLotesRef.current = atualizados
+            api.saveLotes(atualizados).catch(() => {})
+          }
+          if (api?.clearLoteFile) api.clearLoteFile().catch(() => {}) // limpeza do arquivo legado, se ainda existir
+          router.push('/cispr15/lotes')
         }}
           className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-red/20 bg-red/8 text-red-400 hover:bg-red/15 transition-all text-sm">
           <Trash2 size={13} /> Limpar Lote
         </button>
         <div className="flex-1" />
-        <button type="button" onClick={() => router.push('/cispr15')}
+        <button type="button" onClick={() => router.push('/cispr15/lotes')}
           className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm">
           <ArrowLeft size={13} /> Voltar
         </button>
@@ -1286,7 +1533,7 @@ export default function LotePage() {
             {gateError && <p className="text-xs text-red-400">Senha incorreta.</p>}
             <div className="flex gap-2 justify-end">
               <button type="button"
-                onClick={() => router.push('/cispr15')}
+                onClick={() => router.push('/cispr15/lotes')}
                 className="px-4 py-2 rounded-lg border border-white/10 text-white/40 hover:text-white/70 text-sm transition-all">
                 Cancelar
               </button>

@@ -43,8 +43,10 @@ static class Wmf2Png
                 int h = mf.Height;
                 if (w < 10 || h < 10) { w = 800; h = 600; }
 
-                // Escala vetorial para PNG nítido (alvo ~1600 px de largura, teto 4x).
-                const int target = 1600;
+                // Escala vetorial para PNG nítido (alvo ~1300 px de largura, teto 4x).
+                // 1300 px a 170 mm de impressão ≈ 194 dpi — nítido e legível, porém
+                // ~34% mais leve que 1600 px (PDF final menor sem perder legibilidade).
+                const int target = 1300;
                 float scale = w < target ? (float)target / w : 1f;
                 if (scale > 4f) scale = 4f;
 

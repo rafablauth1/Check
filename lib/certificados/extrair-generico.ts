@@ -10,12 +10,26 @@
 
 import { aplicarExtratorLab, normData } from './extratores-lab'
 import { siglaOficial } from '@/lib/taxonomia/tipos'
+import type { LaboratorioCal } from '@/lib/laboratorios/registro'
 
 // Modelo de extração por lab: rótulo que o lab usa para cada campo (tem prioridade).
 export interface OverrideCampos {
-  nome?: string; fabricante?: string; modelo?: string; serie?: string; tag?: string; dataCalibracao?: string
+  nome?: string; fabricante?: string; modelo?: string; serie?: string; tag?: string; dataCalibracao?: string; numero?: string
 }
 const escRe = (s?: string) => (s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+const normCalKey = (c?: string) => (c ? `CAL ${(c.match(/\d{3,4}/) || [''])[0]}` : '')
+
+// Rótulos configurados na aba Laboratórios (campos) pro CAL/lab identificado no
+// texto. Alguns labs (Alutal, Keysight, Inmetro…) não têm acreditação Cgcre
+// (CAL ####) — são identificados só pelo nome (assinatura no texto).
+export function overrideDoLab(labs: LaboratorioCal[], texto: string): OverrideCampos {
+  const k = normCalKey(extrairAcreditacao(texto))
+  const porCal = k ? labs.find(l => normCalKey(l.cal) === k)?.campos : undefined
+  if (porCal) return porCal
+  const nomeLab = identificarLaboratorio(texto)
+  const porNome = nomeLab ? labs.find(l => l.nome.toLowerCase() === nomeLab.toLowerCase())?.campos : undefined
+  return porNome || {}
+}
 
 // Acreditação (Cgcre) → nome do laboratório. CAL 0024 = LABELO.
 // Estes são os já conhecidos; o registro auto-descoberto cobre o resto.
@@ -39,6 +53,7 @@ const ASSINATURAS_LAB: { re: RegExp; nome: string }[] = [
   { re: /\belus\b|precis[ãa]o\s+metrol[óo]gica/i,       nome: 'Elus Instrumentação' },
   { re: /metroquality/i,                                nome: 'Metroquality' },
   { re: /metrosul/i,                                    nome: 'Metrosul' },
+  { re: /\bnovus\b/i,                                    nome: 'Novus' },
   { re: /padr[ãa]o\s+balan[çc]as/i,                     nome: 'Padrão Balanças' },
   { re: /cetemp|\bsenai\b/i,                            nome: 'SENAI/CETEMP' },
   { re: /grupo\s*ctj|\bctj\b/i,                         nome: 'CTJ' },
@@ -105,11 +120,19 @@ const ehLixo = (v: string) =>
 // (ex.: "Não identificado Modelo/Tipo: 230 V" → "Não identificado").
 const CUT_INLINE = /\s+(?:Fabricante|Marca|Manufacturer|Modelo|Model|Tipo|Type|N[º°o.]*\s*de\s*S[ée]rie|Serial|S\/?N|C[óo]d(?:igo)?\b|Identifica|Data|Faixa|Resolu|Endere)\b.*$/i
 
+// Mesmo corte, mas pro caso do OCR GRUDAR o rótulo direto no valor, sem espaço
+// nenhum entre eles (ex.: "ACE-LDG-S-15-MF001NELIdentificação: 3227LAV" →
+// "ACE-LDG-S-15-MF001NEL"). CUT_INLINE não pega esse caso pois exige um \s antes
+// do rótulo. Só corta se o rótulo vier em Title Case logo após maiúscula/dígito —
+// como rótulo de formulário normalmente aparece — pra não cortar por coincidência
+// dentro de um código que já é todo maiúsculo.
+const CUT_GLUED = /(?<=[A-Z0-9])(?:Fabricante|Marca|Manufacturer|Modelo|Model|Tipo|Type|Identifica[çc][ãa]o|Data|Faixa|Resolu[çc][ãa]o|Endere[çc]o|Serial|C[óo]digo)\b.*$/
+
 const arruma = (s: string, max: number) => {
   // pdfTextLayout separa COLUNAS por TAB — o valor é a 1ª coluna não-vazia
   // (corta "34970A\tCliente" → "34970A"; "\tACE-LDG…" → "ACE-LDG…").
   const col = (s || '').split('\t').map(c => c.trim()).filter(Boolean)[0] || ''
-  const v = limpa(col).replace(CUT_INLINE, '').replace(/\s{2,}.*/, '').replace(/[•\-–:\s]+$/, '').trim()
+  const v = limpa(col).replace(CUT_INLINE, '').replace(CUT_GLUED, '').replace(/\s{2,}.*/, '').replace(/[•\-–:\s]+$/, '').trim()
   return v && !ehLixo(v) && !ehRotulo(v) && v.length <= max ? v : undefined
 }
 
@@ -242,10 +265,13 @@ function nomeValido(n?: string): string | undefined {
  *  `ov` = modelo de extração do lab (rótulos específicos) — têm prioridade. */
 export function extrairMetadadosGenerico(texto: string, ov: OverrideCampos = {}): MetaGenerica {
   const t = (texto || '').slice(0, 4500)   // foco na folha de rosto
-  // Nº do certificado/relatório — letra(s) opcionais + dígitos + sep + ano,
-  // ou formatos próprios (DIMCI 1068/2025, WO-00936667, L002787/2026).
+  // Nº do certificado/relatório — letra(s) opcionais + dígitos + 1-2 grupos de
+  // separador+dígitos (cobre formatos com 2 OU 3 segmentos: "150.059", "P-7405/24",
+  // "31.169/22", "MA 010_06_23"), ou formatos próprios (DIMCI 1068/2025,
+  // WO-00936667, L002787/2026). "calibra[a-zà-ÿ]*" (em vez de "calibra\w*") pra
+  // casar "Calibração" inteiro — \w não inclui "ç"/"ã", cortava o rótulo no meio.
   const numM =
-    t.match(/(?:certificad\w*|certificate|relat[óo]rio)\s*(?:de\s*calibra\w*)?\s*(?:n[º°o.]*)?\s*[:\-]?\s*([A-Z]{0,5}\s?-?\s?\d{1,8}\s?[/.\-]\s?\d{2,4})/i) ||
+    t.match(/(?:certificad\w*|certificate|relat[óo]rio)\s*(?:de\s*calibra[a-zà-ÿ]*)?\s*(?:n[º°o.]*)?\s*[:\-]?\s*([A-Z]{0,5}\s?-?\s?\d{1,8}(?:\s?[/._\-]\s?\d{1,8}){1,2})/i) ||
     t.match(/\b(DIMCI\s*\d{1,5}\/\d{2,4})\b/i) ||
     t.match(/\b(WO-\d{6,10})\b/i) ||
     t.match(/\b([A-Z]\d{5,7}\/\d{4})\b/)
@@ -256,13 +282,19 @@ export function extrairMetadadosGenerico(texto: string, ov: OverrideCampos = {})
   const ROT_MOD  = ['Modelo(?:\\s*N[º°o.]*)?', 'Model(?:\\s*\\/?\\s*Type)?', 'Tipo', 'Type']
   // aceita "Nº de Série" E "Número de Série" (N[º°o.]* não casa "Número")
   const ROT_SER  = ['N[úu]mero\\s*de\\s*S[ée]rie', 'N[º°o.]*\\s*de\\s*S[ée]rie', 'N[º°o.]*\\s*S[ée]rie', 'S[ée]rie\\s*N[º°o.]*', 'S[ée]rie', 'Serial(?:\\s*N\\w*)?', 'Serial\\s*Number', 'S\\/?N']
+  // rótulo do Nº do certificado (com qualificador — "Número" sozinho colide com
+  // "Número de Série"/"Número de Identificação" e pegaria o campo errado).
+  const ROT_NUM  = ['N[º°o.]*\\s*(?:do\\s*)?Certificado(?:\\s*de\\s*Calibra[çc][ãa]o)?', 'N[úu]mero\\s*do\\s*Certificado', 'N[º°o.]*\\s*(?:do\\s*)?Relat[óo]rio', 'N[úu]mero\\s*do\\s*Relat[óo]rio', 'Certificate\\s*(?:No\\.?|Number)', 'Report\\s*(?:No\\.?|Number)']
   // rótulo do MODELO DO LAB tem prioridade (vai na frente da lista de sinônimos)
   const pre = (label: string | undefined, lista: string[]) => label ? [escRe(label), ...lista] : lista
   // genérico (linha) com fallback MULTI-COLUNA (pdfTextLayout separa colunas por TAB)
   const rNome = pre(ov.nome, ROT_NOME), rFab = pre(ov.fabricante, ROT_FAB)
   const rMod = pre(ov.modelo, ROT_MOD), rSer = pre(ov.serie, ROT_SER)
+  const rNum = pre(ov.numero, ROT_NUM)
   const meta: MetaGenerica = {
-    numero:     numM ? limpa(numM[1]).replace(/\s+/g, '') : undefined,
+    // rótulo do lab (ou os genéricos acima) tem prioridade; o regex livre numM
+    // (aceita formatos soltos tipo "WO-00936667") é só o último fallback.
+    numero:     campo(t, rNum, 40) ?? campoMultiColuna(t, rNum, 40) ?? (numM ? limpa(numM[1]).replace(/\s+/g, '') : undefined),
     nome:       nomeValido(campo(t, rNome) ?? campoMultiColuna(t, rNome)),
     fabricante: campo(t, rFab, 50) ?? campoMultiColuna(t, rFab, 50),
     modelo:     campo(t, rMod, 40) ?? campoMultiColuna(t, rMod, 40),

@@ -3,7 +3,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 contextBridge.exposeInMainWorld('electronAPI', {
   // PDF
   salvarPDF:       (filename)  => ipcRenderer.invoke('pdf:save',              { filename }),
-  salvarPDFNaEut:  (filename, folderPath) => ipcRenderer.invoke('pdf:save-eut', { filename, folderPath }),
+  salvarPDFNaEut:  (filename, folderPath, force) => ipcRenderer.invoke('pdf:save-eut', { filename, folderPath, force }),
   deletePdfCopy:   (pdfPath)   => ipcRenderer.invoke('pdf:delete-copy',       { pdfPath }),
   findPdfCopy:     (query)     => ipcRenderer.invoke('pdf:find-in-copy-folder', { query }),
 
@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Pasta EUT
   abrirPastaEut:   ()          => ipcRenderer.invoke('eut:open-folder'),
+  // Acha a pasta da EUT automaticamente pelo protocolo (sem diálogo manual)
+  buscarPastaEutPorProtocolo: (protocolo, ano) => ipcRenderer.invoke('eut:find-by-protocolo', { protocolo, ano }),
   getEutFolder:    ()          => ipcRenderer.invoke('eut:get-folder'),
   limparPastaEut:  ()          => ipcRenderer.invoke('eut:clear-folder'),
 
@@ -44,8 +46,15 @@ contextBridge.exposeInMainWorld('electronAPI', {
   exportRelatorioFiles: (folderPath, numRelatorio, photos, docxHtml, docxName) => ipcRenderer.invoke('relatorio:export-files', { folderPath, numRelatorio, photos, docxHtml, docxName }),
   getAgenda:       ()          => ipcRenderer.invoke('data:get-agenda'),
   saveAgenda:      (agenda)    => ipcRenderer.invoke('data:save-agenda',      { agenda }),
+  importarFotosRede: ()        => ipcRenderer.invoke('agenda:importar-fotos-rede'),
+  organizarResultados: ()      => ipcRenderer.invoke('agenda:organizar-resultados'),
+
+  // Lotes em andamento (coleção, na pasta de rede — dataFolder)
+  getLotes:        ()          => ipcRenderer.invoke('data:get-lotes'),
+  saveLotes:       (lotes)     => ipcRenderer.invoke('data:save-lotes', { lotes }),
 
   // Lote em andamento (arquivo local) + baixar PDFs do lote
+  importarPastaMae: (protocolos) => ipcRenderer.invoke('lote:importar-pasta-mae', { protocolos }),
   getLote:         ()          => ipcRenderer.invoke('lote:get'),
   saveLoteFile:    (lote)      => ipcRenderer.invoke('lote:save',  { lote }),
   clearLoteFile:   ()          => ipcRenderer.invoke('lote:clear'),
@@ -68,18 +77,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Shell / arquivos
   openPath:        (path)  => ipcRenderer.invoke('shell:open-path',       { path }),
+
+  // Check — "Executar no Claude Code" (abre terminal novo com a demanda como prompt)
+  executarTarefaClaude: (prompt, titulo) => ipcRenderer.invoke('check:executar-tarefa', { prompt, titulo }),
+  // Check — "Subir pro Git" (commit + push do repositório do app)
+  gitPush:         (message) => ipcRenderer.invoke('check:git-push', { message }),
   browsePDF:       ()      => ipcRenderer.invoke('settings:browse-pdf'),
   focusWindow:     ()      => ipcRenderer.invoke('window:focus'),
 
   // Eventos do menu
   onMenuSalvarPDF:    (cb) => ipcRenderer.on('menu:salvar-pdf',     () => cb()),
   onMenuSalvarPDFEut: (cb) => ipcRenderer.on('menu:salvar-pdf-eut', () => cb()),
+  // Pasta arrastada pro ícone/atalho do app (cold start ou app já aberto)
+  onFolderDropped: (cb) => ipcRenderer.on('eut:folder-dropped', (_e, data) => cb(data)),
 
   // Cancelar PDF
   cancelPdf:      (eutFolderPath, pdfFilename, ano) => ipcRenderer.invoke('relatorio:cancel-pdf', { eutFolderPath, pdfFilename, ano }),
 
   // Publicar PDF assinado para pasta da agenda
   publishPdf:     (eutFolderPath, pdfFilename, ano) => ipcRenderer.invoke('pdf:publish', { eutFolderPath, pdfFilename, ano }),
+  // Enviar cópia: manda o PDF mais recente da pasta da EUT pra pasta fixa de cópia dos relatórios (por ano)
+  sendCopy:       (eutFolderPath, ano)               => ipcRenderer.invoke('pdf:send-copy', { eutFolderPath, ano }),
   // Reconcilia a cópia: copia p/ pasta de cópias se o PDF original foi assinado manualmente
   syncEutCopy:    (eutFolderPath, pdfFilename, ano) => ipcRenderer.invoke('pdf:sync-eut-copy', { eutFolderPath, pdfFilename, ano }),
 

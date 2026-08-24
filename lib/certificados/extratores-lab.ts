@@ -6,7 +6,7 @@
 // mantém o que já veio certo (overlay: { ...generico, ...especifico-definido }).
 
 export interface CamposLab {
-  modelo?: string; serie?: string; dataCalibracao?: string; fabricante?: string
+  modelo?: string; serie?: string; dataCalibracao?: string; fabricante?: string; numero?: string
 }
 
 const MES: Record<string, string> = {

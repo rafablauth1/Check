@@ -13,13 +13,13 @@ const DEFAULTS: EquipamentoEMC[] = [
 const repo = createRepo<EquipamentoEMC>('equipamentos.json', DEFAULTS)
 
 export async function GET() {
-  return NextResponse.json(repo.all())
+  return NextResponse.json(await repo.all())
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Omit<EquipamentoEMC, 'id'>
-    return NextResponse.json(repo.create(body), { status: 201 })
+    return NextResponse.json(await repo.create(body), { status: 201 })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })
   }
@@ -35,7 +35,7 @@ export async function PATCH(req: NextRequest) {
     }
     const ids = new Set(body.ids ?? [])
     let n = 0
-    repo.update(lista => lista.map(e => {
+    await repo.update(lista => lista.map(e => {
       const match = (body.nome && e.nome === body.nome) || ids.has(e.id)
       if (!match) return e
       n++
@@ -55,11 +55,11 @@ export async function PATCH(req: NextRequest) {
 export async function DELETE(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as { all?: boolean; ids?: string[] }
-    if (body.all) { repo.clear(); return NextResponse.json({ ok: true, removidos: 'todos' }) }
+    if (body.all) { await repo.clear(); return NextResponse.json({ ok: true, removidos: 'todos' }) }
     if (!Array.isArray(body.ids) || !body.ids.length) {
       return NextResponse.json({ error: 'Informe os ids.' }, { status: 400 })
     }
-    const removidos = repo.remove(body.ids)
+    const removidos = await repo.remove(body.ids)
     return NextResponse.json({ ok: true, removidos })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

@@ -32,6 +32,15 @@ export function calStatus(dateStr?: string | null) {
   return              { label: 'EM DIA',   color: 'success', bg: 'bg-success/10 text-success' }
 }
 
+// DD/MM/AAAA → ISO YYYY-MM-DD (já ISO passa direto). Usado pra normalizar datas
+// vindas de OCR/formulários (ex.: "Data do certificado" do FOR 6401).
+export function dmyParaISO(s?: string): string {
+  if (!s) return ''
+  const m = s.match(/(\d{2})\/(\d{2})\/(\d{4})/)
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10) : ''
+}
+
 // Adicionar meses a uma data
 export function addM(dateStr: string, months: number): string {
   try {

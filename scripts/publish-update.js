@@ -101,3 +101,25 @@ console.log(`  versão:    ${version}`)
 console.log(`  instalador: ${installer}`)
 console.log('\nPara instalar em outro PC, copie a pasta releases/ e execute INSTALAR.bat')
 console.log('')
+
+// Publica na pasta de rede de atualização automática (mesma que updateFolder
+// aponta em electron/main.js: UPDATE_FOLDER_PADRAO) — best-effort: se a rede
+// estiver fora do ar ou sem permissão, só avisa e não quebra o build. Com
+// isso, os outros PCs veem a versão nova sozinhos (banner "Nova versão
+// disponível" já existente no app) sem precisar copiar nada manualmente.
+const NETWORK_UPDATE_FOLDER =
+  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15\\instalador'
+try {
+  fs.mkdirSync(NETWORK_UPDATE_FOLDER, { recursive: true })
+  fs.copyFileSync(path.join(releasesDir, installer), path.join(NETWORK_UPDATE_FOLDER, installer))
+  fs.copyFileSync(outFile, path.join(NETWORK_UPDATE_FOLDER, 'version.json'))
+  // remove instaladores antigos da pasta de rede (mantém só o atual)
+  for (const f of fs.readdirSync(NETWORK_UPDATE_FOLDER)) {
+    if ((f.endsWith('.exe') || f.endsWith('.blockmap')) && f !== installer && f !== installer + '.blockmap') {
+      try { fs.rmSync(path.join(NETWORK_UPDATE_FOLDER, f), { force: true }) } catch {}
+    }
+  }
+  console.log(`✓ Publicado na rede para atualização automática: ${NETWORK_UPDATE_FOLDER}`)
+} catch (err) {
+  console.warn('Aviso: não consegui publicar na pasta de rede de atualização —', err.message)
+}

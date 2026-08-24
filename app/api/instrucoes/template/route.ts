@@ -11,7 +11,7 @@ export const dynamic = 'force-dynamic'
 interface TemplateIT { blocos: Bloco[] }
 
 export async function GET() {
-  const t = lerJSON<TemplateIT | null>(ARQ, null)
+  const t = await lerJSON<TemplateIT | null>(ARQ, null)
   return NextResponse.json(t && Array.isArray(t.blocos) ? t : { blocos: blocosPadraoIT() })
 }
 
@@ -21,7 +21,7 @@ export async function PUT(req: NextRequest) {
     if (!body || !Array.isArray(body.blocos)) {
       return NextResponse.json({ error: 'template inválido' }, { status: 400 })
     }
-    escreverJSON(ARQ, { blocos: body.blocos })
+    await escreverJSON(ARQ, { blocos: body.blocos })
     return NextResponse.json({ ok: true })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

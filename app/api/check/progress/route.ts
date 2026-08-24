@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     if (!id && !title) {
       return NextResponse.json({ error: 'informe id ou title' }, { status: 400 })
     }
-    const board = lerJSON<BoardCheck | null>(ARQUIVO, null) ?? boardPadrao()
+    const board = (await lerJSON<BoardCheck | null>(ARQUIVO, null)) ?? boardPadrao()
     const alvo = id
       ? board.tarefas.find((t) => t.id === id)
       : board.tarefas.find((t) => t.title.trim().toLowerCase() === String(title).trim().toLowerCase())
@@ -41,7 +41,7 @@ export async function POST(req: NextRequest) {
     }
     if (novas.length) alvo.log = [...novas, ...alvo.log]
 
-    escreverJSON(ARQUIVO, board)
+    await escreverJSON(ARQUIVO, board)
     return NextResponse.json({ ok: true, tarefa: alvo })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

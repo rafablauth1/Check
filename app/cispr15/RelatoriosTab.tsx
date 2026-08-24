@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { FileText, Trash2, FolderOpen, AlertTriangle, ChevronDown, ChevronUp, Wifi, WifiOff, Lock, CheckCircle2, Loader2, PenLine } from 'lucide-react'
+import { FileText, Trash2, FolderOpen, AlertTriangle, ChevronDown, ChevronUp, Wifi, WifiOff, Lock, CheckCircle2, Loader2, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { type RelatorioSalvo, RELATORIOS_KEY, RELATORIO_DOCX_PFX } from './types'
 
@@ -29,7 +29,6 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
   const [expanded,     setExpanded]     = useState<string | null>(null)
   const [signState,    setSignState]    = useState<Record<string, 'loading' | 'ok' | 'error'>>({})
   const [signMsg,      setSignMsg]      = useState<Record<string, string>>({})
-  const [hasCert,      setHasCert]      = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -53,11 +52,6 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
             }
           }
         } catch {}
-        // Verifica se há certificado configurado neste PC
-        try {
-          const s = await api.getSettings()
-          setHasCert(!!(s?.certThumbprint))
-        } catch {}
         return
       }
       // fallback para localStorage (fora do Electron)
@@ -71,37 +65,39 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
 
   const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
 
-  async function assinarEPublicar(id: string) {
-    if (!hasCert) {
-      setSignState(p => ({ ...p, [id]: 'error' }))
-      setSignMsg(p => ({ ...p, [id]: 'Nenhum certificado configurado. Configure em Configurações → Assinatura Digital de PDF.' }))
-      return
-    }
+  // Envia o PDF mais recente da pasta da EUT pra pasta fixa de cópia dos
+  // relatórios (T:\Relatórios\Compatibilidade eletromagnética — ver main.js).
+  // Não presume o nome do arquivo: se a pasta tiver mais de um PDF (revisão,
+  // assinado, etc.), manda o de modificação mais recente.
+  async function enviarCopia(id: string) {
     const rel = lista.find(r => r.id === id)
-    if (!rel?.eutFolderPath) {
-      setSignState(p => ({ ...p, [id]: 'error' }))
-      setSignMsg(p => ({ ...p, [id]: 'Pasta EUT não associada — carregue a pasta da EUT primeiro.' }))
-      return
-    }
-    const pdfFilename = `${san(rel.numRelatorio)}_${rel.cfg.tipo}_${san(rel.cfg.fabricante)}.pdf`
+    if (!rel) return
     const api = (window as any).electronAPI
-    if (!api?.signPdf || !api?.publishPdf) return
+    if (!api?.sendCopy) return
     setSignState(p => ({ ...p, [id]: 'loading' }))
     setSignMsg(p => ({ ...p, [id]: '' }))
+    // Sem pasta salva (ex.: relatório do lote) — tenta achar pelo protocolo
+    // (T:\...\3.2 - Registros de ensaios\<ano>\<pasta do protocolo>) antes de desistir.
+    let eutFolderPath = rel.eutFolderPath
+    if (!eutFolderPath && api.buscarPastaEutPorProtocolo && rel.protocolo) {
+      try {
+        const achou = await api.buscarPastaEutPorProtocolo(rel.protocolo, getAno(rel.dataEmissao))
+        if (achou?.ok) eutFolderPath = achou.folderPath
+      } catch {}
+    }
+    if (!eutFolderPath) {
+      setSignState(p => ({ ...p, [id]: 'error' }))
+      setSignMsg(p => ({ ...p, [id]: 'Pasta EUT não associada e não encontrada pelo protocolo — carregue a pasta da EUT primeiro.' }))
+      return
+    }
     try {
-      const signRes = await api.signPdf(rel.eutFolderPath, pdfFilename)
-      if (!signRes.ok) {
-        setSignState(p => ({ ...p, [id]: 'error' }))
-        setSignMsg(p => ({ ...p, [id]: signRes.error ?? 'Erro ao assinar' }))
-        return
-      }
-      const pubRes = await api.publishPdf(rel.eutFolderPath, pdfFilename, getAno(rel.dataEmissao))
-      if (pubRes.ok) {
+      const res = await api.sendCopy(eutFolderPath, getAno(rel.dataEmissao))
+      if (res.ok) {
         setSignState(p => ({ ...p, [id]: 'ok' }))
-        setSignMsg(p => ({ ...p, [id]: 'Assinado e publicado com sucesso' }))
+        setSignMsg(p => ({ ...p, [id]: 'Cópia enviada com sucesso' }))
       } else {
         setSignState(p => ({ ...p, [id]: 'error' }))
-        setSignMsg(p => ({ ...p, [id]: 'Assinado, mas erro ao publicar: ' + (pubRes.error ?? '') }))
+        setSignMsg(p => ({ ...p, [id]: res.error ?? 'Erro ao enviar cópia' }))
       }
     } catch (e: any) {
       setSignState(p => ({ ...p, [id]: 'error' }))
@@ -316,32 +312,30 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
                       className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-gold/8 border border-gold/20 text-gold text-[11px] font-semibold hover:bg-gold/18 transition-all">
                       <FileText size={11} /> PDF
                     </button>
-                    {/* Assinar e Publicar — sempre visível */}
+                    {/* Enviar cópia — sempre visível; pode reenviar (não é ação irreversível) */}
                     {(() => {
                       const ss = signState[r.id]
                       const done = ss === 'ok'
                       return (
                         <button
-                          onClick={() => !done && ss !== 'loading' && assinarEPublicar(r.id)}
-                          disabled={ss === 'loading' || done}
+                          onClick={() => ss !== 'loading' && enviarCopia(r.id)}
+                          disabled={ss === 'loading'}
                           title={
                             done           ? signMsg[r.id] :
                             ss === 'error' ? signMsg[r.id] :
-                            !hasCert       ? 'Nenhum certificado configurado — clique para ver instruções' :
-                            'Assinar digitalmente e publicar o PDF'
+                            'Enviar o PDF mais recente da pasta da EUT pra pasta de cópia dos relatórios'
                           }
                           className={cn(
                             'flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold transition-all',
-                            done             ? 'border-teal/30 bg-teal/8 text-teal cursor-default' :
+                            done             ? 'border-teal/30 bg-teal/8 text-teal hover:bg-teal/14' :
                             ss === 'error'   ? 'border-red-400/30 bg-red-400/8 text-red-400' :
                             ss === 'loading' ? 'border-white/10 text-white/30 pointer-events-none' :
-                            !hasCert         ? 'border-white/10 bg-white/3 text-white/30 hover:bg-white/6' :
                             'border-blue-400/25 bg-blue-400/6 text-blue-300 hover:bg-blue-400/14',
                           )}>
                           {ss === 'loading' ? <Loader2 size={11} className="animate-spin" /> :
                            done             ? <CheckCircle2 size={11} /> :
-                           <PenLine size={11} />}
-                          {ss === 'loading' ? 'Processando…' : done ? 'Publicado' : ss === 'error' ? 'Erro' : 'Assinar e Publicar'}
+                           <Send size={11} />}
+                          {ss === 'loading' ? 'Enviando…' : done ? 'Enviado' : ss === 'error' ? 'Erro' : 'Enviar cópia'}
                         </button>
                       )
                     })()}

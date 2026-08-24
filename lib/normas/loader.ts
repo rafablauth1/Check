@@ -15,14 +15,14 @@ const NORMAS_DEFAULT: Norma[] = [
   { id: 'nbr15947',     codigo: 'ABNT NBR 15947',  titulo: 'Equipamentos para iluminação elétrica — Limites e métodos de medição de perturbações de radiofrequência', tipo: 'emissao', pdfDisponivel: false, equipamentosNecessarios: [{ grupoId: 'medidores', descricao: 'Receptor EMI' }, { grupoId: 'redes-impedancia', descricao: 'LISN 50µH' }, { grupoId: 'antenas', descricao: 'Antena de loop' }] },
 ]
 
-export function carregarNormas(): Norma[] {
+export async function carregarNormas(): Promise<Norma[]> {
   return lerJSON<Norma[]>('normas/index.json', NORMAS_DEFAULT)
 }
 
-export function carregarNorma(id: string): Norma | null {
-  const todas = carregarNormas()
+export async function carregarNorma(id: string): Promise<Norma | null> {
+  const todas = await carregarNormas()
   const base = todas.find(n => n.id === id) ?? null
   if (!base) return null
-  const detalhes = lerJSON<Partial<Norma>>(`normas/${id}.json`, {})
+  const detalhes = await lerJSON<Partial<Norma>>(`normas/${id}.json`, {})
   return { ...base, ...detalhes }
 }

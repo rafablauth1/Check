@@ -8,14 +8,14 @@ import { readSettings } from '@/lib/settings-server'
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const XlsxPopulate = require('xlsx-populate')
 
-function getExcelPath(): string {
-  const settings = readSettings()
+async function getExcelPath(): Promise<string> {
+  const settings = await readSettings()
   if (settings.excelPath) return path.normalize(settings.excelPath)
   return path.normalize('C:/Users/Notla/OneDrive/Área de Trabalho/Compatibilidade eletromagnética_2026.xlsx')
 }
 
-function readRows(): { rows: any[][]; excelPath: string } {
-  const excelPath = getExcelPath()
+async function readRows(): Promise<{ rows: any[][]; excelPath: string }> {
+  const excelPath = await getExcelPath()
   if (!fs.existsSync(excelPath)) {
     throw new Error(`Planilha não encontrada: ${excelPath}\n\nConfigure o caminho em Configurações.`)
   }
@@ -66,7 +66,7 @@ function findNextEmptyRow(rows: any[][]): number {
 export async function GET(request: NextRequest) {
   const checkProtocolo = request.nextUrl.searchParams.get('checkProtocolo')
   try {
-    const { rows } = readRows()
+    const { rows } = await readRows()
 
     if (checkProtocolo !== null) {
       const needle = checkProtocolo.trim().toLowerCase()
@@ -98,7 +98,7 @@ export async function DELETE(request: NextRequest) {
     if (!match) return NextResponse.json({ error: 'Formato inválido' }, { status: 400 })
     const num = parseInt(match[1], 10)
 
-    const { rows, excelPath } = readRows()
+    const { rows, excelPath } = await readRows()
     const idx = rows.findIndex(row => parseInt(String(row[2]), 10) === num)
     if (idx < 0) return NextResponse.json({ error: 'Número não encontrado' }, { status: 404 })
 
@@ -122,7 +122,7 @@ export async function POST(request: NextRequest) {
   try {
     const { cliente = '', produto = '', protocolo = '', orcamento = '', responsavel = '' } = await request.json()
 
-    const { rows, excelPath } = readRows()
+    const { rows, excelPath } = await readRows()
     const idx = findNextEmptyRow(rows)
     if (idx === -1) return NextResponse.json({ error: 'Sem linhas disponíveis na planilha' }, { status: 400 })
 

@@ -7,7 +7,8 @@ import { FilterDropdown } from '@/components/FilterDropdown'
 import { Paginacao } from '@/components/Paginacao'
 import { fmt, diasAte } from '@/lib/utils'
 import { cn } from '@/lib/utils'
-import type { EquipamentoEMC, GrupoId } from '@/lib/equipamentos/tipos'
+import type { EquipamentoEMC, GrupoId, StatusEquipamento } from '@/lib/equipamentos/tipos'
+import { exigeCalibrarAntesDoUso } from '@/lib/equipamentos/calibracao'
 import { GRUPO_CORES } from '@/lib/grupos-icons'
 import type { Taxonomia } from '@/lib/taxonomia/tipos'
 import { siglaDaTag } from '@/lib/taxonomia/tipos'
@@ -31,7 +32,7 @@ interface RascunhoItem { tag: string; folder: string; motivo: string; certPath?:
 interface ScanResult {
   ok: boolean
   error?: string
-  resultados?: { folder: string; certPath: string | null; text?: string; items?: unknown[]; error?: string }[]
+  resultados?: { folder: string; certPath: string | null; text?: string; acText?: string; items?: unknown[]; error?: string }[]
 }
 type LabAPI = {
   scanCertificados?: (p: string) => Promise<ScanResult>
@@ -56,9 +57,22 @@ const FILTROS_KEY = 'equip_filtros_v1'
 // Status sem periodicidade de calibração → não mostra "próxima calibração".
 const SEM_PROX_CAL = new Set(['fora', 'sem-calibracao', 'calibrar-antes-uso'])
 
+// Status "ao vivo": se vencido há mais que a periodicidade da análise crítica
+// (ver lib/equipamentos/calibracao.ts), escala pra "calibrar antes do uso" —
+// mesmo que o campo status salvo ainda esteja em 'ativo'/'calibrar' (não
+// depende de reabrir o cadastro pra recalcular; respeita 'fora'/'sem-calibracao').
+function statusEfetivo(e: EquipamentoEMC): StatusEquipamento {
+  if ((e.status === 'ativo' || e.status === 'calibrar') && exigeCalibrarAntesDoUso(e.proximaCalibracao)) {
+    return 'calibrar-antes-uso'
+  }
+  return e.status
+}
+
 function StatusPill({ status }: { status: string }) {
-  if (status === 'ativo')    return <span className="badge-success">Ativo</span>
-  if (status === 'calibrar') return <span className="badge-warning">Calibrar</span>
+  if (status === 'ativo')              return <span className="badge-success">Ativo</span>
+  if (status === 'calibrar')           return <span className="badge-warning">Calibrar</span>
+  if (status === 'sem-calibracao')     return <span className="badge" style={{ background:'rgba(148,163,184,0.12)', color:'#94A3B8', border:'1px solid rgba(148,163,184,0.25)' }}>Não requer calibração</span>
+  if (status === 'calibrar-antes-uso') return <span className="badge-warning">Calibrar antes do uso</span>
   return <span className="badge-danger">Fora</span>
 }
 
@@ -133,6 +147,7 @@ export default function EquipamentosPage() {
   const [fSiglas, setFSiglas] = useState<string[]>([])
   const [fGrupos, setFGrupos] = useState<string[]>([])
   const [fSubs,   setFSubs]   = useState<string[]>([])
+  const [fLabs,   setFLabs]   = useState<string[]>([])            // filtro por laboratório calibrador
   const [busca,   setBusca]   = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('tag')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
@@ -169,6 +184,7 @@ export default function EquipamentosPage() {
         setFAreas(s.fAreas ?? [])
         setFSiglas(s.fSiglas ?? []); setFGrupos(s.fGrupos ?? []); setFSubs(s.fSubs ?? [])
         setFPend(Array.isArray(s.fPend) ? s.fPend : [])
+        setFLabs(Array.isArray(s.fLabs) ? s.fLabs : [])
         if (s.sortKey) setSortKey(s.sortKey); if (s.sortDir) setSortDir(s.sortDir)
       }
     } catch {}
@@ -178,11 +194,11 @@ export default function EquipamentosPage() {
   // Salva filtros sempre que mudam (após o carregamento inicial)
   useEffect(() => {
     if (!pronto) return
-    try { localStorage.setItem(FILTROS_KEY, JSON.stringify({ fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend })) } catch {}
-  }, [pronto, fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend])
+    try { localStorage.setItem(FILTROS_KEY, JSON.stringify({ fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs })) } catch {}
+  }, [pronto, fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs])
 
   // Volta pra página 1 quando o filtro/busca/tamanho muda
-  useEffect(() => { setPagina(1) }, [busca, fAreas, fSiglas, fGrupos, fSubs, fPend, vencIdx, porPagina])
+  useEffect(() => { setPagina(1) }, [busca, fAreas, fSiglas, fGrupos, fSubs, fPend, fLabs, vencIdx, porPagina])
 
   function carregarRascunho() {
     fetch('/api/equipamentos/importar-lote').then(r => r.json()).then(d => setRascunho(Array.isArray(d) ? d : [])).catch(() => {})
@@ -292,11 +308,11 @@ export default function EquipamentosPage() {
       const lista = await api.listMae(pasta)
       if (!lista.ok || !lista.folders) { alert(lista.error || 'Falha ao ler a pasta.'); return }
       const CHUNK = 25
-      const scans: { folder: string; text?: string; certPath?: string | null }[] = []
+      const scans: { folder: string; text?: string; acText?: string; certPath?: string | null }[] = []
       for (let i = 0; i < lista.folders.length; i += CHUNK) {
         const lote = lista.folders.slice(i, i + CHUNK)
         const scan = await api.scanBatch(lote)
-        if (scan.ok && scan.resultados) scans.push(...scan.resultados.map(r => ({ folder: r.folder, text: r.text, certPath: r.certPath })))
+        if (scan.ok && scan.resultados) scans.push(...scan.resultados.map(r => ({ folder: r.folder, text: r.text, acText: r.acText, certPath: r.certPath })))
       }
       const r = await fetch('/api/equipamentos/atualizar-certificados', {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ itens: scans }),
@@ -311,8 +327,8 @@ export default function EquipamentosPage() {
     finally { setVerificando(false) }
   }
 
-  const temFiltro = fAreas.length + fSiglas.length + fGrupos.length + fSubs.length + fPend.length > 0 || !!busca.trim()
-  const limpar = () => { setFAreas([]); setFSiglas([]); setFGrupos([]); setFSubs([]); setFPend([]); setBusca('') }
+  const temFiltro = fAreas.length + fSiglas.length + fGrupos.length + fSubs.length + fPend.length + fLabs.length > 0 || !!busca.trim()
+  const limpar = () => { setFAreas([]); setFSiglas([]); setFGrupos([]); setFSubs([]); setFPend([]); setFLabs([]); setBusca('') }
 
   // Área de um equipamento = área da sigla da sua TAG (via taxonomia)
   const areaDoEquip = (e: EquipamentoEMC) =>
@@ -330,6 +346,7 @@ export default function EquipamentosPage() {
     sigla: (e: EquipamentoEMC) => fSiglas.length === 0 || fSiglas.includes(siglaDaTag(e.tag)),
     grupo: (e: EquipamentoEMC) => fGrupos.length === 0 || fGrupos.includes(e.grupoId),
     sub:   (e: EquipamentoEMC) => fSubs.length === 0   || fSubs.includes(e.subgrupoId),
+    lab:   (e: EquipamentoEMC) => fLabs.length === 0   || fLabs.includes(e.labCalibracao || ''),
     pend:  (e: EquipamentoEMC) => fPend.length === 0   || fPend.some(t => {
       const cods = codigosPendencia(e)
       if (t === 'vencido') return cods.includes('vencido') && mesesVencido(e) >= VENC_DEGRAUS[vencIdx].meses
@@ -345,6 +362,7 @@ export default function EquipamentosPage() {
   const baseSigla = filtrarExceto('sigla')
   const baseGrupo = filtrarExceto('grupo')
   const baseSub   = filtrarExceto('sub')
+  const baseLab   = filtrarExceto('lab')
   const basePend  = filtrarExceto('pend')
 
   const pendPorTipo = (id: string) => basePend.filter(e => codigosPendencia(e).includes(id)).length
@@ -374,6 +392,15 @@ export default function EquipamentosPage() {
     })
   })()
 
+  // Laboratórios calibradores presentes (conjunto encadeado) — equipamentos sem
+  // labCalibracao preenchido não entram na lista de opções.
+  const labsPresentes = (() => {
+    const cont = new Map<string, number>()
+    for (const e of baseLab) { const l = e.labCalibracao; if (l) cont.set(l, (cont.get(l) ?? 0) + 1) }
+    for (const l of fLabs) if (!cont.has(l)) cont.set(l, 0)   // mantém visíveis os já marcados
+    return [...cont.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt')).map(([lab, n]) => ({ id: lab, label: lab, n }))
+  })()
+
   // Aplica filtros (AND entre dimensões, OR dentro de cada uma) + ordenação
   const grupoNome = (id: string) => grupos.find(g => g.id === id)?.nome ?? id
   const equipsFiltrados = (() => {
@@ -385,7 +412,7 @@ export default function EquipamentosPage() {
       sortKey === 'grupo' ? grupoNome(e.grupoId) :
       sortKey === 'sub'   ? e.subgrupoId :
       sortKey === 'prox'  ? (e.proximaCalibracao || '') :
-                            e.status
+                            statusEfetivo(e)
     lista = [...lista].sort((a, b) => val(a).localeCompare(val(b), 'pt', { numeric: true }) * dir)
     return lista
   })()
@@ -706,6 +733,8 @@ export default function EquipamentosPage() {
             options={grupos.map(g => ({ id: g.id, label: g.nome, count: baseGrupo.filter(e => e.grupoId === g.id).length, color: GRUPO_CORES[g.cor] ?? '#94A3B8' })).filter(o => o.count > 0 || fGrupos.includes(o.id))} />
           <FilterDropdown label="Subgrupos" selected={fSubs} onChange={setFSubs}
             options={grupos.flatMap(g => g.subgrupos.map(s => ({ id: s.id, label: s.nome, count: baseSub.filter(e => e.subgrupoId === s.id).length, color: GRUPO_CORES[g.cor] ?? '#94A3B8' }))).filter(o => o.count > 0 || fSubs.includes(o.id))} />
+          <FilterDropdown label="Calibrado por" selected={fLabs} onChange={setFLabs}
+            options={labsPresentes.map(l => ({ id: l.id, label: l.label, count: l.n }))} />
           <FilterDropdown label="Pendências" selected={fPend} onChange={setFPend} icon={<AlertTriangle size={12}/>}
             options={PEND_OPCOES.map(o => ({ id: o.id, label: o.label, count: pendPorTipo(o.id) })).filter(o => o.count > 0 || fPend.includes(o.id))} />
           {temFiltro && (
@@ -799,7 +828,7 @@ export default function EquipamentosPage() {
                     </td>
                     <td><span className="text-[10px] text-white/40 font-mono">{e.subgrupoId}</span></td>
                     <td className="font-mono text-[11px]">{SEM_PROX_CAL.has(e.status) ? <span className="text-white/20">—</span> : fmt(e.proximaCalibracao)}</td>
-                    <td><StatusPill status={e.status}/></td>
+                    <td><StatusPill status={statusEfetivo(e)}/></td>
                     <td>
                       {!p.tem ? (
                         <span className="text-[11px] text-white/20">—</span>

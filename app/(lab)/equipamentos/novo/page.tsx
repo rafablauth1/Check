@@ -7,6 +7,8 @@ import type { GrupoId, SubgrupoId, StatusEquipamento } from '@/lib/equipamentos/
 import { STATUS_EQUIP } from '@/lib/equipamentos/tipos'
 import { exigeCalibrarAntesDoUso, anosVencido, ANOS_ANALISE_CRITICA } from '@/lib/equipamentos/calibracao'
 import { parsearDadosPadrao } from '@/lib/certificados/parser'
+import { extrairMetadadosGenerico, overrideDoLab } from '@/lib/certificados/extrair-generico'
+import type { LaboratorioCal } from '@/lib/laboratorios/registro'
 import { fileToBase64 } from '@/lib/utils'
 
 // Redimensiona uma imagem para caber bem (máx. 900px) e retorna data URL
@@ -86,6 +88,7 @@ function addMonths(dateStr: string, months: number): string {
 export default function NovoEquipamentoPage() {
   const router = useRouter()
   const [grupos, setGrupos]   = useState<Grupo[]>([])
+  const [labs,   setLabs]     = useState<LaboratorioCal[]>([])
   const [form,   setForm]     = useState<FormState>(EMPTY)
   const [saving, setSaving]   = useState(false)
   const [erro,   setErro]     = useState('')
@@ -116,26 +119,35 @@ export default function NovoEquipamentoPage() {
 
   async function escanearCertificado(file: File) {
     const api = (window as any).electronAPI
-    if (!api?.extractPdfPage1) { setScanMsg('Disponível apenas no app desktop.'); return }
+    if (!api?.extractPdfLayout) { setScanMsg('Disponível apenas no app desktop.'); return }
     setScanning(true); setScanMsg('')
     try {
       const base64 = await fileToBase64(file)
-      const res = await api.extractPdfPage1(base64)
-      if (!res?.ok || !res.text) { setScanMsg('Não foi possível ler a 1ª página do certificado.'); return }
+      const res = await api.extractPdfLayout(base64)
+      if (!res?.ok || !res.text) { setScanMsg('Não foi possível ler o certificado.'); return }
       const d = parsearDadosPadrao(res.text)
+      // Certificado do LABELO tem prioridade; se não for (ou faltar campo), cai no
+      // extrator genérico — usa o "modelo de extração" (rótulos) da aba Laboratórios
+      // pra ler certificados de outros labs igual ao do LABELO.
+      const g = extrairMetadadosGenerico(res.text, overrideDoLab(labs, res.text))
       setForm(prev => ({
         ...prev,
-        tag:               d.tag || prev.tag,
-        nome:              d.nome || prev.nome,
-        fabricante:        d.fabricante || prev.fabricante,
-        modelo:            d.modelo || prev.modelo,
-        serie:             d.serie || prev.serie,
-        labCalibracao:     d.labCalibracao || prev.labCalibracao,
-        numeroCertificado: d.numeroCertificado || prev.numeroCertificado,
+        tag:               d.tag || g.tag || prev.tag,
+        nome:              d.nome || g.nome || prev.nome,
+        fabricante:        d.fabricante || g.fabricante || prev.fabricante,
+        modelo:            d.modelo || g.modelo || prev.modelo,
+        serie:             d.serie || g.serie || prev.serie,
+        labCalibracao:     d.labCalibracao || g.laboratorio || prev.labCalibracao,
+        numeroCertificado: d.numeroCertificado || g.numero || prev.numeroCertificado,
         procedimentos:     d.procedimentos?.length ? d.procedimentos.join(', ') : prev.procedimentos,
-        ultimaCalibracao:  d.ultimaCalibracao || prev.ultimaCalibracao,
+        ultimaCalibracao:  d.ultimaCalibracao || g.dataCalibracao || prev.ultimaCalibracao,
       }))
-      const campos = [d.nome && 'nome', d.fabricante && 'fabricante', d.modelo && 'modelo', d.serie && 'série', d.tag && 'tag', d.procedimentos?.length && 'procedimento(s)', d.ultimaCalibracao && 'última calib.'].filter(Boolean)
+      const campos = [
+        (d.nome || g.nome) && 'nome', (d.fabricante || g.fabricante) && 'fabricante',
+        (d.modelo || g.modelo) && 'modelo', (d.serie || g.serie) && 'série',
+        (d.tag || g.tag) && 'tag', d.procedimentos?.length && 'procedimento(s)',
+        (d.ultimaCalibracao || g.dataCalibracao) && 'última calib.',
+      ].filter(Boolean)
       setScanMsg(campos.length
         ? `✓ Preenchido: ${campos.join(', ')}. Confira os dados e selecione grupo/subgrupo.`
         : 'Nenhum campo reconhecido — preencha manualmente.')
@@ -149,6 +161,9 @@ export default function NovoEquipamentoPage() {
   useEffect(() => {
     fetch('/api/grupos').then(r => r.json()).then((g: Grupo[]) => {
       setGrupos(Array.isArray(g) ? g : [])
+    }).catch(() => {})
+    fetch('/api/laboratorios').then(r => r.json()).then((l: LaboratorioCal[]) => {
+      setLabs(Array.isArray(l) ? l : [])
     }).catch(() => {})
   }, [])
 
@@ -246,7 +261,7 @@ export default function NovoEquipamentoPage() {
       </div>
 
       <form onSubmit={handleSubmit}>
-        {/* Escanear certificado (1ª página → dados do padrão) */}
+        {/* Escanear certificado (LABELO ou outro lab → dados do padrão) */}
         <div className="card p-4 mb-5 border border-teal/15" style={{ background: 'rgba(34,211,200,0.04)' }}>
           <div className="flex items-center gap-3 flex-wrap">
             <div className="flex-1 min-w-[200px]">
@@ -254,7 +269,7 @@ export default function NovoEquipamentoPage() {
                 <ScanText size={13} /> Preencher pelo certificado
               </p>
               <p className="text-[10px] text-white/35 mt-0.5">
-                Selecione o PDF do certificado — leio a <b>1ª página</b> e preencho Nome, Fabricante, Modelo, Série, TAG e a calibração.
+                Selecione o PDF do certificado — leio o certificado (LABELO ou outro laboratório, pelo "modelo de extração" da aba Laboratórios) e preencho Nome, Fabricante, Modelo, Série, TAG e a calibração.
               </p>
             </div>
             <input ref={certRef} type="file" accept="application/pdf,.pdf" className="hidden"

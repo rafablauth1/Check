@@ -7,7 +7,7 @@ import {
   ArrowLeft, ArrowRight, Plus, Search, X, CheckCircle2, XCircle, Clock, Edit2,
   Trash2, ChevronDown, ChevronUp, FileText, Loader2, Download,
   Lightbulb, Lamp, Settings, Layers, RotateCcw, FolderOpen,
-  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock,
+  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -292,6 +292,8 @@ function ItemModal({ item, isNew, onSave, onClose, clientes, customTags, onCusto
     fabricante: '', modelo: '', identificador: '', potencia: '', tensaoAlim: '', frequencia: '60Hz',
     clienteRua: '', clienteCidade: '', clienteCep: '', documentacao: '', tags: [],
     entreguePorLum: '', recebidoPorEmc: '', devolvidoPorEmc: '', recebidoPorLum: '', dataDevolucao: '',
+    devolucaoAntecipada: false, dataDevolucaoAntecipada: '', entreguePorEmcAntecipado: '',
+    recebidoPorAntecipado: '', setorDestinoAntecipado: '',
     ...item,
   })
 
@@ -568,6 +570,55 @@ function ItemModal({ item, isNew, onSave, onClose, clientes, customTags, onCusto
             </label>
           </div>
 
+          {/* Devolução antecipada: EMC → outro setor (antes da emissão do relatório) */}
+          <div className="p-3 rounded-xl border border-orange-400/15 bg-orange-400/3 space-y-2">
+            <div className="flex items-center justify-between">
+              <p className="text-[9px] text-orange-300/70 font-mono uppercase tracking-wider">Devolução antecipada · antes da emissão</p>
+              {!form.devolucaoAntecipada && (
+                <button type="button"
+                  onClick={() => setForm(p => ({ ...p, devolucaoAntecipada: true }))}
+                  className="text-[10px] text-white/30 hover:text-orange-300/80 font-mono transition-colors flex items-center gap-1">
+                  <RotateCcw size={9} /> Registrar devolução
+                </button>
+              )}
+            </div>
+            {form.devolucaoAntecipada ? (
+              <>
+                <p className="text-[10px] text-white/30">
+                  Use se precisar devolver a amostra para o colega de outro setor antes de emitir o relatório.
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="flex flex-col gap-1.5 col-span-2">
+                    <Label>Data da Devolução</Label>
+                    {campoTravavel('dataDevolucaoAntecipada', 'date')}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Entregou <span className="normal-case text-white/20">(EMC)</span></Label>
+                    {campoTravavel('entreguePorEmcAntecipado', 'text', 'Funcionário EMC')}
+                  </div>
+                  <div className="flex flex-col gap-1.5">
+                    <Label>Recebeu <span className="normal-case text-white/20">(outro setor)</span></Label>
+                    {campoTravavel('recebidoPorAntecipado', 'text', 'Nome do colega')}
+                  </div>
+                  <div className="flex flex-col gap-1.5 col-span-2">
+                    <Label>Setor de destino <span className="normal-case text-white/20">(opcional)</span></Label>
+                    {campoTravavel('setorDestinoAntecipado', 'text', 'Ex: Elétrica, Mecânica...')}
+                  </div>
+                </div>
+                <label className="flex items-center gap-2 cursor-pointer select-none">
+                  <input type="checkbox" className="accent-orange-400 w-3.5 h-3.5"
+                    checked={!!form.recebimentoAntecipadoOk}
+                    onChange={e => setForm(prev => ({ ...prev, recebimentoAntecipadoOk: e.target.checked }))} />
+                  <span className="text-[11px] text-white/60">Confirmo a devolução da amostra (antes da emissão)</span>
+                </label>
+              </>
+            ) : (
+              <p className="text-[10px] text-white/25 flex items-center gap-1.5">
+                <Clock size={10} /> Só use se precisar devolver a amostra a outro setor antes de emitir o relatório.
+              </p>
+            )}
+          </div>
+
           {/* Devolução: EMC → LUM (somente após emissão) */}
           {form.numRelatorio?.trim() ? (
             <div className="p-3 rounded-xl border border-gold/15 bg-gold/3 space-y-2">
@@ -628,6 +679,10 @@ function ItemModal({ item, isNew, onSave, onClose, clientes, customTags, onCusto
               <div className="flex flex-col gap-1.5">
                 <Label>{form.tipo === 'lampada' ? 'Código de Barras' : 'N° de Série'}</Label>
                 <input className="input" value={form.identificador ?? ''} onChange={s('identificador')} placeholder="Identificador" />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label>Lacre</Label>
+                <input className="input" value={form.lacre ?? ''} onChange={s('lacre')} placeholder="Ex: 123456" />
               </div>
               <div className="flex flex-col gap-1.5">
                 <Label>Potência</Label>
@@ -1281,6 +1336,8 @@ export default function AgendaPage() {
   const [filterCliente,   setFilterCliente]   = useState('')
   const [isElectron,    setIsElectron]    = useState(false)
   const [fromNetwork,   setFromNetwork]   = useState<boolean | null>(null)
+  const [importandoFotos, setImportandoFotos] = useState(false)
+  const [organizando,     setOrganizando]     = useState(false)
   const [clientes,      setClientes]      = useState<ClienteDB[]>([])
   const [fuCliente,     setFuCliente]     = useState('')
   const [fuTipo,        setFuTipo]        = useState<'todos' | 'lampada' | 'luminaria'>('todos')
@@ -1310,6 +1367,26 @@ export default function AgendaPage() {
           if (res?.available) setUpdateInfo({ version: res.version, installer: res.installer })
         }).catch(() => {})
       }, 2000)
+    }
+  }, [])
+
+  // Atualização automática da agenda: outros PCs salvam na mesma pasta de rede,
+  // mas sem isso só víamos a mudança trocando de aba e voltando (o que remonta
+  // a página). Recarrega ao focar a janela/aba e periodicamente em segundo
+  // plano — pausado enquanto um item está sendo editado, pra não atrapalhar.
+  const editItemRef = useRef(editItem)
+  useEffect(() => { editItemRef.current = editItem }, [editItem])
+
+  useEffect(() => {
+    const refresh = () => { if (!editItemRef.current) loadAgenda() }
+    const onVisibility = () => { if (document.visibilityState === 'visible') refresh() }
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', onVisibility)
+    const interval = setInterval(refresh, 8000)
+    return () => {
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', onVisibility)
+      clearInterval(interval)
     }
   }, [])
 
@@ -1349,9 +1426,64 @@ export default function AgendaPage() {
       try {
         const res = await api.saveAgenda(items)
         if (res?.ok) return
-      } catch {}
+        // Falha ao gravar na rede — avisa explicitamente (antes caía silencioso
+        // pro localStorage, escondendo o motivo real da falha de sincronização).
+        alert('Não consegui salvar a agenda na pasta de rede.\n\n' + (res?.error ?? 'erro desconhecido') + '\n\nSalvando só neste PC por enquanto.')
+      } catch (e: any) {
+        alert('Não consegui salvar a agenda na pasta de rede.\n\n' + (e?.message ?? String(e)) + '\n\nSalvando só neste PC por enquanto.')
+      }
     }
     localStorage.setItem(AGENDA_KEY, JSON.stringify(items))
+  }
+
+  async function importarFotosRede() {
+    const api = (window as any).electronAPI
+    if (!api?.importarFotosRede) return
+    setImportandoFotos(true)
+    try {
+      const res = await api.importarFotosRede()
+      if (!res?.ok) {
+        alert('Não consegui importar as fotos.\n\n' + (res?.error ?? 'erro desconhecido'))
+        return
+      }
+      const linhas = [
+        `Protocolos verificados: ${res.processados}`,
+        `Fotos importadas: ${res.copiados}`,
+      ]
+      if (res.semPasta?.length) linhas.push(`\nSem pasta na Iluminação (${res.semPasta.length}): ${res.semPasta.join(', ')}`)
+      if (res.semFotos?.length) linhas.push(`\nPasta achada mas sem fotos (${res.semFotos.length}): ${res.semFotos.join(', ')}`)
+      if (res.erros?.length) linhas.push(`\nErros (${res.erros.length}): ${res.erros.join('; ')}`)
+      alert(linhas.join('\n'))
+    } catch (e: any) {
+      alert('Não consegui importar as fotos.\n\n' + (e?.message ?? String(e)))
+    } finally {
+      setImportandoFotos(false)
+    }
+  }
+
+  async function organizarResultados() {
+    const api = (window as any).electronAPI
+    if (!api?.organizarResultados) return
+    setOrganizando(true)
+    try {
+      const res = await api.organizarResultados()
+      if (res?.canceled) return
+      if (!res?.ok) {
+        alert('Não consegui organizar os resultados.\n\n' + (res?.error ?? 'erro desconhecido'))
+        return
+      }
+      const linhas = [
+        `Arquivos .docx encontrados: ${res.total}`,
+        `Movidos com sucesso: ${res.movidos}`,
+      ]
+      if (res.semPasta?.length) linhas.push(`\nSem pasta correspondente (${res.semPasta.length}): ${res.semPasta.join(', ')}`)
+      if (res.erros?.length) linhas.push(`\nErros (${res.erros.length}): ${res.erros.join('; ')}`)
+      alert(linhas.join('\n'))
+    } catch (e: any) {
+      alert('Não consegui organizar os resultados.\n\n' + (e?.message ?? String(e)))
+    } finally {
+      setOrganizando(false)
+    }
   }
 
   async function loadRelatorios() {
@@ -1449,8 +1581,11 @@ export default function AgendaPage() {
   }
 
   // Abre a PASTA do relatório (onde estão DOCX, fotos e o PDF) — para assinar manual.
-  // Cruza o item da agenda com o relatório salvo pelo nº/protocolo. Sem pasta, cai na cópia.
-  function abrirPastaDoRelatorio(item: AgendaItem) {
+  // Cruza o item da agenda com o relatório salvo pelo nº/protocolo; se não tiver
+  // pasta salva, tenta achar pelo protocolo na rede (T:\...\3.2 - Registros de
+  // ensaios\<ano>\<pasta do protocolo> — mesma convenção do CISPR15). Sem nada
+  // disso, cai na cópia assinada.
+  async function abrirPastaDoRelatorio(item: AgendaItem) {
     const api = (window as any).electronAPI
     if (!api) return
     const norm = (s?: string) => (s || '').trim().toLowerCase()
@@ -1459,6 +1594,14 @@ export default function AgendaPage() {
       (item.protocolo && norm(r.protocolo) === norm(item.protocolo)),
     )
     if (rel?.eutFolderPath) { api.openPath(rel.eutFolderPath); return }
+    const protocolo = item.protocolo || rel?.protocolo
+    const ano = (item.dataEmissao || rel?.dataEmissao || '').match(/\d{4}/)?.[0]
+    if (protocolo && ano && api.buscarPastaEutPorProtocolo) {
+      try {
+        const achou = await api.buscarPastaEutPorProtocolo(protocolo, ano)
+        if (achou?.ok) { api.openPath(achou.folderPath); return }
+      } catch {}
+    }
     openPdfCopy(item)
   }
 
@@ -1480,7 +1623,7 @@ export default function AgendaPage() {
       fabricante: item.fabricante ?? '',
       modelo: item.modelo ?? '',
       identificador: item.identificador ?? '',
-      lacre: '',
+      lacre: item.lacre ?? '',
       tensaoAlim: item.tensaoAlim ?? '',
       potencia: item.potencia ?? '',
       frequencia: item.frequencia ?? '60Hz',
@@ -1510,13 +1653,29 @@ export default function AgendaPage() {
     router.push('/cispr15')
   }
 
-  function confirmarGerarLote(itens: AgendaItem[]) {
+  async function confirmarGerarLote(itens: AgendaItem[]) {
     const primeiro = itens[0]
+    const api = (window as any).electronAPI
+
+    // Já existe um lote em andamento pra esse orçamento? continua ele (não
+    // recria do zero, senão perde fotos/docx/tensão já preenchidos ali).
+    const orcamentoAlvo = (primeiro.orcamento || '').trim().toLowerCase()
+    if (orcamentoAlvo && api?.getLotes) {
+      try {
+        const res = await api.getLotes()
+        const existente = res?.ok && Array.isArray(res.lotes)
+          ? res.lotes.find((l: LoteConfig) => (l.orcamento || '').trim().toLowerCase() === orcamentoAlvo)
+          : null
+        if (existente) { router.push(`/cispr15/lote?id=${existente.id}`); return }
+      } catch {}
+    }
+
     const amostras: LoteAmostra[] = itens.map(item => ({
       produto: item.produto,
       fabricante: item.fabricante ?? '',
       modelo: item.modelo ?? '',
       identificador: item.identificador ?? '',
+      lacre: item.lacre ?? '',
       tensaoAlim: item.tensaoAlim ?? '',
       potencia: item.potencia ?? '',
       frequencia: item.frequencia ?? '60Hz',
@@ -1542,6 +1701,8 @@ export default function AgendaPage() {
       driverProtocolo: item.driverProtocolo || 'Não identificado',
     }))
     const lote: LoteConfig = {
+      id: crypto.randomUUID(),
+      orcamento: primeiro.orcamento || '',
       tipo: primeiro.tipo,
       qtd: amostras.length,
       cliente: primeiro.cliente,
@@ -1552,7 +1713,14 @@ export default function AgendaPage() {
       amostras,
     }
     localStorage.setItem(LOTE_KEY, JSON.stringify(lote))
-    router.push('/cispr15/lote')
+    if (api?.getLotes && api?.saveLotes) {
+      try {
+        const res = await api.getLotes()
+        const atuais = res?.ok && Array.isArray(res.lotes) ? res.lotes : []
+        await api.saveLotes([...atuais, lote])
+      } catch {}
+    }
+    router.push(`/cispr15/lote?id=${lote.id}`)
   }
 
   const clienteOptions = useMemo(
@@ -1560,12 +1728,25 @@ export default function AgendaPage() {
     [agenda],
   )
 
+  // Nº de relatório só conta como "emitido" se o relatório ainda existir de
+  // fato na aba Relatórios — o campo numRelatorio da agenda pode ficar órfão
+  // (relatório apagado, ou perdido por um bug antigo de sincronização) e não
+  // deve inflar os contadores/estatísticas de "emitidos"/"concluídos".
+  const numRelatoriosEmitidos = useMemo(() => {
+    const norm = (s?: string) => (s || '').trim().toLowerCase()
+    return new Set(relatorios.map(r => norm(r.numRelatorio)).filter(Boolean))
+  }, [relatorios])
+  function estaEmitido(item: Pick<AgendaItem, 'numRelatorio'>): boolean {
+    const s = (item.numRelatorio || '').trim().toLowerCase()
+    return !!s && numRelatoriosEmitidos.has(s)
+  }
+
   const filteredItems = useMemo(() => {
     let items = [...agenda]
-    // emitido (tem nº) mas não assinado = aguardando; emitido + assinado = concluído
-    if (filter === 'andamento')        items = items.filter(a => !a.numRelatorio)
-    else if (filter === 'aguardando')  items = items.filter(a => !!a.numRelatorio && !a.assinadoEm)
-    else if (filter === 'concluidos')  items = items.filter(a => !!a.numRelatorio && !!a.assinadoEm)
+    // emitido (tem nº e existe na aba Relatórios) mas não assinado = aguardando; emitido + assinado = concluído
+    if (filter === 'andamento')        items = items.filter(a => !estaEmitido(a))
+    else if (filter === 'aguardando')  items = items.filter(a => estaEmitido(a) && !a.assinadoEm)
+    else if (filter === 'concluidos')  items = items.filter(a => estaEmitido(a) && !!a.assinadoEm)
     const q = search.trim().toLowerCase()
     if (q) items = items.filter(a =>
       [a.protocolo, a.orcamento, a.cliente, a.produto, a.numRelatorio, a.responsavel]
@@ -1577,14 +1758,14 @@ export default function AgendaPage() {
       return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va)
     })
     return items
-  }, [agenda, filter, search, filterCliente, sortKey, sortDir])
+  }, [agenda, filter, search, filterCliente, sortKey, sortDir, numRelatoriosEmitidos])
 
   const counts = useMemo(() => ({
-    andamento: agenda.filter(a => !a.numRelatorio).length,
-    aguardando: agenda.filter(a => !!a.numRelatorio && !a.assinadoEm).length,
-    concluidos: agenda.filter(a => !!a.numRelatorio && !!a.assinadoEm).length,
+    andamento: agenda.filter(a => !estaEmitido(a)).length,
+    aguardando: agenda.filter(a => estaEmitido(a) && !a.assinadoEm).length,
+    concluidos: agenda.filter(a => estaEmitido(a) && !!a.assinadoEm).length,
     todos: agenda.length,
-  }), [agenda])
+  }), [agenda, numRelatoriosEmitidos])
 
   /* ── analytics ── */
   const analytics = useMemo(() => {
@@ -1596,8 +1777,8 @@ export default function AgendaPage() {
       : null
     const base = cutoff ? agenda.filter(a => !a.dataEntrada || a.dataEntrada >= cutoff) : agenda
 
-    const andamento = base.filter(a => !a.numRelatorio)
-    const concluidos = base.filter(a => !!a.numRelatorio)
+    const andamento = base.filter(a => !estaEmitido(a))
+    const concluidos = base.filter(a => estaEmitido(a))
     const vencidos   = andamento.filter(a => a.previsaoSaida && a.previsaoSaida < now)
     const urgentes   = andamento.filter(a => { const d = daysUntil(a.previsaoSaida); return d >= 0 && d <= 3 })
     const emDia      = andamento.filter(a => daysUntil(a.previsaoSaida) > 3)
@@ -1698,15 +1879,15 @@ export default function AgendaPage() {
       lampadas: base.filter(a => a.tipo === 'lampada').length,
       luminarias: base.filter(a => a.tipo === 'luminaria').length,
     }
-  }, [agenda, analisePeriodo])
+  }, [agenda, analisePeriodo, numRelatoriosEmitidos])
 
   /* ── follow-up comercial ── */
   const followup = useMemo(() => {
     function stats(items: AgendaItem[]) {
-      const em = items.filter(a => !a.numRelatorio)
+      const em = items.filter(a => !estaEmitido(a))
       return {
         total: items.length,
-        concluidos: items.filter(a => !!a.numRelatorio).length,
+        concluidos: items.filter(a => estaEmitido(a)).length,
         andamento: em.length,
         conduzida: em.filter(a => a.statusConduzida === 'realizado').length,
         loop:      em.filter(a => a.statusLoop      === 'realizado').length,
@@ -1718,7 +1899,7 @@ export default function AgendaPage() {
       lampadas:   stats(agenda.filter(a => a.tipo === 'lampada')),
       luminarias: stats(agenda.filter(a => a.tipo === 'luminaria')),
     }
-  }, [agenda])
+  }, [agenda, numRelatoriosEmitidos])
 
   function SortBtn({ k, label }: { k: typeof sortKey; label: string }) {
     const active = sortKey === k
@@ -1905,6 +2086,26 @@ export default function AgendaPage() {
 
             <div className="flex-1" />
             <span className="text-[10px] text-white/25 font-mono">{filteredItems.length} item(s)</span>
+            {isElectron && (
+              <button type="button" onClick={importarFotosRede} disabled={importandoFotos}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
+                {importandoFotos ? <Loader2 size={11} className="animate-spin" /> : <FolderOpen size={11} />}
+                {importandoFotos ? 'Importando...' : 'Importar Fotos'}
+              </button>
+            )}
+            {isElectron && (
+              <button type="button" onClick={organizarResultados} disabled={organizando}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
+                {organizando ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />}
+                {organizando ? 'Organizando...' : 'Organizar Resultados'}
+              </button>
+            )}
+            {isElectron && (
+              <button type="button" onClick={() => router.push('/cispr15/lotes')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-gold hover:border-gold/30 text-xs font-semibold transition-all">
+                <Users size={11} /> Lotes em Andamento
+              </button>
+            )}
             <button type="button" onClick={() => setShowGerarLote(true)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gold/30 bg-gold/8 text-gold hover:bg-gold/14 text-xs font-semibold transition-all">
               <ArrowRight size={11} /> Emitir Lote
@@ -1936,7 +2137,7 @@ export default function AgendaPage() {
           ) : (
             <div className="space-y-px">
               {filteredItems.map(item => {
-                const isConcluido = !!item.numRelatorio
+                const isConcluido = estaEmitido(item)
                 const d = daysUntil(item.previsaoSaida)
                 const color = deadlineColor(item)
                 const itemTags = item.tags ?? []
@@ -2525,10 +2726,10 @@ export default function AgendaPage() {
           const items = fuCliente
             ? agenda.filter(a => a.tipo === tipo && a.cliente === fuCliente)
             : agenda.filter(a => a.tipo === tipo)
-          const em = items.filter(a => !a.numRelatorio)
+          const em = items.filter(a => !estaEmitido(a))
           return {
             total: items.length,
-            concluidos: items.filter(a => !!a.numRelatorio).length,
+            concluidos: items.filter(a => estaEmitido(a)).length,
             andamento: em.length,
             conduzida: em.filter(a => a.statusConduzida === 'realizado').length,
             loop:      em.filter(a => a.statusLoop      === 'realizado').length,

@@ -62,11 +62,11 @@ export function mesclarGrandezas(
 
 /* Ao salvar/atualizar um certificado, registra automaticamente as GRANDEZAS dele
    no equipamento (padrão), para aparecerem no seletor de grandeza da checagem. */
-export function registrarGrandezasDoCertificado(cert: Certificado) {
+export async function registrarGrandezasDoCertificado(cert: Certificado): Promise<void> {
   try {
     const novas = grandezasDoCertificado(cert)
     if (!novas.length) return
-    const equips = lerJSON<EquipamentoEMC[]>(EQUIP_ARQ, [])
+    const equips = await lerJSON<EquipamentoEMC[]>(EQUIP_ARQ, [])
     const idx = equips.findIndex(e =>
       e.id === cert.equipamentoId ||
       (e.tag && cert.equipamentoTag && e.tag.toUpperCase() === cert.equipamentoTag.toUpperCase()))
@@ -74,6 +74,6 @@ export function registrarGrandezasDoCertificado(cert: Certificado) {
     const merged = mesclarGrandezas(equips[idx].grandezas, novas)
     if (merged === equips[idx].grandezas) return
     equips[idx] = { ...equips[idx], grandezas: merged }
-    escreverJSON(EQUIP_ARQ, equips)
+    await escreverJSON(EQUIP_ARQ, equips)
   } catch { /* não bloqueia o salvamento do certificado */ }
 }

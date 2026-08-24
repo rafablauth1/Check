@@ -8,13 +8,13 @@ function slugify(s: string) {
 }
 
 export async function GET() {
-  return NextResponse.json(carregarNormas())
+  return NextResponse.json(await carregarNormas())
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Partial<Norma>
-    const normas = carregarNormas()
+    const normas = await carregarNormas()
     const id = body.id || slugify(body.codigo || body.titulo || 'norma')
     if (normas.find(n => n.id === id)) {
       return NextResponse.json({ error: 'ID já existe' }, { status: 409 })
@@ -29,7 +29,7 @@ export async function POST(req: NextRequest) {
       tabelasLimites: body.tabelasLimites || [],
       secoes: body.secoes || [],
     }
-    escreverJSON('normas/index.json', [...normas, nova])
+    await escreverJSON('normas/index.json', [...normas, nova])
     return NextResponse.json(nova, { status: 201 })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

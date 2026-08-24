@@ -9,7 +9,7 @@ const ARQUIVO = 'taxonomia.json'
 export const dynamic = 'force-dynamic'
 
 export async function GET() {
-  const tax = lerJSON<Taxonomia>(ARQUIVO, TAXONOMIA_DEFAULT)
+  const tax = await lerJSON<Taxonomia>(ARQUIVO, TAXONOMIA_DEFAULT)
   // Garante que as siglas oficiais sempre existam (sem mexer nas já vinculadas).
   const existentes = new Set((tax.siglas || []).map(s => (s.sigla || '').toUpperCase()))
   const faltando = SIGLAS_LAB_OFICIAIS.filter(s => !existentes.has(s))
@@ -25,7 +25,7 @@ export async function PUT(req: NextRequest) {
       siglas: Array.isArray(body.siglas) ? body.siglas.map(s => ({ ...s, sigla: (s.sigla || '').toUpperCase().trim() })) : [],
       tipos:  Array.isArray(body.tipos)  ? body.tipos  : [],
     }
-    escreverJSON(ARQUIVO, limpa)
+    await escreverJSON(ARQUIVO, limpa)
     return NextResponse.json(limpa)
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

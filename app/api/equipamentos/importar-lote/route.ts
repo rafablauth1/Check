@@ -4,12 +4,12 @@ import type { EquipamentoEMC, GrupoId, SubgrupoId } from '@/lib/equipamentos/tip
 import type { Certificado } from '@/lib/certificados/tipos'
 import { parsearDadosPadrao, parsearMetadadosCertificado, classificarCertificadoLabelo, resolverTag, limparCampo, extrairGrandezasLabelo, ehAnaliseCritica, parsearAnaliseCritica } from '@/lib/certificados/parser'
 import type { GrandezaMetrologica } from '@/lib/metrologia/tipos'
-import { extrairMetadadosGenerico, extrairAcreditacao, extrairNomeLaboratorio } from '@/lib/certificados/extrair-generico'
+import { extrairMetadadosGenerico, extrairAcreditacao, extrairNomeLaboratorio, identificarLaboratorio, overrideDoLab } from '@/lib/certificados/extrair-generico'
 import { lerLaboratorios, salvarLaboratorios, nomeDoLab, registrarLab } from '@/lib/laboratorios/registro'
 import { parsearCertificadoRBC } from '@/lib/interpolacao'
 import { corrigirGrandezasPorLayout } from '@/lib/certificados/layout'
 import { grandezasDoCertificado, mesclarGrandezas } from '@/lib/certificados/registrar-grandezas'
-import { addM } from '@/lib/utils'
+import { addM, dmyParaISO } from '@/lib/utils'
 import { siglaOficial } from '@/lib/taxonomia/tipos'
 
 const ARQ_EQUIP    = 'equipamentos.json'
@@ -26,6 +26,7 @@ interface ItemScan {
   folder: string
   certPath: string | null
   text?: string
+  acText?: string   // texto do FOR 6401 (análise crítica), quando é um PDF separado do certificado
   items?: { s: string; x: number; y: number; page?: number }[]
   error?: string
   forcarRascunho?: boolean   // pasta parada há +7 anos → mandar pro rascunho (não cadastrar)
@@ -56,18 +57,18 @@ function inferTipo(txt: string): { grupoId: GrupoId; subgrupoId: SubgrupoId } {
 }
 
 export async function GET() {
-  return NextResponse.json(lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, []))
+  return NextResponse.json(await lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, []))
 }
 
 // Limpa o rascunho: body { all: true } apaga tudo; { folders: [...] } apaga os listados.
 export async function DELETE(req: NextRequest) {
   try {
     const body = (await req.json().catch(() => ({}))) as { all?: boolean; folders?: string[] }
-    if (body.all) { escreverJSON(ARQ_RASCUNHO, []); return NextResponse.json({ ok: true, restantes: 0 }) }
+    if (body.all) { await escreverJSON(ARQ_RASCUNHO, []); return NextResponse.json({ ok: true, restantes: 0 }) }
     const alvo = new Set(body.folders ?? [])
-    const prev = lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, [])
+    const prev = await lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, [])
     const nova = prev.filter(r => !alvo.has(r.folder) && !alvo.has(r.tag))
-    escreverJSON(ARQ_RASCUNHO, nova)
+    await escreverJSON(ARQ_RASCUNHO, nova)
     return NextResponse.json({ ok: true, restantes: nova.length })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })
@@ -82,8 +83,8 @@ export async function POST(req: NextRequest) {
     }
     const soAmostra = modo === 'amostra'   // 2ª varredura: cadastra só os dados da amostra (sem cert/grandeza)
 
-    const equipamentos = lerJSON<EquipamentoEMC[]>(ARQ_EQUIP, [])
-    const certificados = lerJSON<Certificado[]>(ARQ_CERT, [])
+    const equipamentos = await lerJSON<EquipamentoEMC[]>(ARQ_EQUIP, [])
+    const certificados = await lerJSON<Certificado[]>(ARQ_CERT, [])
     const byTag = new Map(equipamentos.map(e => [e.tag.toUpperCase(), e]))
 
     const sucessos: string[] = []   // novas TAGs cadastradas
@@ -93,15 +94,11 @@ export async function POST(req: NextRequest) {
     const novosCerts: Certificado[] = []
     const rascunho: RascunhoItem[] = []
     const foldersOk = new Set<string>()   // pastas cadastradas nesta rodada (limpa do rascunho)
-    const labs = lerLaboratorios()        // registro CAL → laboratório (auto-descoberta)
+    const labs = await lerLaboratorios()  // registro CAL → laboratório (auto-descoberta)
     let labsMudou = false
     const agora = new Date().toISOString()
     // Modelo de extração do lab (rótulos por campo) p/ o CAL do certificado — Parte B.
-    const normC = (c?: string) => (c ? `CAL ${(c.match(/\d{3,4}/) || [''])[0]}` : '')
-    const overrideDoLab = (texto: string) => {
-      const k = normC(extrairAcreditacao(texto))
-      return (k ? labs.find(l => normC(l.cal) === k)?.campos : undefined) || {}
-    }
+    // overrideDoLab() é compartilhada com o escaneio individual (app/(lab)/equipamentos/novo/page.tsx).
 
     let seq = Date.now()
     const novoId = () => String(seq++)
@@ -132,17 +129,24 @@ export async function POST(req: NextRequest) {
       })()
       const temPadraoTag = !!tagSolta
 
-      // TAG: vem do certificado (tem a sigla); pasta é só reserva. Exige sufixo de letras.
-      const tag = resolverTag(it.folder, dados.tag, it.text)
+      // FOR 6401 (análise crítica), quando é um PDF separado do certificado na
+      // mesma pasta — conferência MANUAL, então serve de reforço/prioridade pra
+      // TAG, nome do instrumento, nº do certificado, data e a PERIODICIDADE.
+      const ac = it.acText && ehAnaliseCritica(it.acText) ? parsearAnaliseCritica(it.acText) : null
+
+      // TAG: vem do certificado (tem a sigla); FOR 6401 é reforço; pasta é só reserva.
+      const tag = ac?.tag || resolverTag(it.folder, dados.tag, it.text)
 
       // 2ª VARREDURA (modo amostra): cadastra SÓ o equipamento pelos dados da folha
       // (ex.: análise crítica / cert. de terceiros), sem certificado e sem grandeza.
       // Usa extração de TAG mais flexível (rótulos genéricos + padrão solto).
       if (soAmostra) {
-        const g = extrairMetadadosGenerico(it.text, overrideDoLab(it.text))
-        // #3: se o PDF é um FOR 6401 (análise crítica), usa os dados dele — nome
+        const g = extrairMetadadosGenerico(it.text, overrideDoLab(labs, it.text))
+        // #3: se o PDF é um FOR 6401 (análise crítica) — o próprio it.text ou um
+        // PDF separado na mesma pasta (it.acText) — usa os dados dele: nome
         // correto, fornecedor (lab), nº do certificado, data e PERIODICIDADE.
-        const ac = ehAnaliseCritica(it.text) ? parsearAnaliseCritica(it.text) : null
+        const acFonte = it.acText || it.text
+        const ac = ehAnaliseCritica(acFonte) ? parsearAnaliseCritica(acFonte) : null
         const tagA = ac?.tag || tag || resolverTag(it.folder, g.tag, it.text) || tagSolta
         if (!tagA) {
           const motivo = 'Sem TAG identificável (nem pelos dados da amostra)'
@@ -200,7 +204,7 @@ export async function POST(req: NextRequest) {
       const classif = classificarCertificadoLabelo(it.text)
       if (!classif.ok) {
         // Identifica o laboratório emissor pelo CAL (registro) + nome do texto.
-        const g = extrairMetadadosGenerico(it.text, overrideDoLab(it.text))
+        const g = extrairMetadadosGenerico(it.text, overrideDoLab(labs, it.text))
         const nomeGuess = nomeDoLab(labs, g.acreditacao) || extrairNomeLaboratorio(it.text)
         if (g.acreditacao && registrarLab(labs, g.acreditacao, nomeGuess)) labsMudou = true
         const labTxt = nomeGuess || (g.acreditacao ? `Lab ${g.acreditacao}` : '')
@@ -218,20 +222,25 @@ export async function POST(req: NextRequest) {
       const meta = parsearMetadadosCertificado(it.text)
       const rbc  = parsearCertificadoRBC(it.text)
       const pontos = it.items?.length ? corrigirGrandezasPorLayout(rbc.pontos, it.items) : rbc.pontos
-      const dataEmissao = meta.dataEmissao || dados.ultimaCalibracao || ''
-      // Nº do certificado: o padrão LABELO validado tem prioridade.
-      const numeroCert  = classif.numero || meta.numero || dados.numeroCertificado || ''
+      // ac (FOR 6401, se houver) já resolvido acima — usado aqui pra data, nome,
+      // nº do certificado e periodicidade, com prioridade sobre o OCR do certificado.
+      const dataEmissao = dmyParaISO(ac?.dataCertificado) || meta.dataEmissao || dados.ultimaCalibracao || ''
+      // Nº do certificado: o padrão LABELO validado (regex forte) vem 1º; FOR 6401
+      // (conferência manual) 2º; o resto do OCR só como último fallback.
+      const numeroCert  = classif.numero || ac?.certificado || meta.numero || dados.numeroCertificado || ''
 
       // Equipamento: cria se a TAG é nova; senão reaproveita o existente.
       let equip = byTag.get(tag)
       const isNovo = !equip
       if (!equip) {
-        const { grupoId, subgrupoId } = inferTipo(`${dados.nome || ''} ${it.folder}`)
-        const intervalo = 12
+        const { grupoId, subgrupoId } = inferTipo(`${ac?.nome || dados.nome || ''} ${it.folder}`)
+        const intervalo = ac?.periodicidadeMeses || 12
         equip = {
           id: novoId(),
+          // nome NUNCA = TAG; vazio sinaliza "preencher". FOR 6401 é autoritativo
+          // (conferido manualmente, sem erro de OCR) — tem prioridade.
           tag,
-          nome: limparCampo(dados.nome, 80) || '',   // nome NUNCA = TAG; vazio sinaliza "preencher"
+          nome: limparCampo(ac?.nome || dados.nome, 80) || '',
           grupoId, subgrupoId,
           status: 'ativo',
           grandezas: [],
@@ -288,21 +297,21 @@ export async function POST(req: NextRequest) {
     }
 
     // Persistência em UMA escrita por arquivo (rápido mesmo com muitas TAGs).
-    escreverJSON(ARQ_EQUIP, equipamentos)
-    escreverJSON(ARQ_CERT, [...novosCerts, ...certificados])
-    if (labsMudou) salvarLaboratorios(labs)   // novos laboratórios descobertos
+    await escreverJSON(ARQ_EQUIP, equipamentos)
+    await escreverJSON(ARQ_CERT, [...novosCerts, ...certificados])
+    if (labsMudou) await salvarLaboratorios(labs)   // novos laboratórios descobertos
 
     // Rascunho: acumula as não-cadastradas (dedupe por folder), e remove as que
     // acabaram de ser cadastradas com sucesso.
     if (rascunho.length || foldersOk.size) {
-      const prev = lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, [])
+      const prev = await lerJSON<RascunhoItem[]>(ARQ_RASCUNHO, [])
       const cadastradas = new Set([...sucessos, ...atualizados])
       const map = new Map<string, RascunhoItem>()
       for (const r of [...prev, ...rascunho]) {
         if (cadastradas.has(r.tag) || foldersOk.has(r.folder)) continue   // já cadastrada
         map.set(r.folder || r.tag, r)
       }
-      escreverJSON(ARQ_RASCUNHO, [...map.values()])
+      await escreverJSON(ARQ_RASCUNHO, [...map.values()])
     }
 
     return NextResponse.json({

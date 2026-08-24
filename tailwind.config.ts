@@ -1,7 +1,9 @@
 import type { Config } from 'tailwindcss'
 
 const config: Config = {
-  content: ['./app/**/*.{js,ts,jsx,tsx,mdx}'],
+  // Antes só escaneava app/: classes usadas exclusivamente em components/ ou lib/
+  // (ex.: o z-[999] do popup de sugestões do corretor) não eram geradas no CSS.
+  content: ['./app/**/*.{js,ts,jsx,tsx,mdx}', './components/**/*.{js,ts,jsx,tsx,mdx}', './lib/**/*.{js,ts,jsx,tsx,mdx}'],
   theme: {
     extend: {
       colors: {

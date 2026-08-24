@@ -182,27 +182,47 @@ export default function GruposEditorPage() {
   useEffect(() => { carregar() }, [])
 
   /* ── CRUD grupos ── */
+  // Falha silenciosa aqui (rede fora do ar, pasta de rede indisponível etc.) fazia
+  // a UI parecer ter salvo (atualização otimista) e depois reverter sem aviso ao
+  // recarregar — o fetch nunca checava res.ok. Agora toda falha é reportada e a
+  // recarga só acontece se realmente persistiu.
+  async function falhaSalvar(res: Response): Promise<string | null> {
+    if (res.ok) return null
+    try { const j = await res.json(); return j?.error || `Erro ao salvar (HTTP ${res.status}).` }
+    catch { return `Erro ao salvar (HTTP ${res.status}).` }
+  }
+
   async function salvarGrupo(dados: Partial<Grupo>) {
-    if (modal === 'grupo-novo') {
-      await fetch('/api/grupos', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dados),
-      })
-    } else if (grupoAlvo) {
-      await fetch(`/api/grupos/${grupoAlvo.id}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(dados),
-      })
-    }
-    setModal(null); setGrupoAlvo(null); carregar()
+    try {
+      const res = modal === 'grupo-novo'
+        ? await fetch('/api/grupos', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dados),
+          })
+        : grupoAlvo
+        ? await fetch(`/api/grupos/${grupoAlvo.id}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dados),
+          })
+        : null
+      if (res) {
+        const erro = await falhaSalvar(res)
+        if (erro) { alert(erro); return }
+      }
+      setModal(null); setGrupoAlvo(null); carregar()
+    } catch (e) { alert('Erro ao salvar: ' + String(e)) }
   }
 
   async function excluirGrupo(g: Grupo) {
     if (!confirm(`Excluir grupo "${g.nome}"? Os equipamentos vinculados ficarão sem grupo.`)) return
-    await fetch(`/api/grupos/${g.id}`, { method: 'DELETE' })
-    carregar()
+    try {
+      const res = await fetch(`/api/grupos/${g.id}`, { method: 'DELETE' })
+      const erro = await falhaSalvar(res)
+      if (erro) { alert(erro); return }
+      carregar()
+    } catch (e) { alert('Erro ao excluir: ' + String(e)) }
   }
 
   /* ── CRUD subgrupos ── */
@@ -215,25 +235,33 @@ export default function GruposEditorPage() {
       if (subs.find(s => s.id === sub.id)) sub.id = sub.id + '-' + Date.now()
       subs = [...subs, sub]
     }
-    await fetch(`/api/grupos/${grupoAlvo.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subgrupos: subs }),
-    })
-    setModal(null); setSubAlvo(null)
-    setGrupoAlvo(prev => prev ? { ...prev, subgrupos: subs } : null)
-    carregar()
+    try {
+      const res = await fetch(`/api/grupos/${grupoAlvo.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subgrupos: subs }),
+      })
+      const erro = await falhaSalvar(res)
+      if (erro) { alert('Não foi possível salvar o tipo de equipamento: ' + erro); return }
+      setModal(null); setSubAlvo(null)
+      setGrupoAlvo(prev => prev ? { ...prev, subgrupos: subs } : null)
+      carregar()
+    } catch (e) { alert('Não foi possível salvar o tipo de equipamento: ' + String(e)) }
   }
 
   async function excluirSubgrupo(g: Grupo, s: Subgrupo) {
     if (!confirm(`Excluir subgrupo "${s.nome}"?`)) return
     const subs = g.subgrupos.filter(x => x.id !== s.id)
-    await fetch(`/api/grupos/${g.id}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subgrupos: subs }),
-    })
-    carregar()
+    try {
+      const res = await fetch(`/api/grupos/${g.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subgrupos: subs }),
+      })
+      const erro = await falhaSalvar(res)
+      if (erro) { alert(erro); return }
+      carregar()
+    } catch (e) { alert('Erro ao excluir: ' + String(e)) }
   }
 
   return (

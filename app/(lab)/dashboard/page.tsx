@@ -201,10 +201,16 @@ export default function DashboardPage() {
   // Tempos de trabalho do ano: emissão (form → PDF) e cadastro de amostra na agenda
   const trabalhoStats = useMemo(() => {
     const doAno = tempos.filter(t => new Date(t.data).getFullYear() === ano)
-    const emissao = mediaDuracao(doAno, 'emissao')
+    // "emissão" só conta se o relatório ainda existir na base — um registro de
+    // tempo de um relatório apagado depois não deve inflar a contagem/média.
+    const numsAtuais = new Set(relatorios.map(r => (r.numRelatorio || '').trim().toLowerCase()).filter(Boolean))
+    const emissaoValidos = doAno.filter(t =>
+      t.tipo !== 'emissao' || (!!t.numRelatorio && numsAtuais.has(t.numRelatorio.trim().toLowerCase())),
+    )
+    const emissao = mediaDuracao(emissaoValidos, 'emissao')
     const agendaT = mediaDuracao(doAno, 'agenda')
     return { emissao, agendaT }
-  }, [tempos, ano])
+  }, [tempos, ano, relatorios])
 
   // Filtro por TAG (sigla) da aba Qualidade — escopa checagens e equipamentos
   const checagensQ = qSiglas.length ? checagens.filter(c => qSiglas.includes(siglaDaTag(c.equipamentoTag))) : checagens

@@ -18,6 +18,8 @@ import {
 import { documentoITtoHTML } from '@/lib/instrucoes/html'
 import { DiagramaEditor } from '@/components/DiagramaEditor'
 import { diagramaParaSVG, DIAGRAMA_W, DIAGRAMA_H } from '@/lib/instrucoes/diagrama'
+import { InputCorretor } from '@/components/corretor/InputCorretor'
+import { TextareaCorretor } from '@/components/corretor/TextareaCorretor'
 
 // Estilo de fonte/tamanho do bloco aplicado na pré-visualização do editor.
 function estiloBloco(b: Bloco, base?: CSSProperties): CSSProperties {
@@ -181,28 +183,28 @@ function EditH({ bloco, onChange }: { bloco: BlocoH1 | BlocoH2 | BlocoH3; onChan
     <div className="flex gap-2">
       <input className="input text-[11px] w-24 flex-shrink-0" placeholder="Nº (ex: 5.2)"
         value={bloco.numero} onChange={e => onChange({ ...bloco, numero: e.target.value })} />
-      <input className="input text-[11px] flex-1" placeholder="Título da seção"
-        value={bloco.texto} onChange={e => onChange({ ...bloco, texto: e.target.value })} />
+      <InputCorretor className="input text-[11px] flex-1" placeholder="Título da seção"
+        value={bloco.texto} onChange={v => onChange({ ...bloco, texto: v })} />
     </div>
   )
 }
 
 function EditP({ bloco, onChange }: { bloco: BlocoP; onChange: (b: Bloco) => void }) {
   return (
-    <textarea className="input text-[11px] min-h-[80px] resize-y leading-relaxed"
+    <TextareaCorretor className="input text-[11px] min-h-[80px] resize-y leading-relaxed"
       placeholder="Texto do parágrafo..."
-      value={bloco.texto} onChange={e => onChange({ ...bloco, texto: e.target.value })} />
+      value={bloco.texto} onChange={v => onChange({ ...bloco, texto: v })} />
   )
 }
 
 function EditDestaque({ bloco, onChange }: { bloco: BlocoDestaque; onChange: (b: Bloco) => void }) {
   return (
     <div className="space-y-2">
-      <input className="input text-[11px]" placeholder="Termo em negrito (ex: Impedância)"
-        value={bloco.termo} onChange={e => onChange({ ...bloco, termo: e.target.value })} />
-      <textarea className="input text-[11px] min-h-[60px] resize-y"
+      <InputCorretor className="input text-[11px]" placeholder="Termo em negrito (ex: Impedância)"
+        value={bloco.termo} onChange={v => onChange({ ...bloco, termo: v })} />
+      <TextareaCorretor className="input text-[11px] min-h-[60px] resize-y"
         placeholder="Texto do parágrafo após o termo..."
-        value={bloco.texto} onChange={e => onChange({ ...bloco, texto: e.target.value })} />
+        value={bloco.texto} onChange={v => onChange({ ...bloco, texto: v })} />
     </div>
   )
 }
@@ -225,9 +227,9 @@ function EditLista({ bloco, onChange }: { bloco: BlocoUL | BlocoOL; onChange: (b
           <span className="text-[11px] text-white/30 font-mono w-5 flex-shrink-0">
             {bloco.tipo === 'ol' ? `${i+1})` : '•'}
           </span>
-          <input className="input text-[11px] flex-1" value={item}
+          <InputCorretor className="input text-[11px] flex-1" value={item}
             placeholder={bloco.tipo === 'ol' ? `Passo ${i + 1}` : `Item ${i + 1}`}
-            onChange={e => setItem(i, e.target.value)} />
+            onChange={v => setItem(i, v)} />
           <button type="button" onClick={() => removeItem(i)}
             className="text-white/20 hover:text-red-400 transition-colors flex-shrink-0">
             <Trash2 size={11} />
@@ -270,8 +272,8 @@ function EditImg({ bloco, onChange }: { bloco: BlocoImg; onChange: (b: Bloco) =>
       {bloco.src && (
         <img src={bloco.src} alt="" className="max-h-40 rounded-lg border border-white/10 object-contain" />
       )}
-      <input className="input text-[11px]" placeholder="Legenda da figura (ex: Figura 1 - Exemplo...)"
-        value={bloco.legenda} onChange={e => onChange({ ...bloco, legenda: e.target.value })} />
+      <InputCorretor className="input text-[11px]" placeholder="Legenda da figura (ex: Figura 1 - Exemplo...)"
+        value={bloco.legenda} onChange={v => onChange({ ...bloco, legenda: v })} />
     </div>
   )
 }
@@ -325,8 +327,8 @@ function EditTabela({ bloco, onChange }: { bloco: BlocoTabela; onChange: (b: Blo
             <tr key={r}>
               {linha.map((cel, c) => (
                 <td key={c} className="border border-white/10 p-1">
-                  <input className="input text-[10px] py-0.5 h-6 bg-transparent border-0 text-white/60 w-full"
-                    value={cel} placeholder="—" onChange={e => setCell(r, c, e.target.value)} />
+                  <InputCorretor className="input text-[10px] py-0.5 h-6 bg-transparent border-0 text-white/60 w-full"
+                    value={cel} placeholder="—" onChange={v => setCell(r, c, v)} />
                 </td>
               ))}
               <td className="pl-1">
@@ -393,8 +395,8 @@ function EditDefinicoes({ bloco, onChange, glossario, onUpsertGlossario }: {
             <input className="input text-[11px] w-28 flex-shrink-0 font-mono font-semibold uppercase"
               placeholder="SIGLA" list={listId} value={item.sigla} onChange={e => setSigla(i, e.target.value)} />
             <span className="text-white/30 flex-shrink-0">–</span>
-            <input className="input text-[11px] flex-1"
-              placeholder="Definição completa" value={item.definicao} onChange={e => setDef(i, e.target.value)} />
+            <InputCorretor className="input text-[11px] flex-1"
+              placeholder="Definição completa" value={item.definicao} onChange={v => setDef(i, v)} />
             {podeSalvar ? (
               <button type="button" title="Salvar/atualizar no glossário"
                 onClick={() => onUpsertGlossario(item.sigla, item.definicao)}
@@ -428,8 +430,8 @@ function EditDiagrama({ bloco, onChange }: { bloco: BlocoDiagrama; onChange: (b:
       <DiagramaEditor
         formas={bloco.formas} w={bloco.w || DIAGRAMA_W} h={bloco.h || DIAGRAMA_H}
         onChange={formas => onChange({ ...bloco, formas })} />
-      <input className="input text-[11px] py-1" placeholder="Legenda do diagrama (ex: Figura 1 – Esquema de ligação)"
-        value={bloco.legenda ?? ''} onChange={e => onChange({ ...bloco, legenda: e.target.value })} />
+      <InputCorretor className="input text-[11px] py-1" placeholder="Legenda do diagrama (ex: Figura 1 – Esquema de ligação)"
+        value={bloco.legenda ?? ''} onChange={v => onChange({ ...bloco, legenda: v })} />
     </div>
   )
 }
@@ -841,8 +843,8 @@ export default function EditorInstrucaoPage() {
 
               <div className="col-span-2">
                 <label className="form-label">Título</label>
-                <input className="input" value={doc.titulo} placeholder="ex: Atenuador, Medição de Atenuação"
-                  onChange={e => updateMeta({ titulo: e.target.value })} />
+                <InputCorretor className="input" value={doc.titulo} placeholder="ex: Atenuador, Medição de Atenuação"
+                  onChange={v => updateMeta({ titulo: v })} />
               </div>
 
               <div>
@@ -859,14 +861,14 @@ export default function EditorInstrucaoPage() {
 
               <div>
                 <label className="form-label">Revisado por</label>
-                <input className="input" value={doc.revisadoPor} placeholder="Nome do revisor"
-                  onChange={e => updateMeta({ revisadoPor: e.target.value })} />
+                <InputCorretor className="input" value={doc.revisadoPor} placeholder="Nome do revisor"
+                  onChange={v => updateMeta({ revisadoPor: v })} />
               </div>
 
               <div>
                 <label className="form-label">Aprovado por</label>
-                <input className="input" value={doc.aprovadoPor} placeholder="Nome do aprovador"
-                  onChange={e => updateMeta({ aprovadoPor: e.target.value })} />
+                <InputCorretor className="input" value={doc.aprovadoPor} placeholder="Nome do aprovador"
+                  onChange={v => updateMeta({ aprovadoPor: v })} />
               </div>
 
               <div>

@@ -9,6 +9,7 @@ export interface CamposModeloLab {
   serie?: string
   tag?: string
   dataCalibracao?: string
+  numero?: string
 }
 
 export interface LaboratorioCal {
@@ -26,11 +27,11 @@ export const LABS_DEFAULT: LaboratorioCal[] = [
 
 const normCal = (c?: string) => c ? `CAL ${(c.match(/\d{3,4}/) || [''])[0]}` : ''
 
-export function lerLaboratorios(): LaboratorioCal[] {
+export async function lerLaboratorios(): Promise<LaboratorioCal[]> {
   return lerJSON<LaboratorioCal[]>(ARQ_LABS, LABS_DEFAULT)
 }
-export function salvarLaboratorios(labs: LaboratorioCal[]): void {
-  escreverJSON(ARQ_LABS, labs)
+export async function salvarLaboratorios(labs: LaboratorioCal[]): Promise<void> {
+  await escreverJSON(ARQ_LABS, labs)
 }
 export function nomeDoLab(labs: LaboratorioCal[], cal?: string): string | undefined {
   const k = normCal(cal)

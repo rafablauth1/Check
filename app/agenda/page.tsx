@@ -7,7 +7,7 @@ import {
   ArrowLeft, ArrowRight, Plus, Search, X, CheckCircle2, XCircle, Clock, Edit2,
   Trash2, ChevronDown, ChevronUp, FileText, Loader2, Download,
   Lightbulb, Lamp, Settings, Layers, RotateCcw, FolderOpen,
-  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users,
+  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users, RefreshCw,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -1338,6 +1338,7 @@ export default function AgendaPage() {
   const [fromNetwork,   setFromNetwork]   = useState<boolean | null>(null)
   const [importandoFotos, setImportandoFotos] = useState(false)
   const [organizando,     setOrganizando]     = useState(false)
+  const [verificandoPdfs, setVerificandoPdfs] = useState(false)
   const [clientes,      setClientes]      = useState<ClienteDB[]>([])
   const [fuCliente,     setFuCliente]     = useState('')
   const [fuTipo,        setFuTipo]        = useState<'todos' | 'lampada' | 'luminaria'>('todos')
@@ -1483,6 +1484,40 @@ export default function AgendaPage() {
       alert('Não consegui organizar os resultados.\n\n' + (e?.message ?? String(e)))
     } finally {
       setOrganizando(false)
+    }
+  }
+
+  // "Verificar PDFs": varre a pasta da EUT dos itens sem assinatura registrada
+  // e marca como concluído quem já tiver PDF assinado por lá — sem precisar
+  // abrir cada relatório e clicar "Assinado" manualmente.
+  async function verificarPdfs() {
+    const api = (window as any).electronAPI
+    if (!api?.verificarPdfsAgenda) { alert('Disponível apenas no aplicativo.'); return }
+    const norm = (v?: string) => (v || '').trim().toLowerCase()
+    const alvo = agenda.filter(a => !a.assinadoEm && (a.numRelatorio || a.protocolo))
+    if (!alvo.length) { alert('Nenhum item pendente de verificação.'); return }
+    setVerificandoPdfs(true)
+    try {
+      const itens = alvo.map(a => {
+        const rel = relatorios.find(r =>
+          (a.numRelatorio && norm(r.numRelatorio) === norm(a.numRelatorio)) ||
+          (a.protocolo && norm(r.protocolo) === norm(a.protocolo)),
+        )
+        return {
+          id: a.id, protocolo: a.protocolo, numRelatorio: a.numRelatorio,
+          dataEmissao: a.dataEmissao, eutFolderPath: rel?.eutFolderPath,
+        }
+      })
+      const res = await api.verificarPdfsAgenda(itens)
+      if (!res?.ok) { alert('Não consegui verificar os PDFs.'); return }
+      if (!res.atualizados?.length) { alert('Nenhum PDF assinado novo encontrado.'); return }
+      const mapa = new Map(res.atualizados.map((r: { id: string; assinadoEm: string }) => [r.id, r.assinadoEm]))
+      saveAgenda(agenda.map(a => mapa.has(a.id) ? { ...a, assinadoEm: mapa.get(a.id) as string } : a))
+      alert(`${res.atualizados.length} relatório(s) marcado(s) como concluído(s) — PDF assinado encontrado na pasta.`)
+    } catch (e: any) {
+      alert('Erro ao verificar PDFs.\n\n' + (e?.message ?? String(e)))
+    } finally {
+      setVerificandoPdfs(false)
     }
   }
 
@@ -2098,6 +2133,14 @@ export default function AgendaPage() {
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
                 {organizando ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />}
                 {organizando ? 'Organizando...' : 'Organizar Resultados'}
+              </button>
+            )}
+            {isElectron && (
+              <button type="button" onClick={verificarPdfs} disabled={verificandoPdfs}
+                title="Procura, na pasta da EUT de cada item pendente, um PDF já assinado — e marca como concluído automaticamente"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
+                {verificandoPdfs ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
+                {verificandoPdfs ? 'Verificando...' : 'Verificar PDFs'}
               </button>
             )}
             {isElectron && (

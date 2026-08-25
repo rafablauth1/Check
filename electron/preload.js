@@ -100,6 +100,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendCopy:       (eutFolderPath, ano)               => ipcRenderer.invoke('pdf:send-copy', { eutFolderPath, ano }),
   // Reconcilia a cópia: copia p/ pasta de cópias se o PDF original foi assinado manualmente
   syncEutCopy:    (eutFolderPath, pdfFilename, ano) => ipcRenderer.invoke('pdf:sync-eut-copy', { eutFolderPath, pdfFilename, ano }),
+  // "Verificar PDFs" da Agenda: acha PDFs já assinados na pasta da EUT e marca os itens como concluídos
+  verificarPdfsAgenda: (itens) => ipcRenderer.invoke('agenda:verificar-pdfs', { itens }),
 
   // Auto-update
   checkUpdate:    ()          => ipcRenderer.invoke('update:check'),

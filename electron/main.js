@@ -2139,6 +2139,71 @@ ipcMain.handle('pdf:sync-eut-copy', (_, { eutFolderPath: eutPath, pdfFilename, a
   } catch (err) { return { ok: false, error: String(err) } }
 })
 
+// "Verificar PDFs" da Agenda: para itens sem assinatura registrada, acha a
+// pasta da EUT (pelo protocolo, mesma convenção do eut:find-by-protocolo) e
+// olha o PDF mais recente de lá. Se estiver assinado digitalmente (mesmo
+// critério do pdf:sync-eut-copy), marca o item como concluído — sem precisar
+// abrir cada relatório manualmente. Read-only na pasta, exceto pela cópia
+// (mesmo comportamento do syncEutCopy).
+// Operações de fs assíncronas (fs.promises) para não travar o processo main
+// do Electron — o lote pode ter dezenas de itens, cada um batendo numa pasta
+// de rede, e o ipcMain.handle roda single-threaded no processo principal.
+async function existeAsync(p) { try { await fs.promises.access(p); return true } catch { return false } }
+
+// Acha a pasta do protocolo em qualquer ano dentro da pasta-mãe (varre as
+// subpastas de ano, mais recente primeiro) — usado quando o item não tem
+// data de emissão pra saber em qual ano procurar.
+async function acharPastaProtocoloQualquerAno(protocolo) {
+  try {
+    const anos = (await fs.promises.readdir(FOTOS_DESTINO_BASE, { withFileTypes: true }))
+      .filter(e => e.isDirectory() && /^\d{4}$/.test(e.name))
+      .map(e => e.name)
+      .sort((a, b) => b.localeCompare(a))
+    for (const ano of anos) {
+      const achou = acharPastaProtocolo(path.join(FOTOS_DESTINO_BASE, ano), protocolo)
+      if (achou) return { folderPath: achou, ano }
+    }
+  } catch {}
+  return null
+}
+
+ipcMain.handle('agenda:verificar-pdfs', async (_, { itens }) => {
+  let pdfCopyFolder
+  try { ({ pdfCopyFolder } = readSettings()) } catch { pdfCopyFolder = '' }
+  const atualizados = []
+  for (const it of itens || []) {
+    try {
+      let anoStr = String(it.ano || (it.dataEmissao || '').match(/\d{4}/)?.[0] || '').slice(0, 4)
+      let folderPath = it.eutFolderPath
+      if ((!folderPath || !(await existeAsync(folderPath))) && it.protocolo && anoStr) {
+        const baseDir = path.join(FOTOS_DESTINO_BASE, anoStr)
+        if (await existeAsync(baseDir)) folderPath = acharPastaProtocolo(baseDir, String(it.protocolo).trim())
+      }
+      // Sem ano conhecido (ou não achou nele) — varre todos os anos da pasta-mãe.
+      if ((!folderPath || !(await existeAsync(folderPath))) && it.protocolo) {
+        const achou = await acharPastaProtocoloQualquerAno(String(it.protocolo).trim())
+        if (achou) { folderPath = achou.folderPath; anoStr = achou.ano }
+      }
+      if (!folderPath || !(await existeAsync(folderPath))) continue
+      const entries = await fs.promises.readdir(folderPath, { withFileTypes: true })
+      const pdfs = entries.filter(e => e.isFile() && /\.pdf$/i.test(e.name)).map(e => path.join(folderPath, e.name))
+      if (!pdfs.length) continue
+      const comMtime = await Promise.all(pdfs.map(async p => ({ p, mtime: (await fs.promises.stat(p)).mtimeMs })))
+      const maisRecente = comMtime.sort((a, b) => b.mtime - a.mtime)[0]
+      if (!pdfEstaAssinado(maisRecente.p)) continue
+      if (pdfCopyFolder) {
+        try {
+          const destDir = anoStr ? path.join(pdfCopyFolder, anoStr) : pdfCopyFolder
+          await fs.promises.mkdir(destDir, { recursive: true })
+          await fs.promises.copyFile(maisRecente.p, path.join(destDir, path.basename(maisRecente.p)))
+        } catch {}
+      }
+      atualizados.push({ id: it.id, assinadoEm: new Date(maisRecente.mtime).toISOString().slice(0, 10) })
+    } catch {}
+  }
+  return { ok: true, atualizados }
+})
+
 ipcMain.handle('relatorio:cancel-pdf', async (_, { eutFolderPath: eutPath, pdfFilename }) => {
   const s = readSettings()
   const targets = []

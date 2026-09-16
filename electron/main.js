@@ -3076,9 +3076,41 @@ const NOME_INSTALADOR = /^CISPR 15 LABELO Setup \d+\.\d+\.\d+\.exe$/
 
 const NOME_ZIP = /^CISPR 15 LABELO-\d+\.\d+\.\d+-win\.zip$/
 
+/* A atualização por zip termina num robocopy sobre a pasta do executável. Se o
+   app foi instalado para TODOS os usuários, essa pasta é a Arquivos de
+   Programas, onde só administrador escreve — o robocopy falha, o .bat registra
+   num log em %TEMP% que ninguém lê, o app reinicia na versão velha e parece que
+   nada aconteceu. Era por isso que os PCs do laboratório instalavam uma vez e
+   nunca mais atualizavam.
+   Testar a escrita ANTES troca essa falha silenciosa por uma instrução. */
+function pastaDoAppEhGravavel() {
+  const appDir = path.dirname(app.getPath('exe'))
+  const teste = path.join(appDir, '.cispr15-teste-escrita-' + Date.now() + '.tmp')
+  try {
+    fs.writeFileSync(teste, 'x')
+    fs.unlinkSync(teste)
+    return true
+  } catch { return false }
+}
+
 ipcMain.handle('update:install', async (_, { installer, zip, version } = {}) => {
   const s = readSettings()
   try {
+    if (!pastaDoAppEhGravavel()) {
+      const appDir = path.dirname(app.getPath('exe'))
+      logErro('update:sem-permissao', new Error('pasta do app somente leitura'), { appDir })
+      return {
+        ok: false,
+        error:
+          'Não dá para atualizar automaticamente: o app está instalado em uma pasta ' +
+          'protegida, onde a atualização não tem permissão para escrever.\n\n' +
+          appDir + '\n\n' +
+          'Solução, uma única vez: desinstale esta versão e instale de novo pelo ' +
+          'instalador que está na pasta de rede. Ele passa a instalar na pasta do ' +
+          'seu usuário, e a partir daí as atualizações se aplicam sozinhas, sem ' +
+          'precisar instalar nada de novo.',
+      }
+    }
     // Preferência pelo ZIP: extrai e copia por cima da pasta do app, sem
     // instalador e sem UAC — é o único caminho viável nos PCs onde nada pode
     // ser instalado. Nome validado igual ao do instalador: o version.json vem

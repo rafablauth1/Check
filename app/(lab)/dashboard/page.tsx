@@ -205,25 +205,54 @@ export default function DashboardPage() {
       for (const [re, nome, cor] of TOPICOS) if (re.test(campo)) return { nome, cor }
       return { nome: 'Outros', cor: '#6B7280' }
     }
-    const acc = new Map<string, { ocorrencias: number; relatorios: Set<string>; cor: string }>()
-    const registrar = (alteracoes: any[], chaveRelatorio: string) => {
+    /* A unidade é a EMENDA, não o campo alterado. Trocar as Figuras 1, 2 e 3
+       no mesmo relatório é UMA emenda por foto, não três — contar campo inflava
+       o peso de quem mexe em vários de uma vez. Uma emenda que toque dois
+       tópicos conta uma vez em cada; por isso a soma das fatias pode passar do
+       total de emendas, e o centro da rosca mostra o total real. */
+    const acc = new Map<string, { emendas: number; relatorios: Set<string>; cor: string }>()
+    const porQtdMotivos = new Map<number, number>()
+    let totalEmendas = 0
+    const registrarEmenda = (alteracoes: any[], chaveRelatorio: string) => {
+      const topicos = new Map<string, string>()
       for (const a of alteracoes ?? []) {
         const { nome, cor } = topicoDe(String(a?.campo ?? ''))
-        if (!acc.has(nome)) acc.set(nome, { ocorrencias: 0, relatorios: new Set(), cor })
+        topicos.set(nome, cor)
+      }
+      if (!topicos.size) return
+      totalEmendas++
+      // Quantos motivos DISTINTOS esta emenda teve — é o eixo da segunda rosca.
+      porQtdMotivos.set(topicos.size, (porQtdMotivos.get(topicos.size) ?? 0) + 1)
+      for (const [nome, cor] of topicos) {
+        if (!acc.has(nome)) acc.set(nome, { emendas: 0, relatorios: new Set(), cor })
         const c = acc.get(nome)!
-        c.ocorrencias++
+        c.emendas++
         c.relatorios.add(chaveRelatorio)
       }
     }
     for (const r of relatoriosAno) {
-      if (r.emendaDe) registrar(r.alteracoes, r.emendaDe)              // emenda em registro próprio
-      for (const e of (r.emendas ?? [])) registrar(e?.alteracoes, r.id) // emenda aninhada (formato antigo)
+      if (r.emendaDe) registrarEmenda(r.alteracoes, r.emendaDe)              // emenda em registro próprio
+      for (const e of (r.emendas ?? [])) registrarEmenda(e?.alteracoes, r.id) // emenda aninhada (formato antigo)
     }
     const itens = [...acc.entries()]
-      .map(([label, c]) => ({ label, value: c.ocorrencias, relatorios: c.relatorios.size, color: c.cor }))
+      .map(([label, c]) => ({ label, value: c.emendas, relatorios: c.relatorios.size, color: c.cor }))
       .sort((a, b) => b.value - a.value)
-    const total = itens.reduce((s, i) => s + i.value, 0)
-    return { itens, total }
+    const totalMotivos = itens.reduce((s, i) => s + i.value, 0)
+
+    /* Emenda simples (um motivo) x composta (vários). Verde -> âmbar -> vermelho:
+       quanto mais motivos numa emenda só, pior foi a revisão que a antecedeu. */
+    const CORES_QTD = ['#34D399', '#F59E0B', '#F87171']
+    const complexidade = [1, 2, 3]
+      .map(q => ({
+        label: q < 3 ? `${q} motivo${q > 1 ? 's' : ''}` : '3+ motivos',
+        value: q < 3
+          ? (porQtdMotivos.get(q) ?? 0)
+          : [...porQtdMotivos.entries()].filter(([k]) => k >= 3).reduce((s, [, v]) => s + v, 0),
+        color: CORES_QTD[q - 1],
+      }))
+      .filter(c => c.value > 0)
+
+    return { itens, totalEmendas, totalMotivos, complexidade }
   }, [relatoriosAno])
 
   // Tempo de saída (fim do ensaio → emissão) e atrasos
@@ -374,30 +403,52 @@ export default function DashboardPage() {
             </ChartCard>
           </div>
 
-          {/* Análise de emendas — onde o erro se concentra. Em largura inteira
-              porque o valor aqui é comparar os tópicos entre si. */}
-          <ChartCard title={`Emendas — itens mais afetados · ${ano}`}>
-            {emendaTopicos.itens.length === 0 ? (
-              <p className="text-white/20 text-xs py-2">Nenhuma alteração registrada em emendas neste ano.</p>
-            ) : (
-              <>
-                <DonutChart
-                  centerTop={emendaTopicos.total}
-                  centerSub="alterações"
-                  segments={emendaTopicos.itens.map(t => ({ label: t.label, value: t.value, color: t.color }))} />
-                <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap gap-x-5 gap-y-1">
-                  {emendaTopicos.itens.map(t => (
-                    <span key={t.label} className="text-[10px] text-white/35">
-                      <span style={{ color: t.color }}>■</span>{' '}
-                      <span className="text-white/60 font-medium">{t.label}</span>
-                      {' · '}{Math.round((t.value / emendaTopicos.total) * 100)}%
-                      {' · '}{t.relatorios} relatório{t.relatorios > 1 ? 's' : ''} atingido{t.relatorios > 1 ? 's' : ''}
-                    </span>
-                  ))}
-                </div>
-              </>
-            )}
-          </ChartCard>
+          {/* Duas leituras da mesma emenda: O QUE se erra, e QUANTOS erros
+              cabem numa emenda só. A segunda diz se a revisão que a antecedeu
+              falhou num ponto ou desandou de vez. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <ChartCard title={`Emendas — motivos · ${ano}`}>
+              {emendaTopicos.itens.length === 0 ? (
+                <p className="text-white/20 text-xs py-2">Nenhuma emenda registrada neste ano.</p>
+              ) : (
+                <>
+                  <DonutChart
+                    centerTop={emendaTopicos.totalMotivos}
+                    centerSub={emendaTopicos.totalMotivos === 1 ? 'motivo' : 'motivos'}
+                    segments={emendaTopicos.itens.map(t => ({ label: t.label, value: t.value, color: t.color }))} />
+                  <div className="mt-4 pt-3 border-t border-white/5 flex flex-col gap-1">
+                    {emendaTopicos.itens.map(t => (
+                      <span key={t.label} className="text-[10px] text-white/35">
+                        <span style={{ color: t.color }}>■</span>{' '}
+                        <span className="text-white/60 font-medium">{t.label}</span>
+                        {' · '}{Math.round((t.value / emendaTopicos.totalMotivos) * 100)}% dos motivos
+                        {' · '}{t.relatorios} relatório{t.relatorios > 1 ? 's' : ''}
+                      </span>
+                    ))}
+                  </div>
+                </>
+              )}
+            </ChartCard>
+
+            <ChartCard title={`Emendas — motivos por emenda · ${ano}`}>
+              {emendaTopicos.complexidade.length === 0 ? (
+                <p className="text-white/20 text-xs py-2">Nenhuma emenda registrada neste ano.</p>
+              ) : (
+                <>
+                  <DonutChart
+                    centerTop={emendaTopicos.totalEmendas}
+                    centerSub={emendaTopicos.totalEmendas === 1 ? 'emenda' : 'emendas'}
+                    segments={emendaTopicos.complexidade} />
+                  <p className="mt-4 pt-3 border-t border-white/5 text-[10px] text-white/35">
+                    {emendaTopicos.totalEmendas} emenda{emendaTopicos.totalEmendas > 1 ? 's' : ''}
+                    {' '}gerou{emendaTopicos.totalEmendas > 1 ? '/geraram' : ''}{' '}
+                    {emendaTopicos.totalMotivos} motivo{emendaTopicos.totalMotivos > 1 ? 's' : ''}.
+                    {' '}Emenda com mais de um motivo indica revisão que falhou em vários pontos de uma vez.
+                  </p>
+                </>
+              )}
+            </ChartCard>
+          </div>
 
           {/* Agenda de execução */}
           <div className="card p-5">

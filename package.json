@@ -1,6 +1,6 @@
 {
   "name": "cispr15-labelo",
-  "version": "2.1.25",
+  "version": "2.1.27",
   "description": "Gerador de Relatórios CISPR 15 — LABELO/PUCRS",
   "main": "electron/main.js",
   "scripts": {
@@ -76,8 +76,8 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowElevation": true,
-      "perMachine": true,
+      "allowElevation": false,
+      "perMachine": false,
       "include": "build/installer.nsh",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,

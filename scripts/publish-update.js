@@ -138,6 +138,102 @@ try {
   console.warn('Aviso: não consegui publicar na pasta de rede de atualização —', err.message)
 }
 
+/* ── pasta portátil na rede ──────────────────────────────────────────────────
+ *
+ * O instalador NSIS exige desinstalar/instalar e, no perMachine antigo, jogava
+ * o app em Arquivos de Programas — onde a atualização automática não consegue
+ * escrever. Resultado: os PCs do laboratório instalavam uma vez e nunca mais
+ * atualizavam.
+ *
+ * A pasta portátil resolve sem instalar nada: o PC copia win-unpacked para uma
+ * pasta do próprio usuário e roda de lá. Como a pasta é dele, a atualização
+ * automática passa a funcionar sozinha daí em diante.
+ *
+ * O .bat abaixo faz a cópia e cria o atalho — sem UAC, sem instalador. Ele fica
+ * na rede ao lado da pasta, e é regravado a cada publicação para não envelhecer.
+ */
+const { execFileSync } = require('child_process')
+
+const REDE_DIST = path.join(path.dirname(NETWORK_UPDATE_FOLDER), 'dist')
+
+const batPortatil = [
+  '@echo off',
+  'chcp 65001 > nul',
+  'setlocal',
+  'set "ORIGEM=%~dp0win-unpacked"',
+  'set "DESTINO=%LOCALAPPDATA%\\Programs\\CISPR 15 LABELO"',
+  'echo.',
+  'echo  =============================================',
+  'echo   CISPR 15 LABELO - instalacao sem administrador',
+  'echo  =============================================',
+  'echo.',
+  'echo  Destino: %DESTINO%',
+  'echo.',
+  'if not exist "%ORIGEM%\\CISPR 15 LABELO.exe" (',
+  '  echo  ERRO: nao encontrei o app em "%ORIGEM%".',
+  '  pause',
+  '  exit /b 1',
+  ')',
+  'echo  [1/3] Fechando o app, se estiver aberto...',
+  'taskkill /f /im "CISPR 15 LABELO.exe" >nul 2>&1',
+  'timeout /t 3 /nobreak >nul',
+  'echo  [2/3] Copiando arquivos (pode levar alguns minutos)...',
+  'robocopy "%ORIGEM%" "%DESTINO%" /MIR /R:2 /W:2 /NFL /NDL /NP >nul',
+  'if errorlevel 8 (',
+  '  echo  ERRO ao copiar. Verifique o acesso a rede e tente de novo.',
+  '  pause',
+  '  exit /b 1',
+  ')',
+  'echo  [3/3] Criando atalho na area de trabalho...',
+  'powershell -NoProfile -ExecutionPolicy Bypass -Command "$w=New-Object -ComObject WScript.Shell; $s=$w.CreateShortcut(([Environment]::GetFolderPath(\'Desktop\')+\'\\CISPR 15 LABELO.lnk\')); $s.TargetPath=\'%DESTINO%\\CISPR 15 LABELO.exe\'; $s.WorkingDirectory=\'%DESTINO%\'; $s.IconLocation=\'%DESTINO%\\CISPR 15 LABELO.exe,0\'; $s.Save()"',
+  'echo.',
+  'if exist "%ProgramFiles%\\CISPR 15 LABELO\\CISPR 15 LABELO.exe" (',
+  '  echo  ATENCAO: ha uma instalacao antiga em Arquivos de Programas.',
+  '  echo  Desinstale-a pelo Painel de Controle, senao o atalho antigo',
+  '  echo  continuara abrindo a versao desatualizada.',
+  '  echo.',
+  ')',
+  'echo  Pronto. Abra pelo atalho "CISPR 15 LABELO" na area de trabalho.',
+  'echo  As proximas atualizacoes se aplicam sozinhas - nao precisa repetir isto.',
+  'echo.',
+  'pause',
+].join('\r\n')
+
+try {
+  fs.mkdirSync(REDE_DIST, { recursive: true })
+  const origemUnpacked = path.join(distDir, 'win-unpacked')
+  if (fs.existsSync(origemUnpacked)) {
+    // /MIR é incremental: a primeira cópia leva a pasta inteira, as seguintes
+    // mandam só o que mudou (na prática o app.asar).
+    try {
+      execFileSync('robocopy', [origemUnpacked, path.join(REDE_DIST, 'win-unpacked'),
+        '/MIR', '/R:2', '/W:2', '/NFL', '/NDL', '/NP', '/NJH', '/NJS'], { stdio: 'ignore' })
+    } catch (e) {
+      // robocopy usa 0-7 para sucesso; só 8+ é falha de verdade.
+      if (!e.status || e.status >= 8) throw e
+    }
+  }
+  if (fs.existsSync(path.join(distDir, installer))) {
+    fs.copyFileSync(path.join(distDir, installer), path.join(REDE_DIST, installer))
+  }
+  fs.copyFileSync(outFile, path.join(REDE_DIST, 'version.json'))
+  fs.writeFileSync(path.join(REDE_DIST, 'INSTALAR-SEM-ADMIN.bat'), batPortatil, 'utf-8')
+
+  // Some com instalador de versão anterior — a pasta guarda só a atual.
+  for (const f of fs.readdirSync(REDE_DIST)) {
+    if (f.endsWith('.exe') && f !== installer) {
+      try { fs.rmSync(path.join(REDE_DIST, f), { force: true }) } catch {}
+    }
+    if (f.endsWith('.exe.blockmap') && f !== installer + '.blockmap') {
+      try { fs.rmSync(path.join(REDE_DIST, f), { force: true }) } catch {}
+    }
+  }
+  console.log('✓ Pasta portátil publicada em: ' + REDE_DIST)
+  console.log('  (win-unpacked + INSTALAR-SEM-ADMIN.bat — instala sem UAC)')
+} catch (err) {
+  console.warn('Aviso: não consegui publicar a pasta portátil —', err.message)
+}
+
 /* ── poda do dist/ ───────────────────────────────────────────────────────────
    Cada build deixa ~260 MB em dist/ (instalador + blockmap + zip). Em
    15/09/2026 havia 25 versões acumuladas ali, 6,1 GB — ninguém apaga isso na

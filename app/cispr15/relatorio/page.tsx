@@ -2,16 +2,18 @@
 
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
-import { ArrowLeft, Printer, Upload, X, Loader2, FolderOpen, PenLine, CheckCircle2, Save } from 'lucide-react'
+import { ArrowLeft, Printer, Upload, X, Loader2, FolderOpen, PenLine, CheckCircle2, Save, AlertTriangle, ShieldCheck, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { finalizarMarcador, registrarTempo } from '@/lib/tempos'
 import {
   type Cispr15Config, type EmendaDraft, type RelatorioSalvo,
   getTensoes, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY,
-  RELATORIOS_KEY, EMENDA_DRAFT_KEY, formatEmendaNumero,
+  EMENDA_DRAFT_KEY, formatEmendaNumero, formatNumeroRelatorio,
 } from '../types'
 import { filterDocxForResult, type ResultKey } from '../docx-filter'
 import { loadPhotos } from '@/lib/cispr15/photo-store'
+import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
+import { textos, fmtDataI18n, juntarE, rotuloIdentificador, traduzirTextoDocx, type Idioma } from '../i18n'
 
 /* ─── tipos ────────────────────────────────────────────────────────────────── */
 interface DocxState { loading: boolean; html: string | null; filename: string | null }
@@ -51,7 +53,8 @@ function formatarDataAssinatura(d: Date): string {
   return `${d.getFullYear()}.${p(d.getMonth() + 1)}.${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())} ${sinal}${oh}'${om}'`
 }
 
-const LABEL_ID: Record<string, string> = { lampada: 'Número de série', luminaria: 'N° de Série' }
+// O rótulo do identificador da amostra mora em ../i18n (rotuloIdentificador):
+// muda com o tipo E com o idioma do relatório.
 const BLUE = '#003366'
 const PUCRS_LOGO = '/formularios/emc/pucrs-logo.png'
 const CRL_BADGE  = '/formularios/emc/crl0075.jpg'
@@ -67,13 +70,15 @@ const pJ:     React.CSSProperties = { ...p, textAlign: 'justify' }
 const pTitle: React.CSSProperties = { ...p, fontWeight: 700, marginTop: 8,  marginBottom: 12, background: GRAY2, padding: '2px 8px' }
 const pSub:   React.CSSProperties = { ...p, fontWeight: 700, background: GRAY2, padding: '2px 8px' }
 
-function fmtDate(iso: string) {
-  if (!iso) return '—'
-  return new Date(iso + 'T12:00:00').toLocaleDateString('pt-BR')
+/* Data no idioma do relatório. Mantém a assinatura de um argumento porque a
+   maioria das chamadas é em português; o inglês passa o idioma explicitamente. */
+function fmtDate(iso: string, idioma: Idioma = 'pt') {
+  return fmtDataI18n(iso, idioma)
 }
 
 /* ─── rodapé ────────────────────────────────────────────────────────────────── */
-function PageFooter() {
+function PageFooter({ idioma = 'pt' }: { idioma?: Idioma }) {
+  const t = textos(idioma)
   return (
     <div className="page-footer" style={{ flexShrink: 0 }}>
       <div style={{
@@ -93,8 +98,8 @@ function PageFooter() {
         </div>
         {/* centro: endereço + contatos juntos */}
         <div style={{ flex: 1, textAlign: 'center', fontSize: '6.5pt', color: '#444' }}>
-          Av. Ipiranga n° 6681, Prédio 30 Bloco A, Sala 210 – Partenon · CEP 90619-900 – Porto Alegre – RS – Brasil<br />
-          Tel.: (51) 3320 3551 · labelo@pucrs.br · www.labelo.com.br
+          {t.rodapeEndereco}<br />
+          {t.rodapeContato}
         </div>
         {/* direita: nº de página (print only) */}
         <span className="page-num-label" style={{ whiteSpace: 'nowrap', flexShrink: 0, fontSize: '6.5pt', color: '#444' }} />
@@ -104,29 +109,39 @@ function PageFooter() {
 }
 
 /* ─── wrapper de página A4 com margens Word (15 mm topo) ───────────────────── */
-function Page({ children, first, flow }: { children: React.ReactNode; first?: boolean; flow?: boolean }) {
+function Page({ children, first, flow, idioma = 'pt' }: { children: React.ReactNode; first?: boolean; flow?: boolean; idioma?: Idioma }) {
   return (
     <div className={cn('doc-page', first && 'doc-page-first', flow && 'doc-page-flow')}>
       <div className="doc-page-inner" style={{ padding: '15mm 14mm 14mm', boxSizing: 'border-box' as const }}>
         {children}
       </div>
-      <PageFooter />
+      <PageFooter idioma={idioma} />
     </div>
   )
 }
 
 /* ─── cabeçalho repetido (páginas 2+) — idêntico à faixa cinza da capa ─────── */
-function PageHeader({ cfg, numDisplay }: { cfg: Cispr15Config; numDisplay?: string }) {
+/* `dataEmissao` entra por fora porque em modo emenda a data exibida é a DA
+   EMENDA, e este componente só recebe o cfg — que guarda a data do relatório
+   original. Sem o parâmetro, a capa saía com a data da emenda e o cabeçalho
+   das páginas seguintes continuava com a antiga, no mesmo documento. */
+function PageHeader({ cfg, numDisplay, dataEmissao }: { cfg: Cispr15Config; numDisplay?: string; dataEmissao?: string }) {
   const amostraParts = [cfg.produto, cfg.modelo, cfg.fabricante].filter(Boolean)
+  const idioma: Idioma = cfg.idioma ?? 'pt'
+  const t = textos(idioma)
   return (
     <div style={{ marginBottom: 10 }}>
       <div style={{ background: GRAY2, border: '1.5px solid #666', padding: '5px 14px 8px' }}>
-        <p style={{ textAlign: 'center', fontSize: '6.5pt', fontStyle: 'italic', color: '#000', margin: '0 0 5px' }}>
-          Laboratório de Ensaio acreditado pela Cgcre de acordo com a ABNT NBR ISO/IEC 17025 sob o número CRL 0075
-        </p>
+        {/* Fora da RBC = fora do escopo acreditado: nenhuma página pode alegar
+            acreditação, nem as de continuação. */}
+        {!cfg.foraDaRbc && (
+          <p style={{ textAlign: 'center', fontSize: '6.5pt', fontStyle: 'italic', color: '#000', margin: '0 0 5px' }}>
+            {t.acreditacaoCabecalho}
+          </p>
+        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>Relatório de Ensaio</span>
-          <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>N° {(numDisplay ?? cfg.numRelatorio) || '—'}</span>
+          <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>{t.relatorioDeEnsaio}</span>
+          <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>{t.numeroAbrev} {(numDisplay ?? cfg.numRelatorio) || '—'}</span>
         </div>
       </div>
       <div style={{ background: '#fff', padding: '3px 14px 4px' }}>
@@ -136,7 +151,7 @@ function PageHeader({ cfg, numDisplay }: { cfg: Cispr15Config; numDisplay?: stri
           </p>
         )}
         <p style={{ textAlign: 'right', fontSize: '7.5pt', color: '#000', margin: 0 }}>
-          Período: {fmtDate(cfg.periodoInicio)} a {fmtDate(cfg.periodoFim)} · Emissão: {fmtDate(cfg.dataEmissao)}
+          {t.cabecalhoPeriodo} {fmtDate(cfg.periodoInicio, idioma)} {t.cabecalhoPeriodoA} {fmtDate(cfg.periodoFim, idioma)} · {t.cabecalhoEmissao} {fmtDate(dataEmissao ?? cfg.dataEmissao, idioma)}
         </p>
       </div>
     </div>
@@ -208,9 +223,97 @@ export default function Cispr15RelatorioPage() {
   // página) — só o visual, no estilo padrão do Adobe. A assinatura criptográfica
   // de verdade continua sendo aplicada via signPdf/pfx por baixo, no PDF já gerado.
   const [carimboVisivel, setCarimboVisivel] = useState(false)
+
+  /* ── Revisão obrigatória: foto da amostra × identificação do cliente ────────
+     Ação corretiva: antes de gerar ou imprimir, o técnico confere lado a lado a
+     Figura 3 (foto da amostra) e os dados de identificação, e valida a
+     correspondência. A aprovação vale para ESTE conjunto de dados: mexeu no
+     cliente, na amostra ou na foto, a revisão cai e precisa ser refeita. */
+  const [revisaoOk,      setRevisaoOk]      = useState(false)
+  const [revisaoAberta,  setRevisaoAberta]  = useState(false)
+  const [revisaoMarcada, setRevisaoMarcada] = useState(false)
+  /* O caminho web (Puppeteer) abre a página numa sessão NOVA, onde ninguém
+     revisou nada. Sem esta marca o bloqueio de impressão entraria no PDF
+     legítimo e o estragaria. */
+  const [modoImpressaoApi, setModoImpressaoApi] = useState(false)
+  const acaoPosRevisao = useRef<null | (() => void)>(null)
+
+  /* Ampliação das fotos da revisão: a conferência exige ler plaqueta e número
+     de série, o que é impossível no tamanho do painel. */
+  const [zoomFoto,  setZoomFoto]  = useState<{ url: string; nome: string } | null>(null)
+  const [zoomNivel, setZoomNivel] = useState(1)
+  const [zoomPos,   setZoomPos]   = useState({ x: 0, y: 0 })
+  const arrastando = useRef<{ x: number; y: number } | null>(null)
+
+  function abrirZoom(url: string, nome: string) {
+    setZoomFoto({ url, nome }); setZoomNivel(1); setZoomPos({ x: 0, y: 0 })
+  }
+  function ajustarZoom(delta: number) {
+    setZoomNivel(z => {
+      const novo = Math.min(8, Math.max(1, +(z + delta).toFixed(2)))
+      if (novo === 1) setZoomPos({ x: 0, y: 0 })   // voltou ao tamanho: recentraliza
+      return novo
+    })
+  }
+
+  useEffect(() => {
+    if (!zoomFoto) return
+    const aoTeclar = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setZoomFoto(null)
+      if (e.key === '+' || e.key === '=') ajustarZoom(0.5)
+      if (e.key === '-' || e.key === '_') ajustarZoom(-0.5)
+    }
+    window.addEventListener('keydown', aoTeclar)
+    return () => window.removeEventListener('keydown', aoTeclar)
+  }, [zoomFoto])
+
   const photoRef    = useRef<HTMLInputElement>(null)
   const pastaRef    = useRef<HTMLInputElement>(null)
   const isPrintMode = useRef(false)
+
+  /* Impressão digital do que é conferido na tela de revisão. Mudou qualquer
+     coisa que aparece lá, a aprovação anterior não vale mais — senão bastaria
+     aprovar e depois trocar o cliente para furar o portão. */
+  const assinaturaRevisao = useMemo(() => {
+    const f2 = photos[1]
+    const f3 = photos[2]
+    return JSON.stringify([
+      cfg?.cliente, cfg?.clienteRua, cfg?.clienteCidade, cfg?.clienteCep,
+      cfg?.produto, cfg?.fabricante, cfg?.modelo, cfg?.identificador, cfg?.lacre,
+      cfg?.protocolo, cfg?.orcamento, cfg?.tensaoAlim, cfg?.potencia, cfg?.frequencia,
+      f2?.name ?? null, f2?.url.length ?? 0, f2?.url.slice(-48) ?? null,
+      f3?.name ?? null, f3?.url.length ?? 0, f3?.url.slice(-48) ?? null,
+    ])
+  }, [cfg, photos])
+
+  useEffect(() => { setRevisaoOk(false); setRevisaoMarcada(false) }, [assinaturaRevisao])
+
+  /* O PDF oficial sai por printToPDF NESTA janela, então o bloqueio precisa ter
+     sumido do DOM antes de gerar (ver confirmarRevisao). No caminho web a
+     página é renderizada noutra sessão, que nunca revisou: lá não se aplica. */
+  const bloquearImpressao = !revisaoOk && !modoImpressaoApi
+
+  function pedirRevisao(acao: () => void) {
+    acaoPosRevisao.current = acao
+    setRevisaoMarcada(false)
+    setRevisaoAberta(true)
+  }
+
+  function comRevisao(acao: () => void | Promise<void>) {
+    if (revisaoOk) { void acao(); return }
+    pedirRevisao(() => { void acao() })
+  }
+
+  function confirmarRevisao() {
+    setRevisaoOk(true)
+    setRevisaoAberta(false)
+    const acao = acaoPosRevisao.current
+    acaoPosRevisao.current = null
+    /* Dois rAF: o React precisa ter repintado SEM a classe de bloqueio antes de
+       o printToPDF capturar a página, senão o PDF sai com o aviso no lugar do
+       relatório. */
+    if (acao) requestAnimationFrame(() => requestAnimationFrame(acao))
+  }
 
   const effectiveDocxHtml = useMemo(() => {
     const parts = RESULT_KEYS
@@ -249,6 +352,23 @@ export default function Cispr15RelatorioPage() {
     try {
       const parser = new DOMParser()
       const dom = parser.parseFromString(docxHtml, 'text/html')
+
+      /* Traduz o relatório do Radimation ANTES de fatiar em páginas — um passe
+         só, sobre os NÓS DE TEXTO. Nunca sobre o HTML cru: uma troca por regex
+         na string poderia atingir um atributo ou partir uma tag, e aqui dentro
+         vêm tabelas e imagens em base64. Em português não faz nada.
+         O idioma é lido de `cfg` direto porque a variável `idioma` do
+         componente é declarada depois deste memo. */
+      const idiomaDocx: Idioma = cfg?.idioma ?? 'pt'
+      if (idiomaDocx === 'en') {
+        const passeio = dom.createTreeWalker(dom.body, NodeFilter.SHOW_TEXT)
+        for (let no = passeio.nextNode(); no; no = passeio.nextNode()) {
+          const antes = no.nodeValue ?? ''
+          const depois = traduzirTextoDocx(antes, idiomaDocx)
+          if (depois !== antes) no.nodeValue = depois
+        }
+      }
+
       const children = Array.from(dom.body.children)
       const pages: string[] = []
       let current = ''
@@ -263,9 +383,11 @@ export default function Cispr15RelatorioPage() {
         }
       }
       if (current.trim()) pages.push(sortPeakTables(current))
-      return pages.length > 0 ? pages : [sortPeakTables(docxHtml)]
+      // O fallback usa o DOM já traduzido, não a string original — senão um
+      // docx sem quebra de página sairia em português mesmo no relatório em inglês.
+      return pages.length > 0 ? pages : [sortPeakTables(dom.body.innerHTML)]
     } catch { return [docxHtml] }
-  }, [effectiveDocxHtml])
+  }, [effectiveDocxHtml, cfg?.idioma])
 
   useEffect(() => {
     photoRef.current?.setAttribute('webkitdirectory', '')
@@ -277,6 +399,7 @@ export default function Cispr15RelatorioPage() {
     const token = new URLSearchParams(window.location.search).get('print_token')
     if (token) {
       isPrintMode.current = true
+      setModoImpressaoApi(true)
       // Prazo absoluto: se nada funcionar em 25s, força ready para não travar o Puppeteer
       const absoluteDeadline = setTimeout(() => { (window as any).__printReady = true }, 25000)
       fetch(`/api/gerar-pdf?token=${token}`)
@@ -313,7 +436,10 @@ export default function Cispr15RelatorioPage() {
         setHasCert(!!(s?.certThumbprint || s?.pfxPath))
         if (s?.pfxPath && api?.validatePfx) {
           try {
-            const r = await api.validatePfx(s.pfxPath, s.pfxPassword)
+            // Sem senha: o main usa a da sessão, se já tiver sido informada.
+            // Se ainda não foi, isso só falha em silêncio e o carimbo fica sem
+            // o nome — a assinatura em si pede a senha na hora.
+            const r = await api.validatePfx(s.pfxPath, '')
             if (r?.ok) setCertNome(extrairCN(r.subject))
           } catch {}
         } else if (s?.certThumbprint && api?.listCerts) {
@@ -460,47 +586,42 @@ export default function Cispr15RelatorioPage() {
 
   async function commitEmenda(draft: EmendaDraft, currentCfg?: Cispr15Config) {
     try {
-      // Base: lista da rede (índice compartilhado) — NUNCA só do localStorage
-      // deste PC, senão um PC com cache desatualizado sobrescreve o arquivo
-      // compartilhado e apaga relatórios feitos em outros PCs.
-      const api0 = (window as any).electronAPI
-      let lista: RelatorioSalvo[] = []
-      if (api0?.getRelatorios) {
-        try {
-          const res = await api0.getRelatorios()
-          if (res?.ok && Array.isArray(res.relatorios) && res.relatorios.length) lista = res.relatorios
-        } catch {}
-      }
-      if (!lista.length) {
-        try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) lista = JSON.parse(raw) } catch {}
-      }
+      // Base: a lista da rede (o cache local só entra na versão web, dentro do
+      // carregarRelatorios). Partir do cache deste PC é o que apagava relatórios
+      // feitos nos outros.
+      const lista = await carregarRelatorios()
       if (!lista.length) return
       const idx = lista.findIndex(r => r.id === draft.relatorioId)
       if (idx < 0) return
-      const emendas = [...lista[idx].emendas]
-      if (!emendas.find(e => e.numero === draft.emendaNum)) {
-        emendas.push({ numero: draft.emendaNum, dataEmenda: draft.dataEmenda, alteracoes: draft.alteracoes })
+      const original = lista[idx]
+
+      /* A emenda é um REGISTRO PRÓPRIO; o original fica intacto.
+         O id é determinístico (<id-original>-e<N>) de propósito: a emenda é
+         gravada duas vezes — na tela de emenda, antes do PDF, e aqui, depois —
+         e com id sorteado cada passagem criaria um registro novo. Assim a
+         segunda passagem ATUALIZA a primeira. */
+      const idRegistro = `${original.id}-e${draft.emendaNum}`
+      const registro: RelatorioSalvo = {
+        ...original,
+        id: idRegistro,
+        // Mantém o número do original: a letra da emenda vem de emendaNum, via
+        // formatEmendaNumero. Guardar "0610a/2026" aqui duplicaria essa regra.
+        numRelatorio: original.numRelatorio,
+        dataEmissao: draft.dataEmenda,
+        cfg: currentCfg ?? original.cfg,
+        currentCfg: undefined,
+        photos: [],
+        emendas: [],
+        emendaDe: original.id,
+        emendaNum: draft.emendaNum,
+        alteracoes: draft.alteracoes,
       }
-      emendas[emendas.length - 1] = { ...emendas[emendas.length - 1], ...(currentCfg ? { cfgSnapshot: currentCfg } : {}) }
-      lista[idx] = { ...lista[idx], emendas, ...(currentCfg ? { currentCfg } : {}) }
       localStorage.removeItem(EMENDA_DRAFT_KEY)
-      // Sincronizar com pasta de rede
-      const api = (window as any).electronAPI
-      if (api) {
-        const netList = lista.map(r => ({ ...r, photos: [] }))
-        await api.saveRelatorios(netList)
-      }
-      // Cache local: atualiza só a entrada deste id (a lista pode ter vindo da
-      // rede sem fotos — não sobrescrever o cache local inteiro, ou apaga as
-      // fotos que outras entradas tinham cacheadas neste PC).
-      try {
-        const rawLocal = localStorage.getItem(RELATORIOS_KEY)
-        const localList: RelatorioSalvo[] = rawLocal ? JSON.parse(rawLocal) : []
-        const li = localList.findIndex(r => r.id === draft.relatorioId)
-        if (li >= 0) localList[li] = { ...localList[li], emendas, ...(currentCfg ? { currentCfg } : {}) }
-        else localList.push(lista[idx])
-        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
-      } catch {}
+      // Grava SÓ o registro-emenda (upsert pelo id determinístico). O original
+      // fica intacto e a lista inteira não trafega — é o que impede uma lista
+      // curta de apagar o resto.
+      const res = await salvarRelatorio(registro)
+      if (!res.ok) alert('A emenda foi gerada, mas o registro não foi gravado: ' + (res.error ?? ''))
     } catch {}
   }
 
@@ -560,6 +681,8 @@ export default function Cispr15RelatorioPage() {
       setSignMsg('')
       return
     }
+    // Assinar e publicar também EMITE o PDF — passa pela mesma revisão.
+    if (!revisaoOk) { pedirRevisao(() => { void assinarComCarimbo() }); return }
     const eutPath = emendaDraft?.eutFolderPath ?? eutFolder ?? null
     if (!eutPath) {
       setSignState('error')
@@ -567,7 +690,7 @@ export default function Cispr15RelatorioPage() {
       return
     }
     const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
-    const numParaArquivo = emendaDraft ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum) : (displayNum || cfg.numRelatorio)
+    const numParaArquivo = emendaDraft ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum, cfg.foraDaRbc) : (displayNum || cfg.numRelatorio)
     const filename = `${san(numParaArquivo || cfg.protocolo)}_${cfg.tipo}_${san(cfg.fabricante)}.pdf`
     const api = (window as any).electronAPI
     if (!api?.salvarPDFNaEut || !api?.signPdf || !api?.publishPdf) return
@@ -581,7 +704,20 @@ export default function Cispr15RelatorioPage() {
         setSignMsg('Erro ao gerar PDF: ' + (genRes.error ?? 'desconhecido'))
         return
       }
-      const signRes = await api.signPdf(eutPath, filename)
+      let signRes = await api.signPdf(eutPath, filename)
+      // A senha do .pfx não fica gravada em disco: na primeira assinatura da
+      // sessão o main pede aqui. Informada uma vez, o lote inteiro segue sem
+      // repetir o prompt (some quando o app fecha).
+      if (!signRes.ok && signRes.precisaSenha && api.setPfxPassword) {
+        const senha = window.prompt('Senha do certificado (.pfx) para assinar:')
+        if (!senha) {
+          setSignState('error')
+          setSignMsg('Assinatura cancelada — senha não informada.')
+          return
+        }
+        await api.setPfxPassword(senha)
+        signRes = await api.signPdf(eutPath, filename)
+      }
       if (!signRes.ok) {
         setSignState('error')
         setSignMsg(signRes.error ?? 'Erro ao assinar')
@@ -609,15 +745,19 @@ export default function Cispr15RelatorioPage() {
     new URLSearchParams(window.location.search).has('print_token')
 
   const tensoes = getTensoes(cfg)
-  const labelId = LABEL_ID[cfg.tipo]
+  // Idioma do corpo do relatório (ver app/cispr15/i18n.ts). Só o modelo é
+  // traduzido; o que o usuário digita sai como digitado.
+  const idioma: Idioma = cfg.idioma ?? 'pt'
+  const t = textos(idioma)
+  const labelId = rotuloIdentificador(cfg.tipo, idioma)
 
   /* ── emenda helpers ── */
   function markerFor(campo: string): number | null {
     return emendaDraft?.alteracoes.find(a => a.campo === campo)?.marker ?? null
   }
   const displayNum = emendaDraft
-    ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum)
-    : cfg.numRelatorio
+    ? formatEmendaNumero(cfg.numRelatorio, emendaDraft.emendaNum, cfg.foraDaRbc)
+    : formatNumeroRelatorio(cfg.numRelatorio, cfg.foraDaRbc)
 
   /* "Salvar arquivos": VINCULA as fotos + DOCX ao relatório (assets por id), em vez
      de copiar pra pasta da EUT (que duplicava arquivos já existentes). Ao reabrir o
@@ -650,38 +790,15 @@ export default function Cispr15RelatorioPage() {
     }
   }
 
-  /* ── tabelas de limites CISPR 15 ── */
-  const limCond1 = {
-    cols: ['Faixa de Frequência (MHz)', 'Limite Quase Pico (dBμV)', 'Limite Médio (dBμV)'],
-    rows: [
-      ['0,009 a 0,05', '110', '—'], ['0,05 a 0,15', '90 a 80', '—'],
-      ['0,15 a 0,5', '66 a 56', '56 a 46'], ['0,5 a 5', '56', '46'], ['5 a 30', '60', '50'],
-    ],
-    note: '(1) Na freq. de transição, o limite inferior se aplica. (2) O limite decresce linearmente com o logaritmo da frequência nas faixas de 50–150 kHz e 150–500 kHz.',
-  }
-  const limCond2 = {
-    cols: ['Faixa de Frequência (MHz)', 'Limite Quase Pico (dBμV)', 'Limite Médio (dBμV)'],
-    rows: [['0,15 a 0,5', '80', '70'], ['0,5 a 30', '74', '64']],
-    note: '(1) Na freq. de transição, o limite inferior se aplica.',
-  }
-  const limCond3 = {
-    cols: ['Faixa de Frequência (MHz)', 'Limite Quase Pico (dBμV)', 'Limite Médio (dBμV)'],
-    rows: [['0,15 a 0,5', '84 a 74', '74 a 64'], ['0,5 a 30', '74', '64']],
-    note: '(1) Os limites diminuem linearmente com o logaritmo da frequência na faixa de 0,15 a 0,5 MHz.',
-  }
-  const limRad1 = {
-    cols: ['Faixa de Frequência (MHz)', 'Limite Antena Loop 2 m (dBμA)'],
-    rows: [
-      ['0,009 a 0,07', '88'], ['0,07 a 0,15', '88 a 58'],
-      ['0,15 a 3', '58 a 22'], ['3 a 30', '22'],
-    ],
-    note: '(1) Na freq. de transição, o limite inferior se aplica. (2) O limite decresce linearmente com o logaritmo da frequência nas faixas 70–150 kHz e 150 kHz–3 MHz.',
-  }
-  const limRad2 = {
-    cols: ['Faixa de Frequência (MHz)', 'Limite Quase Pico (dBμV/m)'],
-    rows: [['30 a 100', '64 a 54'], ['100 a 230', '54'], ['230 a 300', '61']],
-    note: '(1) Na freq. de transição, o limite inferior se aplica. (2) O limite decresce linearmente com o logaritmo da frequência na faixa de 30–100 MHz.',
-  }
+  /* Tabelas de limites CISPR 15: moraram aqui até a versão em inglês existir.
+     Agora vêm do dicionário (app/cispr15/i18n.ts) — não só pelo texto das
+     colunas e das notas, mas porque o separador decimal muda com o idioma
+     (0,009 em português; 0.009 em inglês). */
+  const limCond1 = t.limCond1
+  const limCond2 = t.limCond2
+  const limCond3 = t.limCond3
+  const limRad1  = t.limRad1
+  const limRad2  = t.limRad2
 
   /* ── páginas de fotos: mínimo 4 slots (2 páginas × 2) ── */
   const slots: (Photo | null)[] = [...photos]
@@ -720,6 +837,15 @@ export default function Cispr15RelatorioPage() {
           .overflow-hidden, .overflow-auto { overflow: visible !important; }
           main { overflow: visible !important; height: auto !important; max-height: none !important; padding: 0 !important; }
           .doc-wrapper { background: white; padding: 0; }
+          /* Sem revisão o documento não sai — nem pela impressora, nem por
+             Ctrl+P. Os botões do app já barram antes; isto fecha o caminho que
+             não passa por eles. */
+          .doc-wrapper.nao-revisado > * { display: none !important; }
+          .doc-wrapper.nao-revisado::before {
+            content: "EMISSAO BLOQUEADA - revisao obrigatoria pendente. Abra o relatorio no app e confira a Figura 3 (foto da amostra) contra os dados de identificacao do cliente antes de gerar ou imprimir.";
+            display: block; padding: 40mm 20mm; font-family: Arial, sans-serif;
+            font-size: 14pt; line-height: 1.6; color: #000; text-align: center;
+          }
           .doc-page {
             width: 210mm;
             /* min-height = área útil (≈273mm, A4 menos a margem do rodapé nativo).
@@ -933,6 +1059,12 @@ export default function Cispr15RelatorioPage() {
 
         <div className="flex-1" />
 
+        {revisaoOk && (
+          <span className="flex items-center gap-1 text-[10px] font-mono text-green-400/80 border border-green-400/20 bg-green-400/8 px-2 py-1 rounded shrink-0">
+            <ShieldCheck size={10} /> revisão ok
+          </span>
+        )}
+
         {savedFile && (
           <span className="text-green-400 text-xs font-mono truncate max-w-[260px]">
             ✓ {savedFile}
@@ -941,7 +1073,7 @@ export default function Cispr15RelatorioPage() {
 
         <button
           disabled={gerando}
-          onClick={async () => {
+          onClick={() => comRevisao(async () => {
             if (!cfg) return
             setSavedFile(null)
             setGerando(true)
@@ -1007,7 +1139,7 @@ export default function Cispr15RelatorioPage() {
             } finally {
               setGerando(false)
             }
-          }}
+          })}
           className="btn-primary flex items-center gap-2 px-4 py-2 text-sm disabled:opacity-60">
           {gerando
             ? <><Loader2 size={14} className="animate-spin" /> Gerando…</>
@@ -1055,10 +1187,10 @@ export default function Cispr15RelatorioPage() {
       {/* ════════════════════════════════════════════════
           DOCUMENTO — cada <Page> = folha A4 separada
       ════════════════════════════════════════════════ */}
-      <div className="doc-wrapper">
+      <div className={cn('doc-wrapper', bloquearImpressao && 'nao-revisado')}>
 
         {/* ══ PÁGINA 1 — CAPA ══ */}
-        <Page first flow>
+        <Page first flow idioma={idioma}>
           {/* Cabeçalho da capa — layout Word */}
           <div style={{ border: '1.5px solid #666', marginBottom: 10, overflow: 'hidden' }}>
             {/* Topo branco: logo PUCRS + texto universidade + CRL */}
@@ -1067,23 +1199,30 @@ export default function Cispr15RelatorioPage() {
                 <img src={PUCRS_LOGO} alt="PUCRS" style={{ width: 66, height: 'auto', display: 'block' }} />
               </div>
               <div style={{ flex: 1, textAlign: 'center', padding: '6px 8px' }}>
-                <p style={{ fontSize: '10pt', fontWeight: 700, color: '#000', margin: '0 0 3px' }}>Pontifícia Universidade Católica do Rio Grande do Sul</p>
-                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: '0 0 2px' }}>LABELO - Laboratórios Especializados em Eletroeletrônica</p>
-                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: '0 0 2px' }}>Calibração e Ensaios</p>
-                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: 0 }}>Rede Brasileira de Laboratórios de Ensaios</p>
+                <p style={{ fontSize: '10pt', fontWeight: 700, color: '#000', margin: '0 0 3px' }}>{t.universidade}</p>
+                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: '0 0 2px' }}>{t.labeloNome}</p>
+                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: '0 0 2px' }}>{t.labeloSub}</p>
+                <p style={{ fontSize: '8.5pt', fontWeight: 700, color: '#000', margin: 0 }}>{t.rede}</p>
               </div>
+              {/* Etiqueta azul da Cgcre: some no ensaio fora do escopo
+                  acreditado. A largura da coluna é mantida pra não deslocar o
+                  bloco central do cabeçalho. */}
               <div style={{ width: 90, flexShrink: 0, padding: 7, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                <img src={CRL_BADGE} alt="CRL 0075" style={{ height: 74, width: 'auto', display: 'block' }} />
+                {!cfg.foraDaRbc && (
+                  <img src={CRL_BADGE} alt="CRL 0075" style={{ height: 74, width: 'auto', display: 'block' }} />
+                )}
               </div>
             </div>
             {/* Parte cinza: texto acred + Relatório de Ensaio / Nº */}
             <div style={{ background: GRAY2, borderTop: '1px solid #888', padding: '5px 14px 8px' }}>
-              <p style={{ textAlign: 'center', fontSize: '6.5pt', fontStyle: 'italic', color: 'rgb(0, 0, 0)', margin: '0 0 5px' }}>
-                Laboratório de Ensaio acreditado pela Cgcre de acordo com a ABNT NBR ISO/IEC 17025 sob o número CRL 0075
-              </p>
+              {!cfg.foraDaRbc && (
+                <p style={{ textAlign: 'center', fontSize: '6.5pt', fontStyle: 'italic', color: 'rgb(0, 0, 0)', margin: '0 0 5px' }}>
+                  {t.acreditacaoCabecalho}
+                </p>
+              )}
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>Relatório de Ensaio</span>
-                <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>N° {displayNum || '—'}</span>
+                <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>{t.relatorioDeEnsaio}</span>
+                <span style={{ fontSize: '13pt', fontWeight: 700, color: '#000' }}>{t.numeroAbrev} {displayNum || '—'}</span>
               </div>
             </div>
           </div>
@@ -1091,49 +1230,62 @@ export default function Cispr15RelatorioPage() {
           {/* Cancela e Substitui (apenas em modo emenda) */}
           {emendaDraft && (
             <p style={{ textAlign: 'center', fontFamily: 'Arial, Helvetica, sans-serif', fontSize: '11pt', fontWeight: 'normal', marginBottom: 10 }}>
-              {'Cancela e Substitui o Relatório de Ensaio N° '}
+              {t.cancelaSubstitui}
               {emendaDraft.emendaNum === 1
-                ? emendaDraft.numRelatorioOriginal
-                : formatEmendaNumero(emendaDraft.numRelatorioOriginal, emendaDraft.emendaNum - 1)}
+                /* A 1ª emenda cancela o relatório ORIGINAL — e ele precisa ser
+                   citado como foi emitido. Aqui saía o número cru: num ensaio
+                   FORA DA RBC o original é "EMC2990s/2026", mas a frase dizia
+                   "EMC 2990/2026", nomeando um documento que não existe com
+                   esse número. Da 2ª emenda em diante já estava certo, porque
+                   formatEmendaNumero aplica o "s". */
+                ? formatNumeroRelatorio(emendaDraft.numRelatorioOriginal, cfg.foraDaRbc)
+                : formatEmendaNumero(emendaDraft.numRelatorioOriginal, emendaDraft.emendaNum - 1, cfg.foraDaRbc)}
             </p>
           )}
 
           {/* Período e emissão — alinhado à direita, fonte menor */}
           <div style={{ textAlign: 'right', marginBottom: 16 }}>
             <p style={{ fontSize: FS.xs, fontWeight: 700, marginBottom: 2 }}>
-              Período de realização dos ensaios: {fmtDate(cfg.periodoInicio)} até {fmtDate(cfg.periodoFim)}<Sup n={markerFor('periodo')} />
+              {/* Sem marcador de alteração no período: a emenda pode mudar a
+                  data sem que isso seja uma correção de conteúdo a sinalizar no
+                  corpo. A mudança continua listada no Histórico de Alterações. */}
+              {t.periodoRealizacao} {fmtDate(cfg.periodoInicio, idioma)} {t.periodoAte} {fmtDate(cfg.periodoFim, idioma)}
             </p>
             <p style={{ fontSize: FS.xs, fontWeight: 700 }}>
-              Data de emissão do relatório: {fmtDate(cfg.dataEmissao)}
+              {/* Em emenda, a data de emissão é a DATA DA EMENDA: o documento
+                  que está sendo emitido é a emenda, não o relatório original.
+                  Sem marcador de alteração aqui — a mudança de data é inerente
+                  a emitir uma emenda, não é uma correção de conteúdo. */}
+              {t.dataEmissaoRelatorio} {fmtDate(emendaDraft?.dataEmenda ?? cfg.dataEmissao, idioma)}
             </p>
           </div>
 
-          <SecHeader>Parte 1 - Identificação e condições gerais</SecHeader>
-             
-          <p style={pTitle}>1. Cliente:<Sup n={markerFor('cliente')} /></p>
+          <SecHeader>{t.parte1}</SecHeader>
+
+          <p style={pTitle}>{t.secCliente}<Sup n={markerFor('cliente')} /></p>
           <p style={{ ...pJ, marginTop: 8 }}><b>{cfg.cliente || '—'}</b></p>
           {cfg.clienteRua    && <p style={pJ}>{cfg.clienteRua}</p>}
           {cfg.clienteCidade && <p style={pJ}>{cfg.clienteCidade}</p>}
-          {cfg.clienteCep    && <p style={pJ}>CEP: {cfg.clienteCep}</p>}
+          {cfg.clienteCep    && <p style={pJ}>{t.cep} {cfg.clienteCep}</p>}
 
-          <p style={pTitle}>2. Objeto ensaiado (amostra):<Sup n={markerFor('amostra')} /><Sup n={markerFor('tecnico')} /><Sup n={markerFor('protocolo')} /></p>
+          <p style={pTitle}>{t.secObjeto}<Sup n={markerFor('amostra')} /><Sup n={markerFor('tecnico')} /><Sup n={markerFor('protocolo')} /></p>
           {(() => {
             const td1: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', width: '44%' }
             const td2: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', fontWeight: 700, width: '30%', whiteSpace: 'nowrap' }
             const td3: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', width: '26%' }
             const lv = (lbl: string, val: string) => <><b>{lbl}:</b> {val}</>
             const rows: [React.ReactNode, string, string][] = cfg.tipo === 'lampada' ? [
-              [<b>{cfg.produto || '—'}</b>,                      'Tensão de alimentação:', cfg.tensaoAlim  || '—'],
-              [lv('Fabricante', cfg.fabricante || '—'),          'Potência nominal:',      cfg.potencia    || '—'],
-              [lv('Modelo',     cfg.modelo     || '—'),          'Frequência de rede:',    cfg.frequencia  || '—'],
-              [lv('Número de série', cfg.identificador || '—'),  'Orçamento LABELO:',      cfg.orcamento   || '—'],
-              [lv('Lacre', cfg.lacre || '—'),                    'Protocolo LABELO:',      cfg.protocolo   || '—'],
+              [<b>{cfg.produto || '—'}</b>,                      t.tensaoAlimentacao, cfg.tensaoAlim  || '—'],
+              [lv(t.fabricante, cfg.fabricante || '—'),          t.potenciaNominal,   cfg.potencia    || '—'],
+              [lv(t.modelo,     cfg.modelo     || '—'),          t.frequenciaRede,    cfg.frequencia  || '—'],
+              [lv(t.numeroSerie, cfg.identificador || '—'),      t.orcamentoLabelo,   cfg.orcamento   || '—'],
+              [lv(t.lacre, cfg.lacre || '—'),                    t.protocoloLabelo,   cfg.protocolo   || '—'],
             ] : [
-              [<b>{cfg.produto || '—'}</b>,                      'Tensão de alimentação:', cfg.tensaoAlim  || '—'],
-              [lv('Fabricante', cfg.fabricante || '—'),          'Potência nominal:',      cfg.potencia    || '—'],
-              [lv('Modelo',     cfg.modelo     || '—'),          'Frequência de rede:',    cfg.frequencia  || '—'],
-              [lv(labelId,      cfg.identificador || '—'),       'Orçamento LABELO:',      cfg.orcamento   || '—'],
-              [lv('Protocolo LABELO', cfg.protocolo || '—'),     '',                       ''],
+              [<b>{cfg.produto || '—'}</b>,                      t.tensaoAlimentacao, cfg.tensaoAlim  || '—'],
+              [lv(t.fabricante, cfg.fabricante || '—'),          t.potenciaNominal,   cfg.potencia    || '—'],
+              [lv(t.modelo,     cfg.modelo     || '—'),          t.frequenciaRede,    cfg.frequencia  || '—'],
+              [lv(labelId,      cfg.identificador || '—'),       t.orcamentoLabelo,   cfg.orcamento   || '—'],
+              [lv(t.protocoloLabeloRotulo, cfg.protocolo || '—'), '',                 ''],
             ]
             return (
               <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, marginBottom: 6, fontSize: FS.sm }}>
@@ -1152,18 +1304,18 @@ export default function Cispr15RelatorioPage() {
 
           {cfg.temDriver && cfg.tipo === 'luminaria' && (
             <>
-              <p style={pTitle}>2.1 Acessório de Ensaio (Driver):</p>
+              <p style={pTitle}>2.1 {t.acessorioDriver}</p>
               {(() => {
                 const td1: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', width: '44%' }
                 const td2: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', fontWeight: 700, width: '30%', whiteSpace: 'nowrap' }
                 const td3: React.CSSProperties = { border: '1px solid #999', padding: '2px 6px', width: '26%' }
                 const lv = (lbl: string, val: string) => <><b>{lbl}:</b> {val}</>
                 const driverRows: [React.ReactNode, string, string][] = [
-                  [<b>{cfg.driverProduto || '—'}</b>,                          'Tensão de alimentação:', cfg.driverTensaoAlim  || '—'],
-                  [lv('Fabricante', cfg.driverFabricante  || '—'),             'Potência nominal:',      cfg.driverPotencia    || '—'],
-                  [lv('Modelo',     cfg.driverModelo      || '—'),             'Frequência de rede:',    cfg.driverFrequencia  || '—'],
-                  [lv('Número de Série', cfg.driverIdentificador || '—'),      'Orçamento LABELO:',      cfg.driverOrcamento   || 'Não identificado'],
-                  [lv('Protocolo LABELO', cfg.driverProtocolo || 'Não identificado'), '', ''],
+                  [<b>{cfg.driverProduto || '—'}</b>,                          t.tensaoAlimentacao, cfg.driverTensaoAlim  || '—'],
+                  [lv(t.fabricante, cfg.driverFabricante  || '—'),             t.potenciaNominal,   cfg.driverPotencia    || '—'],
+                  [lv(t.modelo,     cfg.driverModelo      || '—'),             t.frequenciaRede,    cfg.driverFrequencia  || '—'],
+                  [lv(t.numeroSerie, cfg.driverIdentificador || '—'),          t.orcamentoLabelo,   cfg.driverOrcamento   || t.naoIdentificado],
+                  [lv(t.protocoloLabeloRotulo, cfg.driverProtocolo || t.naoIdentificado), '', ''],
                 ]
                 return (
                   <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, marginBottom: 6, fontSize: FS.sm }}>
@@ -1182,152 +1334,101 @@ export default function Cispr15RelatorioPage() {
             </>
           )}
 
-          <p style={pTitle}>{cfg.temDriver && cfg.tipo === 'luminaria' ? '2.2' : '2.1'} Documentação que acompanha a amostra:<Sup n={markerFor('documentacao')} /></p>
+          <p style={pTitle}>{cfg.temDriver && cfg.tipo === 'luminaria' ? '2.2' : '2.1'} {t.docAcompanha}<Sup n={markerFor('documentacao')} /></p>
           <p style={{ ...pJ, marginTop: 8 }}>{cfg.documentacao || '—'}</p>
 
-          <p style={pTitle}>{cfg.temDriver && cfg.tipo === 'luminaria' ? '2.3' : '2.2'} Observações:</p>
+          <p style={pTitle}>{cfg.temDriver && cfg.tipo === 'luminaria' ? '2.3' : '2.2'} {t.observacoes}</p>
           {(() => {
             const falhas: string[] = []
-            if ((cfg.resultadoConduzida ?? 'pass') === 'fail') falhas.push('Perturbações Conduzidas')
-            if ((cfg.resultadoLoop      ?? 'pass') === 'fail') falhas.push('Perturbações Radiadas – Antena Loop')
-            if ((cfg.resultadoAnexoB    ?? 'pass') === 'fail') falhas.push('Perturbações Radiadas – Anexo B (30–300 MHz)')
+            if ((cfg.resultadoConduzida ?? 'pass') === 'fail') falhas.push(t.ensaioConduzida)
+            if ((cfg.resultadoLoop      ?? 'pass') === 'fail') falhas.push(t.ensaioLoop)
+            if ((cfg.resultadoAnexoB    ?? 'pass') === 'fail') falhas.push(t.ensaioAnexoB)
             if (falhas.length === 0) {
-              return (
-                <p style={{ ...pJ, marginTop: 8 }}>
-                  • Os resultados deste relatório de ensaios apresentam itens conformes. Informações adicionais podem ser
-                  acessadas em Parte 2 – Resultados dos ensaios.
-                </p>
-              )
+              return <p style={{ ...pJ, marginTop: 8 }}>• {t.conformeTexto}</p>
             }
             return (
               <p style={{ ...pJ, marginTop: 8 }}>
-                • Os resultados deste relatório de ensaios apresentam itens <strong>não conformes</strong>.
-                {' '}O(s) ensaio(s) de <strong>{falhas.join('; ')}</strong> apresentou(aram) resultados não conformes com
-                os limites estabelecidos pela norma. Informações adicionais podem ser acessadas em Parte 2 – Resultados dos ensaios.
+                • {t.naoConformePre}<strong>{t.naoConformeForte}</strong>{t.naoConformeMeio}
+                <strong>{falhas.join('; ')}</strong>{t.naoConformePos}
               </p>
             )
           })()}
 
-          <p style={pTitle}>3. Documento(s) normativo(s) utilizado(s):</p>
+          <p style={pTitle}>{t.secNormativos}</p>
           {cfg.tipo === 'luminaria' && (
-            <p style={{ ...pJ, marginTop: 8 }}>
-              • Portaria INMETRO n°62, de 17 de fevereiro de 2022 - Regulamento Técnico de Qualidade e os Requisitos de Avaliação da Conformidade para Luminárias para a iluminação pública Viária - Consolidado.
-            </p>
+            <p style={{ ...pJ, marginTop: 8 }}>• {t.portaria62}</p>
           )}
-          <p style={{ ...pJ, marginTop: cfg.tipo === 'luminaria' ? 0 : 8 }}>
-            • Associação Brasileira de Normas Técnicas. NBR IEC/CISPR 15/2014 - Limites e métodos de medição das
-            radioperturbações características dos equipamentos elétricos de iluminação e similares. Rio de Janeiro, RJ, Brasil, 2014.
-          </p>
+          <p style={{ ...pJ, marginTop: cfg.tipo === 'luminaria' ? 0 : 8 }}>• {t.normaCispr15}</p>
 
         </Page>
 
         {/* ══ PÁGINA 2 — SEÇÃO 3.1 + 4 + SEÇÃO 5 + INÍCIO PARTE 2 ══ */}
-        <Page flow>
-          <PageHeader cfg={cfg} numDisplay={displayNum} />
+        <Page flow idioma={idioma}>
+          <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
 
-          <p style={pTitle}>3.1 Documento(s) complementar(es):</p>
-          <p style={{ ...pJ, marginTop: 8 }}>Os documentos complementares abaixo indicados não fazem parte do escopo de acreditação deste laboratório.</p>
-          <p style={{ ...pJ, marginLeft: 14 }}>
-            • International Electrotechnical Commission. CISPR 16-4-2 - Second Edition/2011, Specification for radio disturbance and immunity measuring apparatus and
-            methods – Part 4-2: Uncertainties, statistics and limit modeling – Uncertainty in EMC measurements. Geneva, Switzerland.
-          </p>
+          <p style={pTitle}>{t.secComplementares}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.complementaresNota}</p>
+          <p style={{ ...pJ, marginLeft: 14 }}>• {t.cispr1642}</p>
 
-          <p style={pTitle}>4. Condições ambientais:</p>
-          <p style={{ ...pJ, marginTop: 8 }}>Temperatura: 20 °C ± 5 °C</p>
-          <p style={pJ}>Umidade Relativa: 55 % ± 15 %</p>
+          <p style={pTitle}>{t.secAmbientais}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.temperatura}</p>
+          <p style={pJ}>{t.umidade}</p>
 
-          <p style={pTitle}>5. Observações:</p>
-          <p style={{ ...pJ, marginTop: 8 }}>
-            A regra de decisão aplicada para a avaliação da conformidade do item de ensaio foi estabelecida conforme documentos
-            normativos indicados no item 3 deste relatório e previamente contratados.
-          </p>
-          <p style={pJ}>
-            Itens dos documentos normativos de referência deste relatório não descritos com resultados não foram solicitados pelo
-            requerente ou não fazem parte do escopo de acreditação do laboratório.
-          </p>
+          <p style={pTitle}>{t.secObservacoes}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.regraDecisao}</p>
+          <p style={pJ}>{t.itensNaoSolicitados}</p>
           {cfg.tipo === 'luminaria' && (
-            <p style={pJ}>
-              De acordo com o item 6.1.1.4.1.5 da Portaria INMETRO citada no item 3 da parte 1, o ensaio de interferência
-              eletromagnética e rádio frequência foi conduzido nas tensões nominais de {tensoes.join(' e ')}.
-            </p>
+            <p style={pJ}>{t.luminariaTensoesPre}{juntarE(tensoes, idioma)}{t.luminariaTensoesPos}</p>
           )}
 
-          <SecHeader>Parte 2 – Resultados dos ensaios<Sup n={markerFor('resultados')} /></SecHeader>
+          <SecHeader>{t.parte2}<Sup n={markerFor('resultados')} /></SecHeader>
 
-          <p style={pTitle}>
-            1. Método de medição das tensões de perturbação conduzidas (Item 8 da Norma NBR IEC/CISPR 15/2014)
-          </p>
-          <p style={{ ...pJ, marginTop: 8 }}>A tensão de perturbação foi medida nos terminais de alimentação do sistema de iluminação.</p>
-          <p style={pJ}>
-            Os terminais de saída da LISN e os terminais do equipamento em ensaio foram interligados por um cabo flexível com
-            3 condutores para conexão dos terminais de fase, neutro e terra.
-          </p>
-          <p style={pJ}>
-            A distância entre os terminais de saída da LISN e os terminais do equipamento em ensaio foi ajustada para 0,8 m.
-          </p>
-          <p style={pJ}>As medições foram realizadas tanto no condutor fase como no condutor neutro, um de cada vez.</p>
+          <p style={pTitle}>{t.metodoConduzidas}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.conduzidas1}</p>
+          <p style={pJ}>{t.conduzidas2}</p>
+          <p style={pJ}>{t.conduzidas3}</p>
+          <p style={pJ}>{t.conduzidas4}</p>
         </Page>
 
         {/* ══ PÁGINA 3 — LIMITES CONDUZIDOS ══ */}
-        <Page flow>
-          <PageHeader cfg={cfg} numDisplay={displayNum} />
+        <Page flow idioma={idioma}>
+          <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
 
-          <p style={pTitle}>1.1 Limites (Item 4 da Norma NBR IEC/CISPR 15/2014)</p>
-          <p style={{ ...pSub, marginTop: 8 }}>1.1.1. Terminais de alimentação (Item 4.3.1 da Norma NBR IEC/CISPR 15/2014):</p>
+          <p style={pTitle}>{t.limitesConduzidos}</p>
+          <p style={{ ...pSub, marginTop: 8 }}>{t.termAlimentacao}</p>
           <LimitTable {...limCond1} />
-          <p style={{ ...pSub, marginTop: 6 }}>1.1.2. Terminais de carga (Item 4.3.2 da Norma NBR IEC/CISPR 15/2014):</p>
+          <p style={{ ...pSub, marginTop: 6 }}>{t.termCarga}</p>
           <LimitTable {...limCond2} />
-          <p style={{ ...pSub, marginTop: 6 }}>1.1.3. Terminais de controle (Item 4.3.3 da Norma NBR IEC/CISPR 15/2014):</p>
+          <p style={{ ...pSub, marginTop: 6 }}>{t.termControle}</p>
           <LimitTable {...limCond3} />
         </Page>
 
         {/* ══ PÁGINA 4 — RADIADAS 9 kHz–300 MHz ══ */}
-        <Page flow>
-          <PageHeader cfg={cfg} numDisplay={displayNum} />
+        <Page flow idioma={idioma}>
+          <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
 
-          <p style={pTitle}>
-            2. Método de medição das perturbações eletromagnéticas radiadas na faixa de 9 kHz a 30 MHz (Item 9 da Norma NBR IEC/CISPR 15/2014)
-          </p>
-          <p style={{ ...pJ, marginTop: 8 }}>
-            O equipamento a ser medido foi posicionado sobre uma mesa não condutora no centro da antena loop de 2,0 m.
-          </p>
-          <p style={pJ}>
-            O receptor de medição foi conectado à antena loop por cabo coaxial blindado e a seleção de cada loop
-            das 3 direções do campo foi efetuada através de uma chave coaxial.
-          </p>
-          <p style={pJ}>
-            As medições foram feitas na faixa de frequências de 9 kHz a 30 MHz. As medições de quase pico foram realizadas
-            apenas nas frequências em que as emissões de pico estavam próximas ou ultrapassaram a uma margem de 6 dB abaixo
-            da linha de limite de quase-pico.
-          </p>
+          <p style={pTitle}>{t.metodoRadiadas9k}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.radiadas9k1}</p>
+          <p style={pJ}>{t.radiadas9k2}</p>
+          <p style={pJ}>{t.radiadas9k3}</p>
 
-          <p style={pTitle}>2.1 Limites (Item 4 da Norma NBR IEC/CISPR 15/2014)</p>
-          <p style={{ ...pSub, marginTop: 8 }}>2.1.1. Faixa de 9 kHz a 30 MHz (Item 4.4.1 da Norma NBR IEC/CISPR 15/2014):</p>
+          <p style={pTitle}>{t.limitesRadiados9k}</p>
+          <p style={{ ...pSub, marginTop: 8 }}>{t.faixa9k30M}</p>
           <LimitTable {...limRad1} />
 
-          <p style={pTitle}>
-            3. Método de medição das perturbações eletromagnéticas radiadas na faixa de 30 MHz a 300 MHz (Item 9 da Norma NBR IEC/CISPR 15/2014)
-          </p>
-          <p style={{ ...pJ, marginTop: 8 }}>
-            Ensaios na faixa de 30 MHz a 300 MHz podem ser realizados através das especificações do Anexo B e com os
-            limites apresentados abaixo, conforme a norma.
-          </p>
-          <p style={pJ}>
-            O equipamento em ensaio foi colocado sobre blocos não condutivos com 10 cm de altura, sobre plano de referência
-            de aterramento (ground plane) com dimensões pelo menos 20 cm maiores que as dimensões do equipamento ensaiado.
-          </p>
-          <p style={pJ}>
-            O equipamento foi ligado a uma rede de acoplamento/desacoplamento (CDN), montada sobre placa de metal conectada ao terra.
-          </p>
-          <p style={{ ...pSub, marginTop: 8 }}>3.1. Faixa de 30 MHz a 300 MHz (Item 4.4.2 da Norma NBR IEC/CISPR 15/2014):</p>
+          <p style={pTitle}>{t.metodoRadiadas30M}</p>
+          <p style={{ ...pJ, marginTop: 8 }}>{t.radiadas30M1}</p>
+          <p style={pJ}>{t.radiadas30M2}</p>
+          <p style={pJ}>{t.radiadas30M3}</p>
+          <p style={{ ...pSub, marginTop: 8 }}>{t.faixa30M300M}</p>
           <LimitTable {...limRad2} />
         </Page>
 
         {/* ══ PÁGINAS — RESULTADOS RADIMATION ══ */}
         {(!docx.html || docx.loading) && (
           <Page flow>
-            <PageHeader cfg={cfg} numDisplay={displayNum} />
-            <SecHeader>Parte 2 – Resultados dos Ensaios</SecHeader>
+            <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
+            <SecHeader>{t.parte2Titulo}</SecHeader>
             {!docx.html && !docx.loading && (
               <label className="upload-zone no-print flex flex-col items-center gap-2 p-6 mb-4 rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 hover:border-yellow-300 cursor-pointer transition-all">
                 <Upload size={18} className="text-gray-400" />
@@ -1345,8 +1446,8 @@ export default function Cispr15RelatorioPage() {
           </Page>
         )}
         {docx.html && docxPages.map((pageHtml, i) => (
-          <Page key={`docx-${i}`} flow>
-            <PageHeader cfg={cfg} numDisplay={displayNum} />
+          <Page key={`docx-${i}`} flow idioma={idioma}>
+            <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
             {i === 0 && (
               <>
                 {wmfErrors.length > 0 && (
@@ -1365,7 +1466,7 @@ export default function Cispr15RelatorioPage() {
                     <X size={12} />
                   </button>
                 </div>
-                <SecHeader>Parte 2 – Resultados dos Ensaios<Sup n={markerFor('resultados')} /></SecHeader>
+                <SecHeader>{t.parte2Titulo}<Sup n={markerFor('resultados')} /></SecHeader>
               </>
             )}
             <div className="doc-content" style={{ fontFamily: 'Arial, sans-serif', fontSize: '11pt' }}
@@ -1374,27 +1475,12 @@ export default function Cispr15RelatorioPage() {
         ))}
 
         {/* ══ PÁGINA — INCERTEZAS ══ */}
-        <Page flow>
-          <PageHeader cfg={cfg} numDisplay={displayNum} />
-          <SecHeader>Incertezas de Medição (IM)</SecHeader>
-          <p style={pJ}>
-            A incerteza expandida de medição relatada é declarada como a incerteza padrão de medição multiplicada pelo
-            fator de abrangência "k", para uma distribuição de probabilidade tipo t-Student, com graus de liberdade efetivos
-            (veff) correspondentes a um nível de confiança de aproximadamente 95%.
-          </p>
-          <p style={pJ}>
-            A incerteza padrão da medição foi determinada de acordo com o "Guia para Expressão da Incerteza de Medição",
-            Terceira Edição Brasileira.
-          </p>
-          <LimitTable
-            cols={['Item da norma', 'Mensurando', 'Faixa ou ponto de medição', 'Incerteza de medição', 'Fator de abrangência (k)']}
-            rows={[
-              ['4.3.1', 'Distúrbios conduzidos',  '9 kHz – 150 kHz',      '4,5 dB', '2,00'],
-              ['4.3.1', 'Distúrbios conduzidos',  '150 kHz – 30,0 MHz',   '4,4 dB', '2,00'],
-              ['4.4.1', 'Distúrbios radiados',    '9 kHz – 30,0 MHz',     '4,8 dB', '2,00'],
-              ['4.4.2', 'Distúrbios radiados',    '30,0 MHz – 300,0 MHz', '3,7 dB', '2,00'],
-            ]}
-          />
+        <Page flow idioma={idioma}>
+          <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
+          <SecHeader>{t.secIncertezas}</SecHeader>
+          <p style={pJ}>{t.incerteza1}</p>
+          <p style={pJ}>{t.incerteza2}</p>
+          <LimitTable {...t.tabIncerteza} />
         </Page>
 
         {/* ══ PÁGINAS DE FOTOS — mínimo 2 páginas (4 slots) ══ */}
@@ -1404,9 +1490,9 @@ export default function Cispr15RelatorioPage() {
           // Fotos 1 e 2 mais largas; fotos 3+ ligeiramente menores
           const slotMaxWidthMm = pi === 0 ? photoWidth : Math.max(Math.min(photoWidth, 140), 60)
           return (
-            <Page key={`foto-${pi}`}>
-              <PageHeader cfg={cfg} numDisplay={displayNum} />
-              {pi === 0 && <SecHeader>Fotos da Amostra</SecHeader>}
+            <Page key={`foto-${pi}`} idioma={idioma}>
+              <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
+              {pi === 0 && <SecHeader>{t.fotosAmostra}</SecHeader>}
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {[0, 1].map(slot => {
                   const ph = pair[slot] ?? null
@@ -1430,11 +1516,11 @@ export default function Cispr15RelatorioPage() {
                             <button
                               onClick={() => setPhotos(prev => prev.filter((_, j) => j !== pi * 2 + slot))}
                               style={{ fontSize: 10, color: '#bbb', background: 'none', border: 'none', cursor: 'pointer' }}>
-                              ✕ remover
+                              {t.remover}
                             </button>
                           </div>
                           <img
-                            src={ph.url} alt={`Figura ${figNum}`}
+                            src={ph.url} alt={`${t.figura} ${figNum}`}
                             style={{
                               maxWidth: `${slotMaxWidthMm}mm`,
                               maxHeight: `${slotHeightMm - 14}mm`,
@@ -1446,7 +1532,7 @@ export default function Cispr15RelatorioPage() {
                             }}
                           />
                           <p style={{ fontSize: FS.xs, color: '#555', marginTop: 5, textAlign: 'center', flexShrink: 0 }}>
-                            Figura {figNum} – Amostra ensaiada<Sup n={markerFor(`foto_${figNum}`)} />
+                            {t.figura} {figNum} – {t.amostraEnsaiada}<Sup n={markerFor(`foto_${figNum}`)} />
                           </p>
                         </>
                       ) : null}
@@ -1461,18 +1547,18 @@ export default function Cispr15RelatorioPage() {
         {/* ══ SEÇÃO 6 — HISTÓRICO DE ALTERAÇÕES (só em modo emenda) ══ */}
         {emendaDraft && emendaDraft.alteracoes.length > 0 && (
           <Page flow>
-            <PageHeader cfg={cfg} numDisplay={displayNum} />
-            <SecHeader>6. Histórico de Alterações</SecHeader>
+            <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
+            <SecHeader>{t.historicoAlteracoes}</SecHeader>
             <p style={pJ}>
-              Emenda <b>{formatEmendaNumero(emendaDraft.numRelatorioOriginal, emendaDraft.emendaNum)}</b> emitida em {fmtDate(emendaDraft.dataEmenda)},
-              referente ao Relatório de Ensaio n° {emendaDraft.numRelatorioOriginal}.
-              As alterações identificadas em relação ao documento original são listadas abaixo:
+              {t.emendaPre}<b>{formatEmendaNumero(emendaDraft.numRelatorioOriginal, emendaDraft.emendaNum, cfg.foraDaRbc)}</b>
+              {t.emendaEmitidaEm}{fmtDate(emendaDraft.dataEmenda, idioma)}
+              {t.emendaReferente}{emendaDraft.numRelatorioOriginal}{t.emendaListadas}
             </p>
             <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8, fontSize: FS.sm }}>
               <thead>
                 <tr>
-                  <th style={{ border: '1px solid #ccc', padding: '3px 8px', background: GRAY1, width: '8%', textAlign: 'center' }}>N°</th>
-                  <th style={{ border: '1px solid #ccc', padding: '3px 8px', background: GRAY1, textAlign: 'left' }}>Descrição da Alteração</th>
+                  <th style={{ border: '1px solid #ccc', padding: '3px 8px', background: GRAY1, width: '8%', textAlign: 'center' }}>{t.colNumero}</th>
+                  <th style={{ border: '1px solid #ccc', padding: '3px 8px', background: GRAY1, textAlign: 'left' }}>{t.colDescricaoAlteracao}</th>
                 </tr>
               </thead>
               <tbody>
@@ -1493,19 +1579,21 @@ export default function Cispr15RelatorioPage() {
         )}
 
         {/* ══ ÚLTIMA PÁGINA — OBSERVAÇÕES FINAIS ══ */}
-        <Page flow>
-          <PageHeader cfg={cfg} numDisplay={displayNum} />
-          <SecHeader>Observações Finais</SecHeader>
+        <Page flow idioma={idioma}>
+          <PageHeader cfg={cfg} numDisplay={displayNum} dataEmissao={emendaDraft?.dataEmenda} />
+          <SecHeader>{t.observacoesFinais}</SecHeader>
           {[
-            'Este relatório de ensaio atende aos requisitos de acreditação da Cgcre, que avaliou a competência do laboratório.',
-            'O fornecimento da amostra pelo cliente isenta o LABELO-PUCRS de responsabilidade quanto à sua representatividade em relação a lotes de fabricação e comercialização.',
-            'O presente relatório de ensaio é medido exclusivamente para a amostra ensaiada, nas condições em que foram realizados os ensaios e não sendo extensivo a quaisquer lotes, mesmo que similares.',
-            'A partir do momento em que a amostra é retirada do laboratório, esgota-se a possibilidade de contestação dos resultados ou mesmo de repetição dos ensaios, já que o LABELO deixa de ser responsável pela sua manutenção.',
-            'É vedada a reprodução do presente relatório de ensaio, no todo ou em parte, sem prévia autorização do LABELO-PUCRS originada por solicitação formal do contratante.',
-            'A Cgcre é signatária do Acordo de Reconhecimento Mútuo da ILAC (International Laboratory Accreditation Cooperation).',
-            'A Cgcre é signatária do Acordo de Reconhecimento Mútuo da IAAC (InterAmerican Accreditation Cooperation).',
-            'Os ensaios foram realizados nas instalações do LABELO-PUCRS.',
-          ].map((obs, i) => (
+            // Os três itens marcados como acreditacao só entram no relatório
+            // dentro do escopo da RBC — invocam a Cgcre e os acordos ILAC/IAAC.
+            { acreditacao: true,  texto: t.obsCgcre },
+            { acreditacao: false, texto: t.obsFornecimento },
+            { acreditacao: false, texto: t.obsExclusivo },
+            { acreditacao: false, texto: t.obsRetirada },
+            { acreditacao: false, texto: t.obsReproducao },
+            { acreditacao: true,  texto: t.obsIlac },
+            { acreditacao: true,  texto: t.obsIaac },
+            { acreditacao: false, texto: t.obsInstalacoes },
+          ].filter(o => !(cfg.foraDaRbc && o.acreditacao)).map(({ texto: obs }, i) => (
             <p key={i} style={{ ...pJ, marginLeft: 10 }}>• {obs}</p>
           ))}
 
@@ -1524,7 +1612,7 @@ export default function Cispr15RelatorioPage() {
                       fontSize: '13pt', fontWeight: 700, color: '#111',
                       lineHeight: 1.15, margin: 0, maxWidth: 150, wordBreak: 'break-word',
                     }}>
-                      {certNome || 'Certificado configurado'}
+                      {certNome || t.certificadoConfigurado}
                     </p>
                     {/* rabisco decorativo, simulando a tinta da assinatura do Adobe */}
                     <svg width="160" height="46" viewBox="0 0 160 46"
@@ -1534,13 +1622,13 @@ export default function Cispr15RelatorioPage() {
                     </svg>
                   </div>
                   <div style={{ borderLeft: '1px solid #999', paddingLeft: 10, textAlign: 'left', fontSize: '7.3pt', color: '#222', lineHeight: 1.45 }}>
-                    <div>Assinado de forma digital<br />por {certNome || 'certificado configurado'}</div>
-                    <div>Dados: {formatarDataAssinatura(new Date())}</div>
+                    <div>{t.assinadoDigitalmentePor}<br />{certNome || t.certificadoConfigurado}</div>
+                    <div>{t.dataAssinatura} {formatarDataAssinatura(new Date())}</div>
                   </div>
                 </div>
               )}
               <div style={{ borderTop: '1px solid #333', paddingTop: 8 }}>
-                <p style={{ fontSize: FS.sm, color: '#333', marginBottom: 2 }}>Signatário Autorizado</p>
+                <p style={{ fontSize: FS.sm, color: '#333', marginBottom: 2 }}>{t.signatarioAutorizado}</p>
                 <p style={{ fontSize: FS.xs, color: '#666' }}>LABELO-PUCRS</p>
               </div>
             </div>
@@ -1548,6 +1636,186 @@ export default function Cispr15RelatorioPage() {
         </Page>
 
       </div>
+
+      {/* ══ Revisão obrigatória: foto da amostra × identificação do cliente ══ */}
+      {revisaoAberta && (
+        <div className="no-print fixed inset-0 z-[70] flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
+          <div className="card w-full max-w-5xl max-h-[92vh] overflow-auto p-6 space-y-5 animate-fade-in">
+
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/12 border border-amber-500/20 flex items-center justify-center shrink-0">
+                <ShieldCheck size={18} className="text-amber-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-bold text-white text-sm">Revisão obrigatória antes da emissão</p>
+                <p className="text-[11px] text-white/40">
+                  Confira se as fotos da amostra correspondem aos dados de identificação do cliente.
+                  Sem esta validação o PDF não é gerado nem impresso.
+                </p>
+              </div>
+              <button onClick={() => { setRevisaoAberta(false); acaoPosRevisao.current = null }}
+                className="text-white/25 hover:text-white/70 transition-colors shrink-0">
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-2">
+              {/* Figuras 2 e 3 — são as que mostram a amostra e a identificação
+                  dela; é contra elas que os dados ao lado são conferidos. */}
+              <div className="space-y-3">
+                {[1, 2].map(i => {
+                  const ph = photos[i]
+                  return (
+                    <div key={i} className="space-y-1.5">
+                      <p className="text-[10px] uppercase tracking-widest font-mono text-white/35">
+                        Figura {i + 1} — foto da amostra
+                      </p>
+                      {ph ? (
+                        <>
+                          <button type="button" onClick={() => abrirZoom(ph.url, ph.name)}
+                            title="Clique para ampliar — dá para ler plaqueta e número de série"
+                            className="group relative w-full rounded-lg overflow-hidden border border-white/10 bg-black/30 flex items-center justify-center hover:border-yellow-400/40 transition-colors"
+                            style={{ minHeight: 150, cursor: 'zoom-in' }}>
+                            <img src={ph.url} alt={'Figura ' + (i + 1) + ' — amostra'}
+                              style={{ maxWidth: '100%', maxHeight: '32vh', objectFit: 'contain' }} />
+                            <span className="absolute bottom-1.5 right-1.5 flex items-center gap-1 text-[9px] font-mono text-white/70 bg-black/70 px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                              <Search size={9} /> ampliar
+                            </span>
+                          </button>
+                          <p className="text-[10px] text-white/25 font-mono truncate">{ph.name}</p>
+                        </>
+                      ) : (
+                        <div className="rounded-lg border border-red-500/30 bg-red-500/8 p-4 text-center flex flex-col items-center justify-center" style={{ minHeight: 150 }}>
+                          <AlertTriangle size={18} className="text-red-400 mb-1.5" />
+                          <p className="text-red-300 text-[12px] font-semibold">Figura {i + 1} não encontrada</p>
+                          <p className="text-[10px] text-white/45 mt-1">
+                            Este relatório tem {photos.length} foto(s) carregada(s).
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+
+              <div className="space-y-2">
+                <p className="text-[10px] uppercase tracking-widest font-mono text-white/35">
+                  Dados de identificação
+                </p>
+                <div className="rounded-lg border border-white/10 bg-white/[0.03] p-4 space-y-3">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-widest font-mono text-white/30 mb-1">Cliente</p>
+                    <p className="font-bold text-white text-sm">{cfg?.cliente || '—'}</p>
+                    {cfg?.clienteRua    && <p className="text-white/55 text-[12px]">{cfg.clienteRua}</p>}
+                    {cfg?.clienteCidade && <p className="text-white/55 text-[12px]">{cfg.clienteCidade}</p>}
+                    {cfg?.clienteCep    && <p className="text-white/55 text-[12px]">CEP {cfg.clienteCep}</p>}
+                  </div>
+                  <div className="border-t border-white/8 pt-3">
+                    <p className="text-[10px] uppercase tracking-widest font-mono text-white/30 mb-1.5">Objeto ensaiado</p>
+                    <dl className="space-y-1">
+                      {([
+                        ['Produto',       cfg?.produto],
+                        ['Fabricante',    cfg?.fabricante],
+                        ['Modelo',        cfg?.modelo],
+                        ['Nº série / ID', cfg?.identificador],
+                        ['Lacre',         cfg?.lacre],
+                        ['Protocolo',     cfg?.protocolo],
+                        ['Orçamento',     cfg?.orcamento],
+                        ['Tensão alim.',  cfg?.tensaoAlim],
+                        ['Potência',      cfg?.potencia],
+                        ['Frequência',    cfg?.frequencia],
+                      ] as [string, string | undefined][]).map(([k, v]) => (
+                        <div key={k} className="flex gap-2 text-[12px]">
+                          <dt className="text-white/35 w-28 shrink-0">{k}</dt>
+                          <dd className="text-white/85 font-medium break-words">{v || '—'}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <label className="flex items-start gap-2.5 cursor-pointer rounded-lg border border-white/10 bg-white/[0.02] p-3">
+              <input type="checkbox" checked={revisaoMarcada}
+                onChange={e => setRevisaoMarcada(e.target.checked)}
+                className="mt-0.5 accent-yellow-400 cursor-pointer" />
+              <span className="text-[12px] text-white/70 leading-relaxed">
+                Confirmo que revisei as fotos da amostra e os dados de identificação acima, e que
+                <b className="text-white/90"> correspondem ao mesmo item</b>.
+              </span>
+            </label>
+
+            <div className="flex gap-2 justify-end">
+              <button type="button"
+                onClick={() => { setRevisaoAberta(false); acaoPosRevisao.current = null }}
+                className="px-4 py-2 rounded-lg border border-white/10 text-white/40 hover:text-white/70 text-sm transition-all">
+                Cancelar
+              </button>
+              <button type="button" disabled={!revisaoMarcada} onClick={confirmarRevisao}
+                className="btn-primary px-5 py-2 text-sm font-bold flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed">
+                <CheckCircle2 size={14} /> Confirmar e emitir
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
+      {/* ══ Visor ampliado de uma foto da revisão ══
+          Fica ACIMA da revisão (z maior) para o técnico ampliar sem perder o
+          painel de conferência de trás. */}
+      {zoomFoto && (
+        <div className="no-print fixed inset-0 z-[80] bg-black/95 flex flex-col"
+          onClick={() => setZoomFoto(null)}>
+          <div className="flex items-center gap-3 px-4 py-2.5 border-b border-white/10 shrink-0"
+            onClick={e => e.stopPropagation()}>
+            <p className="text-[11px] font-mono text-white/50 truncate flex-1">{zoomFoto.nome}</p>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button type="button" onClick={() => ajustarZoom(-0.5)}
+                className="w-7 h-7 rounded border border-white/15 text-white/60 hover:text-white hover:border-white/35 transition-colors text-sm leading-none">−</button>
+              <span className="text-[11px] font-mono text-white/50 w-12 text-center">{Math.round(zoomNivel * 100)}%</span>
+              <button type="button" onClick={() => ajustarZoom(0.5)}
+                className="w-7 h-7 rounded border border-white/15 text-white/60 hover:text-white hover:border-white/35 transition-colors text-sm leading-none">+</button>
+              <button type="button" onClick={() => { setZoomNivel(1); setZoomPos({ x: 0, y: 0 }) }}
+                className="px-2 h-7 rounded border border-white/15 text-white/50 hover:text-white hover:border-white/35 transition-colors text-[10px] font-mono">ajustar</button>
+              <button type="button" onClick={() => setZoomFoto(null)}
+                className="w-7 h-7 rounded border border-white/15 text-white/60 hover:text-white hover:border-white/35 transition-colors flex items-center justify-center">
+                <X size={13} />
+              </button>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-hidden flex items-center justify-center"
+            onClick={e => e.stopPropagation()}
+            onWheel={e => ajustarZoom(e.deltaY < 0 ? 0.3 : -0.3)}
+            onPointerDown={e => {
+              if (zoomNivel <= 1) return
+              arrastando.current = { x: e.clientX - zoomPos.x, y: e.clientY - zoomPos.y }
+              ;(e.target as HTMLElement).setPointerCapture?.(e.pointerId)
+            }}
+            onPointerMove={e => {
+              if (!arrastando.current) return
+              setZoomPos({ x: e.clientX - arrastando.current.x, y: e.clientY - arrastando.current.y })
+            }}
+            onPointerUp={() => { arrastando.current = null }}
+            onPointerLeave={() => { arrastando.current = null }}
+            style={{ cursor: zoomNivel > 1 ? (arrastando.current ? 'grabbing' : 'grab') : 'default' }}>
+            <img src={zoomFoto.url} alt={zoomFoto.nome} draggable={false}
+              style={{
+                maxWidth: '100%', maxHeight: '100%', objectFit: 'contain',
+                transform: 'translate(' + zoomPos.x + 'px, ' + zoomPos.y + 'px) scale(' + zoomNivel + ')',
+                transition: arrastando.current ? 'none' : 'transform 90ms ease-out',
+                userSelect: 'none',
+              }} />
+          </div>
+
+          <p className="text-[10px] text-white/30 text-center py-2 shrink-0"
+            onClick={e => e.stopPropagation()}>
+            roda do mouse ou + / − para ampliar · arraste para mover · Esc ou clique fora para fechar
+          </p>
+        </div>
+      )}
     </>
   )
 }

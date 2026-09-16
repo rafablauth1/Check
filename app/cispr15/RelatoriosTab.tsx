@@ -3,7 +3,9 @@
 import { useState, useEffect, useMemo } from 'react'
 import { FileText, Trash2, FolderOpen, AlertTriangle, ChevronDown, ChevronUp, Wifi, WifiOff, Lock, CheckCircle2, Loader2, Send } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { type RelatorioSalvo, RELATORIOS_KEY, RELATORIO_DOCX_PFX } from './types'
+import { type RelatorioSalvo, ehEmenda, emendasDoRelatorio } from './types'
+import { carregarRelatorios, removerRelatorio } from '@/lib/cispr15/relatorios-store'
+import { apagarAssetsLocais } from '@/lib/cispr15/photo-store'
 
 function fmtDate(iso: string) {
   if (!iso) return '—'
@@ -12,6 +14,18 @@ function fmtDate(iso: string) {
 
 function getAno(dataEmissao: string) {
   return dataEmissao ? dataEmissao.slice(0, 4) : '—'
+}
+
+// getAno() é só pra EXIBIR: sem data ele devolve '—'. Esse travessão já foi
+// parar em caminho de pasta — o main tira os não-dígitos, sobra ano vazio e a
+// cópia cai na raiz de "Compatibilidade eletromagnética" em vez de \<ano>.
+// Aqui é o ano pra lógica: data de emissão e, na falta dela, o ano do próprio
+// nº do relatório ("EMC 2851/2026"). Vazio só quando não dá pra saber mesmo.
+function anoDoRelatorio(rel: { dataEmissao?: string; numRelatorio?: string }): string {
+  const daData = (rel.dataEmissao || '').match(/\d{4}/)?.[0]
+  if (daData) return daData
+  const doNumero = (rel.numRelatorio || '').match(/(\d{4})\s*$/)?.[1]
+  return doNumero ?? ''
 }
 
 interface Props {
@@ -31,36 +45,12 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
   const [signMsg,      setSignMsg]      = useState<Record<string, string>>({})
 
   useEffect(() => {
-    async function load() {
-      const api = (window as any).electronAPI
-      if (api) {
-        try {
-          const res = await api.getRelatorios()
-          if (res.ok && Array.isArray(res.relatorios) && res.relatorios.length > 0) {
-            setLista(res.relatorios)
-            setFromNetwork(res.fromNetwork)
-          } else {
-            // Fallback: arquivo vazio ou inacessível — tenta localStorage
-            const raw = localStorage.getItem(RELATORIOS_KEY)
-            if (raw) {
-              const local: RelatorioSalvo[] = JSON.parse(raw)
-              if (local.length > 0) {
-                setLista(local)
-                // Migra para o arquivo de dados
-                api.saveRelatorios(local).catch(() => {})
-              }
-            }
-          }
-        } catch {}
-        return
-      }
-      // fallback para localStorage (fora do Electron)
-      try {
-        const raw = localStorage.getItem(RELATORIOS_KEY)
-        if (raw) setLista(JSON.parse(raw))
-      } catch {}
-    }
-    load()
+    /* Fonte única. O fallback antigo relia a lista do localStorage e, quando o
+       cache estava truncado pela cota, devolvia essa lista curta para o arquivo
+       compartilhado via saveRelatorios — era um dos caminhos da perda. */
+    carregarRelatorios()
+      .then(l => { setLista(l); setFromNetwork(!!(window as any).electronAPI) })
+      .catch(() => {})
   }, [])
 
   const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
@@ -81,7 +71,7 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
     let eutFolderPath = rel.eutFolderPath
     if (!eutFolderPath && api.buscarPastaEutPorProtocolo && rel.protocolo) {
       try {
-        const achou = await api.buscarPastaEutPorProtocolo(rel.protocolo, getAno(rel.dataEmissao))
+        const achou = await api.buscarPastaEutPorProtocolo(rel.protocolo, anoDoRelatorio(rel))
         if (achou?.ok) eutFolderPath = achou.folderPath
       } catch {}
     }
@@ -91,10 +81,10 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
       return
     }
     try {
-      const res = await api.sendCopy(eutFolderPath, getAno(rel.dataEmissao))
+      const res = await api.sendCopy(eutFolderPath, anoDoRelatorio(rel))
       if (res.ok) {
         setSignState(p => ({ ...p, [id]: 'ok' }))
-        setSignMsg(p => ({ ...p, [id]: 'Cópia enviada com sucesso' }))
+        setSignMsg(p => ({ ...p, [id]: 'Cópia enviada para:\n' + (res.dest ?? '(destino não informado)') }))
       } else {
         setSignState(p => ({ ...p, [id]: 'error' }))
         setSignMsg(p => ({ ...p, [id]: res.error ?? 'Erro ao enviar cópia' }))
@@ -128,13 +118,12 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
       }
     }
 
-    const updated = lista.filter(r => r.id !== id)
-    setLista(updated)
-    localStorage.setItem(RELATORIOS_KEY, JSON.stringify(updated))
-    localStorage.removeItem(RELATORIO_DOCX_PFX + id)
-    if (api && fromNetwork) {
-      try { await api.saveRelatorios(updated) } catch {}
-    }
+    // Exclusão por intenção: manda o id, não a lista. Excluir UM relatório não
+    // tem mais como levar os outros 50 junto.
+    const res = await removerRelatorio(id)
+    if (!res.ok) { alert('Não foi possível excluir: ' + (res.error ?? 'erro desconhecido')); return }
+    setLista(lista.filter(r => r.id !== id))
+    await apagarAssetsLocais(id)
     if (api?.deleteRelatorioAssets) {
       try { await api.deleteRelatorioAssets(id) } catch {}
     }
@@ -153,6 +142,10 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
 
   const filtrados = useMemo(() => {
     return lista.filter(r => {
+      // Registro-emenda não entra aqui: a emenda vive na aba Emendas, e
+      // misturá-la com os relatórios de origem faria o mesmo ensaio aparecer
+      // duas vezes na lista.
+      if (ehEmenda(r)) return false
       if (filtroAno     && getAno(r.dataEmissao) !== filtroAno) return false
       if (filtroCliente && r.clienteNome !== filtroCliente) return false
       if (filtroTipo    && r.cfg.tipo !== filtroTipo) return false
@@ -269,9 +262,12 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
         <div className="space-y-2">
           {filtrados.map(r => {
             const isOpen     = expanded === r.id
-            const hasDocx    = !!localStorage.getItem(RELATORIO_DOCX_PFX + r.id)
+            const hasDocx    = !!r.docxFilename
             const semFotos   = (r.photos ?? []).length === 0
-            const hasEmendas = (r.emendas ?? []).length > 0
+            // Conta os dois formatos: o badge tem que continuar aparecendo
+            // tanto para emenda antiga (aninhada) quanto para a nova (registro).
+            const emendasDoItem = emendasDoRelatorio(lista, r)
+            const hasEmendas = emendasDoItem.length > 0
             return (
               <div key={r.id} className="card overflow-hidden">
                 {/* linha principal */}
@@ -289,9 +285,9 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
                       )}>
                         {r.cfg.tipo === 'lampada' ? 'Lâmpada' : 'Luminária'}
                       </span>
-                      {(r.emendas ?? []).length > 0 && (
+                      {emendasDoItem.length > 0 && (
                         <span className="text-[9px] font-mono text-amber-400/60 border border-amber-400/20 bg-amber-400/5 px-1.5 py-0.5 rounded">
-                          {(r.emendas ?? []).length} emenda{(r.emendas ?? []).length > 1 ? 's' : ''}
+                          {emendasDoItem.length} emenda{emendasDoItem.length > 1 ? 's' : ''}
                         </span>
                       )}
                       {semFotos && fromNetwork && (
@@ -414,9 +410,9 @@ export function RelatoriosTab({ onCarregar, onVerPDF }: Props) {
                           : 'Fotos não disponíveis — carregue a pasta da EUT.'}
                       </div>
                     )}
-                    {(r.emendas ?? []).length > 0 && (
+                    {emendasDoItem.length > 0 && (
                       <div className="text-[10px] text-white/30 font-mono">
-                        {(r.emendas ?? []).map(e => (
+                        {emendasDoItem.map(e => (
                           <span key={e.numero} className="mr-3">
                             Emenda {e.numero}: {fmtDate(e.dataEmenda)} ({(e.alteracoes ?? []).length} alteração{(e.alteracoes ?? []).length !== 1 ? 'ões' : ''})
                           </span>

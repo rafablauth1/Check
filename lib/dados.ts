@@ -23,8 +23,15 @@ export async function caminhoDados(arquivo: string): Promise<string> {
 // de texto comum só mostra bytes ilegíveis; só o app (que tem a chave) lê/edita.
 // Não é proteção contra alguém disposto a extrair a chave do próprio app — é
 // uma barreira contra edição manual acidental/casual fora do software.
-// MESMA lógica duplicada em electron/main.js (arquivos de agenda/relatórios/
-// clientes não passam por este módulo).
+// ATENÇÃO: chave e algoritmo têm de ser IDÊNTICOS aos de shared/cripto-dados.js,
+// que é o que electron/main.js usa para agenda/relatórios/clientes. Se os dois
+// divergirem, um lado grava e o outro não consegue ler — e o arquivo parece
+// corrompido com os dados intactos lá dentro.
+//
+// Já tentamos importar o módulo compartilhado aqui; o build do Next passou a
+// estourar a heap (o require de CJS puxa o `crypto` pro grafo do webpack dos
+// dois lados). scripts/conferir-constantes.js compara os dois e quebra o build
+// se saírem de sincronia.
 const ENC_MAGIC = 'CISPR15ENC1:'
 const ENC_KEY = crypto.scryptSync('cispr15-labelo-dados-em-repouso', 'cispr15-labelo-salt-fixo', 32)
 
@@ -46,10 +53,12 @@ function decriptar(conteudo: string): string {
   return Buffer.concat([decipher.update(dados), decipher.final()]).toString('utf-8')
 }
 
+const estaCriptografado = (bruto: string): boolean => bruto.startsWith(ENC_MAGIC)
+
 /** Lê o conteúdo de um arquivo já decriptografando-o; arquivos legados
  *  (JSON puro, de antes desta mudança) são devolvidos como estão. */
 function lerConteudo(conteudo: string): { texto: string; legado: boolean } {
-  if (conteudo.startsWith(ENC_MAGIC)) return { texto: decriptar(conteudo), legado: false }
+  if (estaCriptografado(conteudo)) return { texto: decriptar(conteudo), legado: false }
   return { texto: conteudo, legado: true }
 }
 
@@ -80,6 +89,22 @@ async function espelhar(arquivo: string, conteudo: string): Promise<void> {
 // ausente → padrão, como antes.) Arquivo legado (JSON puro, de antes da
 // criptografia) é lido normalmente e migrado em segundo plano.
 export async function lerJSON<T>(arquivo: string, padrao: T): Promise<T> {
+  return (await lerJSONComEstado(arquivo, padrao)).dados
+}
+
+/** Igual ao lerJSON, mas diz TAMBÉM em que estado o arquivo foi encontrado:
+ *  - 'ok'         → leu (do principal ou do .bak)
+ *  - 'ausente'    → não existe; o padrão é a resposta certa (primeiro uso)
+ *  - 'corrompido' → existe e não abre, nem ele nem o .bak
+ *
+ *  A distinção existe porque devolver o padrão nos dois últimos casos faz o
+ *  arquivo cheio aparecer VAZIO na tela — e o próximo save grava esse vazio por
+ *  cima do arquivo de rede, levando o .bak junto no save seguinte. Quem escreve
+ *  precisa saber a diferença entre "não tinha nada" e "não consegui ler". */
+export async function lerJSONComEstado<T>(
+  arquivo: string,
+  padrao: T,
+): Promise<{ dados: T; estado: 'ok' | 'ausente' | 'corrompido' }> {
   const p = await caminhoDados(arquivo)
   const tentar = async (caminho: string): Promise<T> => {
     const bruto = await fs.promises.readFile(caminho, 'utf-8')
@@ -88,12 +113,19 @@ export async function lerJSON<T>(arquivo: string, padrao: T): Promise<T> {
     if (legado) escreverJSON(arquivo, dados).catch(() => {})
     return dados
   }
+  const ausente = (e: unknown) => (e as NodeJS.ErrnoException)?.code === 'ENOENT'
   try {
-    return await tentar(p)
-  } catch {
-    try { return await tentar(p + '.bak') } catch {}
+    return { dados: await tentar(p), estado: 'ok' }
+  } catch (err) {
+    try {
+      return { dados: await tentar(p + '.bak'), estado: 'ok' }
+    } catch (errBak) {
+      return {
+        dados: padrao,
+        estado: ausente(err) && ausente(errBak) ? 'ausente' : 'corrompido',
+      }
+    }
   }
-  return padrao
 }
 
 // Escrita ATÔMICA: grava num .tmp e faz rename (atômico no mesmo volume), mantendo

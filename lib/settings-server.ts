@@ -1,20 +1,30 @@
 import fs from 'fs'
 import path from 'path'
 
-// Pasta de rede padrão para os cadastros/catálogos do laboratório (equipamentos,
-// grupos, normas, procedimentos, certificados, laboratórios, planos de calibração,
-// áreas & siglas, glossário, demandas, checagens). Mesma pasta em todos os PCs,
-// para que todo mundo enxergue os mesmos dados sem precisar configurar nada.
-// Clientes/relatórios (dataFolder) e agenda (agendaFolder) NÃO usam este valor —
-// continuam com seus próprios padrões (ver electron/main.js getDefaultPaths()).
+// Os caminhos de rede do laboratório vêm todos de shared/network-paths.js —
+// arquivo único, consumido também pelo processo principal do Electron. Antes
+// eram duas cópias das mesmas strings, uma aqui e outra em electron/main.js,
+// com comentários pedindo pra "manter em sincronia": bastava alguém trocar a
+// letra da unidade num lado pro servidor Next e o Electron passarem a gravar em
+// pastas diferentes, e os dados "sumirem" dependendo de qual tela salvou.
+//
+// CADASTROS_FOLDER_PADRAO: cadastros/catálogos (equipamentos, grupos, normas,
+// procedimentos, certificados, laboratórios, planos, glossário, checagens).
+// MIRROR_FOLDER_PADRAO: espelho best-effort de tudo que é salvo, pros PCs que
+// só conseguem escrever na pasta de Alta Tecnologia.
+// ATENÇÃO: os valores abaixo têm de ser IDÊNTICOS aos de shared/network-paths.js,
+// que é o que o processo principal do Electron consome.
+//
+// Já tentamos `require('../shared/network-paths')` aqui para ter uma fonte
+// única de verdade — e o build do Next passou a estourar a heap (OOM no
+// webpack). Um require de CommonJS dentro de um módulo que o webpack compila
+// como ESM arrasta o módulo (e o `crypto` dele) pro grafo dos dois lados.
+// Então a cópia fica, mas NÃO fica solta: scripts/conferir-constantes.js
+// compara os dois arquivos e quebra o build se divergirem. Ao mudar um
+// caminho, mude nos dois — o script avisa se você esquecer.
 export const CADASTROS_FOLDER_PADRAO =
   'R:\\Compartilhado\\CISPR15'
 
-// Pasta espelho padrão — mantida em sincronia com electron/main.js
-// (MIRROR_FOLDER_PADRAO). Recebe cópia automática de todo cadastro salvo,
-// além da pasta principal configurada acima. Existe pra PCs que só conseguem
-// escrever na pasta de Alta Tecnologia, mas continuam enxergando os cadastros
-// atualizados através do espelho.
 export const MIRROR_FOLDER_PADRAO =
   'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15'
 

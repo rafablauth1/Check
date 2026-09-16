@@ -7,14 +7,16 @@ import {
   ArrowLeft, ArrowRight, Plus, Search, X, CheckCircle2, XCircle, Clock, Edit2,
   Trash2, ChevronDown, ChevronUp, FileText, Loader2, Download,
   Lightbulb, Lamp, Settings, Layers, RotateCcw, FolderOpen,
-  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users, RefreshCw,
+  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users, RefreshCw, Check,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   type AgendaItem, type RelatorioSalvo, type ClienteDB,
   type LoteAmostra, type LoteConfig, type Cispr15Config,
-  AGENDA_KEY, RELATORIOS_KEY, CLIENTES_KEY, CFG_KEY, LOTE_KEY, today,
+  AGENDA_KEY, CLIENTES_KEY, CFG_KEY, LOTE_KEY, today,
 } from '@/app/cispr15/types'
+import { salvarValor } from '@/lib/cispr15/photo-store'
+import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
 
 /* ─── tags predefinidas ───────────────────────────────────────────────────── */
 const PREDEFINED_TAGS = [
@@ -1326,7 +1328,7 @@ export default function AgendaPage() {
   const [editItem,      setEditItem]      = useState<AgendaItem | null>(null)
   const [showLote,      setShowLote]      = useState(false)
   const [showGerarLote, setShowGerarLote] = useState(false)
-  const [updateInfo,    setUpdateInfo]    = useState<{ version: string; installer: string } | null>(null)
+  const [updateInfo,    setUpdateInfo]    = useState<{ version: string; installer?: string; zip?: string } | null>(null)
   const [updating,      setUpdating]      = useState(false)
   const [filter,        setFilter]        = useState<'andamento' | 'aguardando' | 'concluidos' | 'todos'>('andamento')
   const [relatorios,    setRelatorios]    = useState<RelatorioSalvo[]>([])
@@ -1336,9 +1338,13 @@ export default function AgendaPage() {
   const [filterCliente,   setFilterCliente]   = useState('')
   const [isElectron,    setIsElectron]    = useState(false)
   const [fromNetwork,   setFromNetwork]   = useState<boolean | null>(null)
+  // Arquivo da agenda existe mas não abre: a tela está vazia por falha de
+  // leitura, não porque não há itens. Bloqueia o save pra não gravar por cima.
+  const [agendaCorrompida, setAgendaCorrompida] = useState(false)
   const [importandoFotos, setImportandoFotos] = useState(false)
   const [organizando,     setOrganizando]     = useState(false)
   const [verificandoPdfs, setVerificandoPdfs] = useState(false)
+  const [selFotos, setSelFotos] = useState<string[]>([])   // ids selecionados p/ "Importar Fotos"
   const [clientes,      setClientes]      = useState<ClienteDB[]>([])
   const [fuCliente,     setFuCliente]     = useState('')
   const [fuTipo,        setFuTipo]        = useState<'todos' | 'lampada' | 'luminaria'>('todos')
@@ -1397,6 +1403,16 @@ export default function AgendaPage() {
       try {
         const res = await api.getAgenda()
         setFromNetwork(!!res.fromNetwork)
+        // Arquivo existe mas não abre (nem ele nem o .bak). NÃO seguir daqui:
+        // abaixo há uma migração que salva o localStorage por cima do arquivo
+        // de rede quando a lista vem vazia — com o arquivo só ilegível, isso
+        // apagaria a agenda de verdade. Trava tudo e avisa.
+        if (res.corrompido) {
+          setAgendaCorrompida(true)
+          setAgenda([])
+          return
+        }
+        setAgendaCorrompida(false)
         if (res.ok && Array.isArray(res.agenda) && res.agenda.length > 0) {
           setAgenda(res.agenda); return
         }
@@ -1421,6 +1437,15 @@ export default function AgendaPage() {
   }
 
   async function saveAgenda(items: AgendaItem[]) {
+    // Com o arquivo ilegível, a tela está mostrando uma agenda vazia que não é
+    // a real — salvar agora troca o conteúdo bom por esse vazio.
+    if (agendaCorrompida) {
+      alert(
+        'A agenda não pôde ser lida do disco e o que está na tela NÃO é o conteúdo real.\n\n' +
+        'Salvar agora apagaria os dados. Restaure o arquivo (ou o .bak) antes de continuar.'
+      )
+      return
+    }
     setAgenda(items)
     const api = (window as any).electronAPI
     if (api) {
@@ -1437,12 +1462,28 @@ export default function AgendaPage() {
     localStorage.setItem(AGENDA_KEY, JSON.stringify(items))
   }
 
+  function toggleSelFoto(id: string) {
+    setSelFotos(s => s.includes(id) ? s.filter(x => x !== id) : [...s, id])
+  }
+
   async function importarFotosRede() {
     const api = (window as any).electronAPI
     if (!api?.importarFotosRede) return
+    // Foto só interessa em item "Em andamento" — o que já foi emitido não
+    // precisa mais buscar nada na Iluminação. Com itens marcados, restringe
+    // ainda mais: só os selecionados.
+    const base = agenda.filter(a => !estaEmitido(a))
+    const alvo = selFotos.length ? base.filter(a => selFotos.includes(a.id)) : base
+    const protocolos = [...new Set(alvo.map(a => (a.protocolo || '').trim()).filter(Boolean))]
+    if (!protocolos.length) {
+      alert(selFotos.length
+        ? 'Nenhum protocolo "Em andamento" entre os itens marcados.'
+        : 'Nenhum item "Em andamento" com protocolo pra importar fotos.')
+      return
+    }
     setImportandoFotos(true)
     try {
-      const res = await api.importarFotosRede()
+      const res = await api.importarFotosRede(protocolos)
       if (!res?.ok) {
         alert('Não consegui importar as fotos.\n\n' + (res?.error ?? 'erro desconhecido'))
         return
@@ -1451,10 +1492,12 @@ export default function AgendaPage() {
         `Protocolos verificados: ${res.processados}`,
         `Fotos importadas: ${res.copiados}`,
       ]
+      if (res.jaTinha?.length)   linhas.push(`\nJá tinham fotos suficientes (${res.jaTinha.length}): ${res.jaTinha.join(', ')}`)
       if (res.semPasta?.length) linhas.push(`\nSem pasta na Iluminação (${res.semPasta.length}): ${res.semPasta.join(', ')}`)
       if (res.semFotos?.length) linhas.push(`\nPasta achada mas sem fotos (${res.semFotos.length}): ${res.semFotos.join(', ')}`)
       if (res.erros?.length) linhas.push(`\nErros (${res.erros.length}): ${res.erros.join('; ')}`)
       alert(linhas.join('\n'))
+      setSelFotos([])
     } catch (e: any) {
       alert('Não consegui importar as fotos.\n\n' + (e?.message ?? String(e)))
     } finally {
@@ -1487,15 +1530,16 @@ export default function AgendaPage() {
     }
   }
 
-  // "Verificar PDFs": varre a pasta da EUT dos itens sem assinatura registrada
-  // e marca como concluído quem já tiver PDF assinado por lá — sem precisar
-  // abrir cada relatório e clicar "Assinado" manualmente.
+  // "Verificar PDFs": varre a pasta da EUT dos itens "Em andamento" (com N° de
+  // relatório mas ainda não reconhecidos como emitidos) e marca como concluído
+  // quem já tiver o PDF do relatório por lá — não precisa estar assinado
+  // digitalmente, só ter o N° do relatório no nome do arquivo.
   async function verificarPdfs() {
     const api = (window as any).electronAPI
     if (!api?.verificarPdfsAgenda) { alert('Disponível apenas no aplicativo.'); return }
     const norm = (v?: string) => (v || '').trim().toLowerCase()
-    const alvo = agenda.filter(a => !a.assinadoEm && (a.numRelatorio || a.protocolo))
-    if (!alvo.length) { alert('Nenhum item pendente de verificação.'); return }
+    const alvo = agenda.filter(a => !estaEmitido(a) && a.numRelatorio)
+    if (!alvo.length) { alert('Nenhum item "Em andamento" com N° de relatório pra verificar.'); return }
     setVerificandoPdfs(true)
     try {
       const itens = alvo.map(a => {
@@ -1510,10 +1554,53 @@ export default function AgendaPage() {
       })
       const res = await api.verificarPdfsAgenda(itens)
       if (!res?.ok) { alert('Não consegui verificar os PDFs.'); return }
-      if (!res.atualizados?.length) { alert('Nenhum PDF assinado novo encontrado.'); return }
-      const mapa = new Map(res.atualizados.map((r: { id: string; assinadoEm: string }) => [r.id, r.assinadoEm]))
-      saveAgenda(agenda.map(a => mapa.has(a.id) ? { ...a, assinadoEm: mapa.get(a.id) as string } : a))
-      alert(`${res.atualizados.length} relatório(s) marcado(s) como concluído(s) — PDF assinado encontrado na pasta.`)
+      type Atualizado = { id: string; assinadoEm: string; protocolo: string; numRelatorio: string; arquivo: string; eutFolderPath?: string }
+      const lista: Atualizado[] = res.atualizados ?? []
+      if (!lista.length) { alert('Nenhum PDF novo encontrado pros itens "Em andamento".'); return }
+      const mapa = new Map(lista.map(r => [r.id, r.assinadoEm]))
+      const novaAgenda = agenda.map(a => mapa.has(a.id) ? { ...a, assinadoEm: mapa.get(a.id) as string } : a)
+      saveAgenda(novaAgenda)
+
+      // O item só sai de "Em andamento" quando o N° de relatório existe de fato
+      // na aba Relatórios (estaEmitido). Como o PDF achado na pasta É a prova
+      // de que o relatório foi emitido, cria aqui um registro mínimo pra cada
+      // um que ainda não existir lá — senão o item marcado como concluído
+      // continuaria preso em "Em andamento" mesmo com assinadoEm preenchido.
+      const jaExistem = new Set(relatorios.map(r => norm(r.numRelatorio)))
+      const novosRelatorios: RelatorioSalvo[] = lista
+        .filter(r => !jaExistem.has(norm(r.numRelatorio)))
+        .map(r => {
+          const item = novaAgenda.find(a => a.id === r.id)!
+          const cfg: Cispr15Config = {
+            tipo: item.tipo, tensaoConfig: '127_220',
+            cliente: item.cliente, clienteRua: item.clienteRua ?? '', clienteCidade: item.clienteCidade ?? '', clienteCep: item.clienteCep ?? '',
+            produto: item.produto, fabricante: item.fabricante ?? '', modelo: item.modelo ?? '', identificador: item.identificador ?? '',
+            lacre: item.lacre ?? '', tensaoAlim: item.tensaoAlim ?? '', potencia: item.potencia ?? '', frequencia: item.frequencia ?? '60Hz',
+            temDriver: item.temDriver, driverProduto: item.driverProduto, driverFabricante: item.driverFabricante, driverModelo: item.driverModelo,
+            driverIdentificador: item.driverIdentificador, driverPotencia: item.driverPotencia, driverTensaoAlim: item.driverTensaoAlim,
+            driverFrequencia: item.driverFrequencia, driverOrcamento: item.driverOrcamento, driverProtocolo: item.driverProtocolo,
+            documentacao: item.documentacao ?? 'embalagem com especificações', numRelatorio: r.numRelatorio,
+            orcamento: item.orcamento, protocolo: item.protocolo,
+            periodoInicio: item.dataEntrada || today(), periodoFim: r.assinadoEm, dataEmissao: r.assinadoEm,
+            responsavel: item.responsavel, resultadoConduzida: 'pass', resultadoLoop: 'pass', resultadoAnexoB: 'pass',
+          }
+          return {
+            id: crypto.randomUUID(), numRelatorio: r.numRelatorio, dataEmissao: r.assinadoEm,
+            clienteNome: item.cliente, protocolo: item.protocolo, produto: item.produto,
+            cfg, photos: [], docxFilename: null, emendas: [],
+            eutFolderPath: r.eutFolderPath,
+          }
+        })
+      if (novosRelatorios.length) {
+        // Um upsert por relatório novo, em vez de reenviar a lista inteira: se
+        // `relatorios` estiver desatualizado, o que falta nele não é mais
+        // apagado do arquivo compartilhado.
+        for (const novo of novosRelatorios) await salvarRelatorio(novo)
+        setRelatorios(await carregarRelatorios())
+      }
+
+      const detalhe = lista.map(r => `${r.protocolo || '—'} · ${r.numRelatorio} — ${r.arquivo}`).join('\n')
+      alert(`${lista.length} relatório(s) marcado(s) como concluído(s):\n\n${detalhe}`)
     } catch (e: any) {
       alert('Erro ao verificar PDFs.\n\n' + (e?.message ?? String(e)))
     } finally {
@@ -1522,17 +1609,7 @@ export default function AgendaPage() {
   }
 
   async function loadRelatorios() {
-    const api = (window as any).electronAPI
-    if (api) {
-      try {
-        const res = await api.getRelatorios()
-        if (res.ok && Array.isArray(res.relatorios)) { setRelatorios(res.relatorios); return }
-      } catch {}
-    }
-    try {
-      const raw = localStorage.getItem(RELATORIOS_KEY)
-      if (raw) setRelatorios(JSON.parse(raw))
-    } catch {}
+    setRelatorios(await carregarRelatorios())
   }
 
   async function loadClientes() {
@@ -1584,7 +1661,7 @@ export default function AgendaPage() {
     if (!updateInfo) return
     setUpdating(true)
     const api = (window as any).electronAPI
-    const res = await api.installUpdate(updateInfo.installer)
+    const res = await api.installUpdate({ installer: updateInfo.installer, zip: updateInfo.zip, version: updateInfo.version })
     if (!res.ok) { alert('Erro ao instalar atualização: ' + res.error); setUpdating(false) }
   }
 
@@ -1748,6 +1825,10 @@ export default function AgendaPage() {
       amostras,
     }
     localStorage.setItem(LOTE_KEY, JSON.stringify(lote))
+    // A tela do lote lê o IndexedDB primeiro (é lá que cabem as fotos). Sem
+    // gravar o lote novo aqui também, um lote anterior ainda no IDB seria
+    // aberto no lugar deste.
+    await salvarValor(LOTE_KEY, lote)
     if (api?.getLotes && api?.saveLotes) {
       try {
         const res = await api.getLotes()
@@ -2067,6 +2148,19 @@ export default function AgendaPage() {
       {/* ── ABA AGENDA ── */}
       {tab === 'agenda' && (
         <div className="space-y-3">
+          {agendaCorrompida && (
+            <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-red-500/30 bg-red-500/8">
+              <AlertTriangle size={13} className="text-red-400 shrink-0 mt-0.5" />
+              <div className="text-[11px] leading-relaxed">
+                <p className="text-red-300 font-semibold">Agenda não pôde ser lida do disco.</p>
+                <p className="text-white/50">
+                  O arquivo existe mas está ilegível (e o <span className="font-mono">.bak</span> também).
+                  A lista abaixo está vazia por causa disso — <strong className="text-white/70">não é o conteúdo real</strong>.
+                  A gravação está bloqueada para não apagar os dados. Restaure o arquivo antes de continuar.
+                </p>
+              </div>
+            </div>
+          )}
           {/* Toolbar */}
           <div className="flex items-center gap-2 flex-wrap">
             <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8">
@@ -2121,11 +2215,18 @@ export default function AgendaPage() {
 
             <div className="flex-1" />
             <span className="text-[10px] text-white/25 font-mono">{filteredItems.length} item(s)</span>
+            {selFotos.length > 0 && (
+              <button type="button" onClick={() => setSelFotos([])}
+                className="text-[10px] text-white/35 hover:text-white/70 font-mono px-1.5 py-1 rounded transition-all">
+                {selFotos.length} selecionado(s) <X size={9} className="inline -mt-0.5" />
+              </button>
+            )}
             {isElectron && (
               <button type="button" onClick={importarFotosRede} disabled={importandoFotos}
+                title={selFotos.length ? `Importa fotos só dos ${selFotos.length} protocolo(s) marcado(s)` : 'Importa fotos dos protocolos "Em andamento" (marque itens pra restringir)'}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
                 {importandoFotos ? <Loader2 size={11} className="animate-spin" /> : <FolderOpen size={11} />}
-                {importandoFotos ? 'Importando...' : 'Importar Fotos'}
+                {importandoFotos ? 'Importando...' : selFotos.length ? `Importar Fotos (${selFotos.length})` : 'Importar Fotos'}
               </button>
             )}
             {isElectron && (
@@ -2137,7 +2238,7 @@ export default function AgendaPage() {
             )}
             {isElectron && (
               <button type="button" onClick={verificarPdfs} disabled={verificandoPdfs}
-                title="Procura, na pasta da EUT de cada item pendente, um PDF já assinado — e marca como concluído automaticamente"
+                title="Procura, na pasta da EUT de cada item com N° de relatório mas sem assinatura registrada, o PDF do relatório — e marca como concluído automaticamente"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
                 {verificandoPdfs ? <Loader2 size={11} className="animate-spin" /> : <RefreshCw size={11} />}
                 {verificandoPdfs ? 'Verificando...' : 'Verificar PDFs'}
@@ -2190,6 +2291,22 @@ export default function AgendaPage() {
                     className="flex flex-col px-3 py-1.5 rounded-lg bg-white/[0.025] border border-white/[0.07] border-l-2 hover:bg-white/[0.04] transition-all group"
                   >
                     <div className="flex items-center gap-2">
+                      {/* seleção p/ Importar Fotos — só em item "Em andamento".
+                          Checkbox nativo some no tema escuro (o reset global zera
+                          appearance/background dos inputs), então é botão próprio. */}
+                      {!isConcluido ? (
+                        <button type="button" onClick={() => toggleSelFoto(item.id)}
+                          title="Marcar para importar as fotos deste protocolo"
+                          className={cn(
+                            'w-3.5 h-3.5 rounded-[3px] border flex items-center justify-center shrink-0 transition-all',
+                            selFotos.includes(item.id)
+                              ? 'bg-teal border-teal text-[#0B0E14]'
+                              : 'border-white/20 hover:border-teal/60',
+                          )}>
+                          {selFotos.includes(item.id) && <Check size={9} strokeWidth={3.5} />}
+                        </button>
+                      ) : <span className="w-3.5 shrink-0" />}
+
                       {/* tipo */}
                       <div className={cn('shrink-0', item.tipo === 'lampada' ? 'text-yellow-400/60' : 'text-blue-400/60')}>
                         {item.tipo === 'lampada' ? <Lightbulb size={11} /> : <Lamp size={11} />}

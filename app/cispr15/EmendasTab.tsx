@@ -1,9 +1,9 @@
 'use client'
 
 import { useState } from 'react'
-import { History, ChevronDown, ChevronUp, Trash2 } from 'lucide-react'
+import { History, ChevronDown, ChevronUp, Trash2, FileText } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { type RelatorioSalvo, formatEmendaNumero } from './types'
+import { type RelatorioSalvo, formatEmendaNumero, ehEmenda, emendasDoRelatorio } from './types'
 
 function fmtDate(iso: string) {
   if (!iso) return '—'
@@ -13,6 +13,9 @@ function fmtDate(iso: string) {
 interface Props {
   relatorios: RelatorioSalvo[]
   onCarregarRelatorio: (r: RelatorioSalvo) => void
+  /* Abre o PDF DA EMENDA (não o do relatório base): com a numeração da emenda,
+     a frase "Cancela e Substitui" e a página de histórico de alterações. */
+  onVerPDF: (r: RelatorioSalvo, emendaNum: number) => void
   onDeleteEmenda: (relatorioId: string, emendaNum: number) => void
 }
 
@@ -24,19 +27,28 @@ interface EmendaFlat {
   alteracoes: { marker: number; campo: string; descricao: string }[]
 }
 
-export function EmendasTab({ relatorios, onCarregarRelatorio, onDeleteEmenda }: Props) {
+export function EmendasTab({ relatorios, onCarregarRelatorio, onVerPDF, onDeleteEmenda }: Props) {
   const [busca,    setBusca]    = useState('')
   const [expanded, setExpanded] = useState<string | null>(null)
 
-  const todasEmendas: EmendaFlat[] = relatorios.flatMap(r =>
-    (r.emendas ?? []).map(e => ({
-      relatorio: r,
-      numero: e.numero,
-      dataEmenda: e.dataEmenda,
-      numFormatado: formatEmendaNumero(r.numRelatorio, e.numero),
-      alteracoes: e.alteracoes,
-    }))
-  ).sort((a, b) => b.dataEmenda.localeCompare(a.dataEmenda))
+  /* Percorre só os relatórios de ORIGEM (um registro-emenda não tem emendas
+     próprias) e pega as emendas nos dois formatos — registro novo e aninhada
+     antiga — pelo helper único de types.ts. */
+  const todasEmendas: EmendaFlat[] = relatorios
+    .filter(r => !ehEmenda(r))
+    .flatMap(r =>
+      emendasDoRelatorio(relatorios, r).map(e => ({
+        relatorio: r,
+        numero: e.numero,
+        dataEmenda: e.dataEmenda,
+        numFormatado: formatEmendaNumero(r.numRelatorio, e.numero, r.cfg?.foraDaRbc),
+        alteracoes: e.alteracoes,
+      }))
+    )
+    .sort((a, b) => b.dataEmenda.localeCompare(a.dataEmenda))
+
+  const origensComEmenda = relatorios
+    .filter(r => !ehEmenda(r) && emendasDoRelatorio(relatorios, r).length > 0).length
 
   const filtradas = busca.trim()
     ? todasEmendas.filter(e =>
@@ -70,7 +82,7 @@ export function EmendasTab({ relatorios, onCarregarRelatorio, onDeleteEmenda }: 
 
       <p className="text-[10px] text-white/25 font-mono">
         {filtradas.length} emenda{filtradas.length !== 1 ? 's' : ''} encontrada{filtradas.length !== 1 ? 's' : ''}
-        {' '}em {relatorios.filter(r => r.emendas.length > 0).length} relatório{relatorios.filter(r => r.emendas.length > 0).length !== 1 ? 's' : ''}
+        {' '}em {origensComEmenda} relatório{origensComEmenda !== 1 ? 's' : ''}
       </p>
 
       {filtradas.length === 0 ? (
@@ -108,6 +120,12 @@ export function EmendasTab({ relatorios, onCarregarRelatorio, onDeleteEmenda }: 
                     </p>
                   </div>
                   <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      onClick={() => onVerPDF(e.relatorio, e.numero)}
+                      title={`Visualizar o PDF da emenda ${e.numFormatado}`}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-gold/8 border border-gold/25 text-gold text-[11px] font-semibold hover:bg-gold/15 transition-all">
+                      <FileText size={11} /> Ver PDF
+                    </button>
                     <button
                       onClick={() => onCarregarRelatorio(e.relatorio)}
                       title="Carregar relatório original no formulário"

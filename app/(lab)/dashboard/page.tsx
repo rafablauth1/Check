@@ -173,7 +173,8 @@ export default function DashboardPage() {
   const emendaStats = useMemo(() => {
     let totalEmendas = 0, comEmenda = 0
     for (const r of relatoriosAno) {
-      const n = r.emendas?.length ?? 0
+      // Conta emenda aninhada (formato antigo) e registro-emenda (novo).
+      const n = (r.emendas?.length ?? 0) + relatoriosAno.filter(x => x.emendaDe === r.id).length
       totalEmendas += n
       if (n > 0) comEmenda++
     }

@@ -39,14 +39,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getClientes:     ()          => ipcRenderer.invoke('data:get-clientes'),
   saveClientes:    (clientes)  => ipcRenderer.invoke('data:save-clientes',    { clientes }),
   getRelatorios:   ()          => ipcRenderer.invoke('data:get-relatorios'),
-  saveRelatorios:  (relatorios) => ipcRenderer.invoke('data:save-relatorios', { relatorios }),
+  /* saveRelatorios (a lista inteira) foi REMOVIDO de propósito. Era o parâmetro
+     por onde um cache truncado do localStorage apagava relatórios do arquivo
+     compartilhado: 48→32 em 09/09/2026 e 51→34 em 11/09/2026. Não estando
+     exposto aqui, o renderer não tem como mandar uma lista curta — o handler
+     'data:save-relatorios' continua no main, mas fora do alcance das telas.
+     Gravação de relatório é por INTENÇÃO: */
+  upsertRelatorio:  (relatorio) => ipcRenderer.invoke('data:upsert-relatorio', { relatorio }),
+  removerRelatorio: (id)        => ipcRenderer.invoke('data:remove-relatorio', { id }),
   saveRelatorioAssets: (id, photos, docxHtml) => ipcRenderer.invoke('data:save-relatorio-assets', { id, photos, docxHtml }),
   getRelatorioAssets:  (id)    => ipcRenderer.invoke('data:get-relatorio-assets',    { id }),
   deleteRelatorioAssets: (id)  => ipcRenderer.invoke('data:delete-relatorio-assets', { id }),
   exportRelatorioFiles: (folderPath, numRelatorio, photos, docxHtml, docxName) => ipcRenderer.invoke('relatorio:export-files', { folderPath, numRelatorio, photos, docxHtml, docxName }),
   getAgenda:       ()          => ipcRenderer.invoke('data:get-agenda'),
   saveAgenda:      (agenda)    => ipcRenderer.invoke('data:save-agenda',      { agenda }),
-  importarFotosRede: ()        => ipcRenderer.invoke('agenda:importar-fotos-rede'),
+  importarFotosRede: (protocolos) => ipcRenderer.invoke('agenda:importar-fotos-rede', { protocolos }),
   organizarResultados: ()      => ipcRenderer.invoke('agenda:organizar-resultados'),
 
   // Lotes em andamento (coleção, na pasta de rede — dataFolder)
@@ -84,6 +91,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   gitPush:         (message) => ipcRenderer.invoke('check:git-push', { message }),
   browsePDF:       ()      => ipcRenderer.invoke('settings:browse-pdf'),
   focusWindow:     ()      => ipcRenderer.invoke('window:focus'),
+  // Diagnóstico: a tela avisa quando ficou travada (ver o vigia em app/layout.tsx)
+  reportarTravamentoTela: (dados) => ipcRenderer.invoke('diag:travou-tela', dados),
 
   // Eventos do menu
   onMenuSalvarPDF:    (cb) => ipcRenderer.on('menu:salvar-pdf',     () => cb()),
@@ -105,7 +114,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Auto-update
   checkUpdate:    ()          => ipcRenderer.invoke('update:check'),
-  installUpdate:  (installer) => ipcRenderer.invoke('update:install', { installer }),
+  // Manda zip E instalador: o main prefere o zip (troca de arquivos por
+  // robocopy, sem UAC) e cai no instalador só se não houver zip publicado.
+  installUpdate:  (info) => ipcRenderer.invoke('update:install', info),
 
   // Assinatura digital (Windows Certificate Store)
   listCerts:      ()                             => ipcRenderer.invoke('pdf:list-certs'),
@@ -113,5 +124,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Assinatura digital via arquivo .pfx (sem importar no Windows)
   pickPfx:        ()                             => ipcRenderer.invoke('pdf:pick-pfx'),
   validatePfx:    (pfxPath, password)            => ipcRenderer.invoke('pdf:validate-pfx', { pfxPath, password }),
+  // A senha do .pfx não é gravada em disco: vive só no processo principal
+  // enquanto o app estiver aberto. Aqui só se INFORMA (ou limpa) — nunca se lê.
+  setPfxPassword: (password)                     => ipcRenderer.invoke('pdf:set-pfx-password', { password }),
 
 })

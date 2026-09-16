@@ -1,8 +1,10 @@
 'use client'
 
+import { useEffect } from 'react'
 import { usePathname } from 'next/navigation'
 import LabSidebar from '@/components/LabSidebar'
 import { TitleBar } from '@/app/TitleBar'
+import { migrarDocxLegado } from '@/lib/cispr15/photo-store'
 
 /* ── Mapa de rotas → título da página ─────────────────────────── */
 function getPageTitle(pathname: string): string {
@@ -74,6 +76,14 @@ function InnerTopbar() {
 
 /* ── Layout raiz ──────────────────────────────────────────────── */
 export function RootClientLayout({ children }: { children: React.ReactNode }) {
+  /* Esvazia as chaves de .docx que ficaram no localStorage (5 a 10 MB cada).
+     Fica AQUI, e não na tela de relatórios, porque o app abre em /dashboard: se
+     a limpeza dependesse de entrar no CISPR 15, a cota seguiria estourada em
+     quem não entrasse — e com a cota cheia TODA escrita local falha calada, o
+     cache do índice congela truncado e vira gravação curta na rede. É
+     idempotente: sem chaves legadas, não faz nada. */
+  useEffect(() => { void migrarDocxLegado() }, [])
+
   return (
     <div className="flex flex-col h-screen overflow-hidden">
       <TitleBar />

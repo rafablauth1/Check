@@ -3,7 +3,9 @@
 import { useState, useEffect, useRef } from 'react'
 import { useParams, useRouter } from 'next/navigation'
 import { ArrowLeft, FileText, Pencil, Plus, Trash2, Save, X, Check } from 'lucide-react'
-import type { Norma, TabelaLimites, SecaoNorma, LinhaTabela, EquipamentoNecessario } from '@/lib/normas/tipos'
+import type { Norma, TabelaLimites, SecaoNorma, LinhaTabela, EquipamentoNecessario, Ensaio } from '@/lib/normas/tipos'
+import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
+import type { AparelhoAuxiliar } from '@/lib/auxiliares/tipos'
 import type { GrupoId } from '@/lib/equipamentos/tipos'
 
 function TipoBadge({ tipo }: { tipo: string }) {
@@ -52,13 +54,80 @@ export default function NormaDetalhePage() {
   const [draft,    setDraft]    = useState<Norma | null>(null)
   const [pdfUrl,   setPdfUrl]   = useState<string | null>(null)
   const [saving,   setSaving]   = useState(false)
+  // Cadastro de equipamentos: alimenta o seletor de padrões dos ensaios e a
+  // lista impressa. Guardado por id, que é como o vínculo é gravado.
+  const [equips,   setEquips]   = useState<EquipamentoEMC[]>([])
+  // Aparelhos auxiliares vivem em cadastro próprio (ver lib/auxiliares/tipos.ts).
+  const [auxiliares, setAuxiliares] = useState<AparelhoAuxiliar[]>([])
+  const [buscaEq,  setBuscaEq]  = useState<Record<string, string>>({})  // ensaioId → texto digitado
 
   useEffect(() => {
     fetch(`/api/normas/${id}`).then(r => r.json()).then(n => {
       if (!n.error) { setNorma(n); setDraft(JSON.parse(JSON.stringify(n))) }
     })
+    fetch('/api/equipamentos').then(r => r.json())
+      .then(e => setEquips(Array.isArray(e) ? e : [])).catch(() => {})
+    fetch('/api/auxiliares').then(r => r.json())
+      .then(a => setAuxiliares(Array.isArray(a) ? a : [])).catch(() => {})
     return () => { if (pdfUrl) URL.revokeObjectURL(pdfUrl) }
   }, [id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  /* ── Ensaios ──────────────────────────────────────────────────────────────
+     Os padrões entram/saem por ID do equipamento (ver lib/normas/tipos.ts): a
+     TAG é editável e o vínculo tem que sobreviver a renomeações. */
+  type CampoEquip = 'equipamentoIds' | 'auxiliaresIds'
+
+  function addEnsaio() {
+    const e: Ensaio = { id: uid(), nome: 'Novo ensaio', codigo: '', equipamentoIds: [], auxiliaresIds: [] }
+    setDraft(prev => prev ? { ...prev, ensaios: [...(prev.ensaios ?? []), e] } : prev)
+  }
+  /* Adicionar ensaio SEM precisar achar o botão "Editar" antes: entra no modo
+     de edição e já cria a linha. O botão só existia dentro da edição, e por
+     isso passava despercebido. */
+  function novoEnsaio() {
+    if (!editMode) startEdit()
+    addEnsaio()
+  }
+  function updateEnsaio(ei: number, e: Ensaio) {
+    setDraft(prev => { if (!prev) return prev; const es = [...(prev.ensaios ?? [])]; es[ei] = e; return { ...prev, ensaios: es } })
+  }
+  function removeEnsaio(ei: number) {
+    setDraft(prev => { if (!prev) return prev; const es = [...(prev.ensaios ?? [])]; es.splice(ei, 1); return { ...prev, ensaios: es } })
+  }
+  /* Vincula/desvincula um equipamento numa das duas listas do ensaio (padrões
+     ou auxiliares). Uma função só para as duas: a regra é idêntica, muda o
+     campo — e duplicar isso seria a forma mais fácil de as duas divergirem. */
+  function toggleEquip(ei: number, equipId: string, campo: CampoEquip) {
+    setDraft(prev => {
+      if (!prev) return prev
+      const es = [...(prev.ensaios ?? [])]
+      const alvo = es[ei]; if (!alvo) return prev
+      const atuais = alvo[campo] ?? []
+      const tem = atuais.includes(equipId)
+      es[ei] = { ...alvo, [campo]: tem ? atuais.filter(x => x !== equipId) : [...atuais, equipId] }
+      return { ...prev, ensaios: es }
+    })
+  }
+  /* Resolve um id vinculado nos DOIS cadastros: padrões vêm de equipamentos,
+     auxiliares podem vir do cadastro de auxiliares OU de equipamentos (há
+     equipamento calibrado que às vezes entra como auxiliar). Procurar só em
+     equipamentos faria todo auxiliar do cadastro novo aparecer como "removido". */
+  const itemPorId = (eid: string): { tag: string; nome: string } | undefined => {
+    const eq = equips.find(e => e.id === eid)
+    if (eq) return { tag: eq.tag, nome: eq.nome }
+    const ax = auxiliares.find(a => a.id === eid)
+    return ax ? { tag: ax.tag, nome: ax.nome } : undefined
+  }
+
+  /* Onde cada lista procura ao vincular: padrão só pode ser equipamento
+     calibrado; auxiliar pode ser acessório ou equipamento. */
+  const poolDe = (campo: CampoEquip): { id: string; tag: string; nome: string }[] =>
+    campo === 'equipamentoIds'
+      ? equips.map(e => ({ id: e.id, tag: e.tag, nome: e.nome }))
+      : [
+          ...auxiliares.map(a => ({ id: a.id, tag: a.tag, nome: a.nome })),
+          ...equips.map(e => ({ id: e.id, tag: e.tag, nome: e.nome })),
+        ]
 
   function startEdit() { setDraft(JSON.parse(JSON.stringify(norma))); setEditMode(true) }
   function cancelEdit() { setDraft(JSON.parse(JSON.stringify(norma))); setEditMode(false) }
@@ -140,6 +209,87 @@ export default function NormaDetalhePage() {
     setDraft(prev => { if (!prev) return prev; const es = [...prev.equipamentosNecessarios]; es.splice(ei,1); return { ...prev, equipamentosNecessarios: es } })
   }
 
+  /* Lista de padrões por ensaio, no mesmo formato do quadro que o laboratório
+     já usa: uma coluna por ensaio, os padrões embaixo. Reaproveita o gerador de
+     PDF do follow-up da agenda (pdf:followup) em vez de abrir outro caminho de
+     impressão; fora do Electron cai numa janela com window.print(). */
+  function gerarListaDePadroes() {
+    // Padrões primeiro, auxiliares depois e marcados: quem lê o quadro precisa
+    // distinguir o que dá rastreabilidade do que só compõe a montagem.
+    const itensDoEnsaio = (e: { equipamentoIds: string[]; auxiliaresIds?: string[] }) => [
+      ...e.equipamentoIds.map(id => ({ id, aux: false })),
+      ...(e.auxiliaresIds ?? []).map(id => ({ id, aux: true })),
+    ]
+    const lista = (norma?.ensaios ?? []).filter(e => e.nome.trim() || itensDoEnsaio(e).length)
+    if (!lista.length) { alert('Nenhum ensaio cadastrado nesta norma.'); return }
+
+    const NAVY = '#1B2A4A'
+    const agora = new Date()
+    const dataLabel = agora.toLocaleDateString('pt-BR')
+    const linhas = Math.max(...lista.map(e => itensDoEnsaio(e).length), 1)
+
+    const celula = (ensaioIdx: number, linha: number) => {
+      const item = itensDoEnsaio(lista[ensaioIdx])[linha]
+      if (!item) return '<td></td>'
+      const eq = itemPorId(item.id)
+      // Vinculado que não existe mais no cadastro: sinaliza em vez de sumir da
+      // lista sem explicação.
+      if (!eq) return `<td class="falta">(equipamento removido)</td>`
+      return `<td class="${item.aux ? 'aux' : ''}"><span class="tag">${eq.tag}${item.aux ? '<em> aux.</em>' : ''}</span><span class="nm">${(eq.nome || '').slice(0, 42)}</span></td>`
+    }
+
+    const corpo = Array.from({ length: linhas }, (_, l) =>
+      `<tr class="${l % 2 ? 'alt' : ''}">${lista.map((_, i) => celula(i, l)).join('')}</tr>`).join('')
+
+    const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<title>Padrões de Ensaio — ${norma?.codigo ?? ''}</title>
+<style>
+body{font-family:Arial,Helvetica,sans-serif;color:#222;padding:18px}
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid ${NAVY};padding-bottom:10px;margin-bottom:16px}
+h1{font-size:17px;color:${NAVY};margin:0}
+.sub{font-size:11px;color:#666;margin-top:3px}
+.lab{font-size:11px;font-weight:bold;color:${NAVY};text-align:right}
+.dt{font-size:10px;color:#888;text-align:right}
+table{width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed}
+thead th{background:#BFD3E6;color:${NAVY};border:1px solid #7A9CC0;padding:7px 6px;font-size:10px;font-weight:bold;text-transform:uppercase;letter-spacing:.02em}
+thead th .cod{display:block;font-weight:normal;font-size:9px;color:#33506F;margin-top:2px}
+tbody td{border:1px solid #9DB6D0;padding:5px 6px;vertical-align:top;height:20px}
+tbody tr.alt{background:#F2F6FA}
+.tag{display:block;font-family:monospace;font-weight:bold;font-size:11px;color:${NAVY}}
+.nm{display:block;font-size:9px;color:#667;margin-top:1px}
+.falta{color:#B91C1C;font-size:10px;font-style:italic}
+td.aux{background:#FBF7EC}
+td.aux .tag{color:#8A6D1F}
+td.aux .tag em{font-style:normal;font-weight:normal;font-size:8px;letter-spacing:.04em;text-transform:uppercase;color:#A8894A}
+.footer{margin-top:22px;padding-top:8px;border-top:1px solid #e5e7eb;display:flex;justify-content:space-between;font-size:9px;color:#aaa}
+@media print{body{padding:0}@page{size:A4 landscape;margin:10mm 12mm}}
+</style></head>
+<body>
+<div class="hdr">
+  <div><h1>Padrões de Ensaio</h1><div class="sub">${norma?.codigo ?? ''}${norma?.titulo ? ' · ' + norma.titulo : ''}</div></div>
+  <div><div class="lab">LABELO · PUCRS</div><div class="dt">${dataLabel}</div></div>
+</div>
+<table>
+  <thead><tr>${lista.map(e => `<th>${e.nome}${e.codigo ? `<span class="cod">${e.codigo}</span>` : ''}</th>`).join('')}</tr></thead>
+  <tbody>${corpo}</tbody>
+</table>
+<div class="footer"><span>Gerado em ${agora.toLocaleString('pt-BR')}</span><span>Documento interno · LABELO PUCRS</span></div>
+</body></html>`
+
+    const nomeArq = `Padroes de Ensaio ${(norma?.codigo ?? 'norma').replace(/[/\\:"*?<>|]/g, '-')} ${agora.toISOString().split('T')[0]}.pdf`
+    const api = (window as unknown as { electronAPI?: { saveFollowupPdf?: (h: string, f: string, l: boolean) => Promise<{ ok: boolean; error?: string }> } }).electronAPI
+    if (api?.saveFollowupPdf) {
+      api.saveFollowupPdf(html, nomeArq, true)
+        .then(res => { if (!res.ok) alert('Erro ao gerar PDF: ' + res.error) })
+        .catch((e: unknown) => alert('Erro ao gerar PDF: ' + String(e)))
+      return
+    }
+    const win = window.open('', '_blank')
+    if (!win) return
+    win.document.write(html); win.document.close()
+    setTimeout(() => { win.print(); win.addEventListener('afterprint', () => win.close(), { once: true }) }, 400)
+  }
+
   if (!norma) return <div className="flex items-center justify-center py-20 text-white/25 text-sm">Carregando...</div>
 
   const d = editMode && draft ? draft : norma
@@ -176,7 +326,12 @@ export default function NormaDetalhePage() {
               <button onClick={salvar} disabled={saving} className="btn-primary"><Save size={13}/> {saving ? 'Salvando…' : 'Salvar'}</button>
             </>
           ) : (
-            <button onClick={startEdit} className="btn-secondary"><Pencil size={13}/> Editar</button>
+            <>
+              <button onClick={gerarListaDePadroes} className="btn-ghost" title="Gera o quadro de padrões por ensaio em PDF">
+                <FileText size={13}/> Lista de padrões
+              </button>
+              <button onClick={startEdit} className="btn-secondary"><Pencil size={13}/> Editar</button>
+            </>
           )}
         </div>
       </div>
@@ -395,6 +550,119 @@ export default function NormaDetalhePage() {
               )}
             </div>
           ))}
+        </div>
+      </div>
+
+      {/* Ensaios da norma + padrões de cada um */}
+      <div className="mt-6">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display font-semibold text-[13px] text-white/60 uppercase tracking-widest">
+            Ensaios e padrões
+          </h2>
+          <button className="btn-ghost text-xs" onClick={novoEnsaio}><Plus size={11}/> Novo ensaio</button>
+        </div>
+
+        {(d.ensaios ?? []).length === 0 && (
+          <div className="card p-6 text-center text-white/25 text-sm">
+            Nenhum ensaio cadastrado. Clique em &quot;+ Novo ensaio&quot; para adicionar.
+          </div>
+        )}
+
+        <div className="space-y-2">
+          {(d.ensaios ?? []).map((en, ei) => {
+            /* Uma lista de equipamentos do ensaio (padrões ou auxiliares).
+               As duas se comportam igual — mudam o campo, a cor e o rótulo —,
+               então são o mesmo bloco parametrizado. */
+            const bloco = (campo: CampoEquip, titulo: string, cor: string, vazio: string, dica: string) => {
+              const ids = en[campo] ?? []
+              const chave = `${en.id}:${campo}`
+              const termo = (buscaEq[chave] ?? '').trim().toLowerCase()
+              // Não sugere quem já está em QUALQUER uma das duas listas: o mesmo
+              // equipamento ser padrão e auxiliar do mesmo ensaio é contradição.
+              const jaUsados = new Set([...(en.equipamentoIds ?? []), ...(en.auxiliaresIds ?? [])])
+              const sugestoes = termo
+                ? poolDe(campo).filter(eq =>
+                    !jaUsados.has(eq.id) &&
+                    (eq.tag.toLowerCase().includes(termo) || (eq.nome || '').toLowerCase().includes(termo))
+                  ).slice(0, 8)
+                : []
+              return (
+                <div className="mt-3">
+                  <p className="text-[9px] font-mono tracking-[1.5px] uppercase text-white/30 mb-1.5">
+                    {titulo} <span className="text-white/20">({ids.length})</span>
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {ids.length === 0 && <span className="text-[10px] text-white/25">{vazio}</span>}
+                    {ids.map(eid => {
+                      const eq = itemPorId(eid)
+                      return (
+                        <span key={eid} className="badge font-mono text-[10px] flex items-center gap-1"
+                          style={{
+                            background: eq ? `${cor}24` : 'rgba(239,68,68,0.14)',
+                            color: eq ? cor : '#F87171',
+                            border: `1px solid ${eq ? cor + '66' : 'rgba(239,68,68,0.4)'}`,
+                          }}
+                          title={eq ? eq.nome : 'Equipamento não encontrado no cadastro'}>
+                          {eq ? eq.tag : '(removido)'}
+                          {editMode && (
+                            <button onClick={() => toggleEquip(ei, eid, campo)} className="hover:text-white ml-0.5"><X size={10}/></button>
+                          )}
+                        </span>
+                      )
+                    })}
+                  </div>
+                  {editMode && (
+                    <div className="mt-2">
+                      <input className="input text-[12px] py-1 w-full" placeholder={dica}
+                        value={buscaEq[chave] ?? ''}
+                        onChange={e => setBuscaEq(b => ({ ...b, [chave]: e.target.value }))}/>
+                      {sugestoes.length > 0 && (
+                        <div className="card mt-1 divide-y divide-white/5 max-h-52 overflow-y-auto">
+                          {sugestoes.map(eq => (
+                            <button key={eq.id} type="button"
+                              onClick={() => { toggleEquip(ei, eq.id, campo); setBuscaEq(b => ({ ...b, [chave]: '' })) }}
+                              className="w-full text-left px-3 py-1.5 hover:bg-white/5 flex items-center gap-2">
+                              <span className="font-mono text-[11px] text-teal">{eq.tag}</span>
+                              <span className="text-[11px] text-white/50 truncate">{eq.nome}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )
+            }
+
+            return (
+              <div key={en.id} className="card p-4">
+                <div className="flex items-center gap-2">
+                  {editMode ? (
+                    <>
+                      <input className="input text-sm py-1 w-20" placeholder="4-2" value={en.codigo}
+                        onChange={e => updateEnsaio(ei, { ...en, codigo: e.target.value })}/>
+                      <input className="input text-sm py-1 flex-1" placeholder="Nome do ensaio (ex.: ESD)" value={en.nome}
+                        onChange={e => updateEnsaio(ei, { ...en, nome: e.target.value })}/>
+                      <button className="btn-ghost p-1.5 hover:text-red-400" onClick={() => removeEnsaio(ei)}><Trash2 size={12}/></button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="font-mono font-bold text-[13px]" style={{ color: 'var(--accent,#E8B94B)' }}>{en.codigo || '—'}</span>
+                      <span className="font-semibold text-[13px] text-white">{en.nome}</span>
+                      <span className="text-[10px] text-white/30 font-mono ml-auto">
+                        {en.equipamentoIds.length} padrão(ões) · {(en.auxiliaresIds ?? []).length} auxiliar(es)
+                      </span>
+                    </>
+                  )}
+                </div>
+
+                {bloco('equipamentoIds', 'Padrões', '#2DD4BF',
+                  'Nenhum padrão vinculado.', 'Buscar padrão por TAG ou nome…')}
+                {bloco('auxiliaresIds', 'Aparelhos auxiliares', '#E8B94B',
+                  'Nenhum aparelho auxiliar vinculado.', 'Buscar aparelho auxiliar por TAG ou nome…')}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>

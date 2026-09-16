@@ -17,11 +17,30 @@ export default function TaxonomiaPage() {
   const [salvo, setSalvo] = useState(false)
   const [iconePicker, setIconePicker] = useState<string | null>(null) // tipoId aberto
 
+  // Normas cadastradas — é o que se vincula a cada área/laboratório. A lista
+  // vem da tela de Normas (fonte única); aqui só se escolhe quais pertencem ao
+  // laboratório, que é o elo que faz o filtro por ensaio funcionar.
+  const [normas, setNormas] = useState<{ id: string; codigo: string; titulo: string }[]>([])
+
   useEffect(() => {
     fetch('/api/taxonomia').then(r => r.json()).then((t: Taxonomia) => {
       setTax({ areas: t.areas ?? [], siglas: t.siglas ?? [], tipos: t.tipos ?? [] })
     }).catch(() => {}).finally(() => setCarregando(false))
+    fetch('/api/normas').then(r => r.json())
+      .then(n => setNormas(Array.isArray(n) ? n : [])).catch(() => {})
   }, [])
+
+  const toggleAreaNorma = (areaId: string, normaId: string) => {
+    setTax(t => ({
+      ...t,
+      areas: t.areas.map(a => {
+        if (a.id !== areaId) return a
+        const atuais = a.normaIds ?? []
+        return { ...a, normaIds: atuais.includes(normaId) ? atuais.filter(x => x !== normaId) : [...atuais, normaId] }
+      }),
+    }))
+    marcarAlterado()
+  }
 
   function marcarAlterado() { setSalvo(false) }
 
@@ -99,18 +118,39 @@ export default function TaxonomiaPage() {
           <div className="card divide-y divide-white/5">
             {tax.areas.length === 0 && <div className="p-6 text-center text-white/25 text-sm">Nenhuma área. Adicione uma.</div>}
             {tax.areas.map(a => (
-              <div key={a.id} className="flex items-center gap-3 p-3">
-                <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: corDe(a.cor) }}/>
-                <input className="input text-[12px] py-1 flex-1" placeholder="Nome da área (ex.: EMC)"
-                  value={a.nome} onChange={e => setArea(a.id, 'nome', e.target.value)} />
-                <div className="flex gap-1">
-                  {CORES.map(c => (
-                    <button key={c} type="button" title={c} onClick={() => setArea(a.id, 'cor', c)}
-                      className={cn('w-5 h-5 rounded-full transition-all', a.cor === c ? 'ring-2 ring-white/60 scale-110' : 'opacity-50 hover:opacity-100')}
-                      style={{ background: corDe(c) }} />
-                  ))}
+              <div key={a.id} className="p-3">
+                <div className="flex items-center gap-3">
+                  <span className="w-3 h-3 rounded-full flex-shrink-0" style={{ background: corDe(a.cor) }}/>
+                  <input className="input text-[12px] py-1 flex-1" placeholder="Nome da área (ex.: EMC)"
+                    value={a.nome} onChange={e => setArea(a.id, 'nome', e.target.value)} />
+                  <div className="flex gap-1">
+                    {CORES.map(c => (
+                      <button key={c} type="button" title={c} onClick={() => setArea(a.id, 'cor', c)}
+                        className={cn('w-5 h-5 rounded-full transition-all', a.cor === c ? 'ring-2 ring-white/60 scale-110' : 'opacity-50 hover:opacity-100')}
+                        style={{ background: corDe(c) }} />
+                    ))}
+                  </div>
+                  <button type="button" onClick={() => delArea(a.id)} className="text-white/25 hover:text-red-400 p-1"><Trash2 size={13}/></button>
                 </div>
-                <button type="button" onClick={() => delArea(a.id)} className="text-white/25 hover:text-red-400 p-1"><Trash2 size={13}/></button>
+                {/* Normas/portarias deste laboratório — fecha a cadeia
+                    área → norma → ensaio → padrões usada pelo filtro. */}
+                <div className="flex flex-wrap gap-1.5 mt-2 pl-6">
+                  <span className="text-[10px] text-white/30 self-center mr-1">Normas:</span>
+                  {normas.length === 0 && <span className="text-[10px] text-white/25">nenhuma norma cadastrada</span>}
+                  {normas.map(n => {
+                    const on = (a.normaIds ?? []).includes(n.id)
+                    return (
+                      <button key={n.id} type="button" onClick={() => toggleAreaNorma(a.id, n.id)} title={n.titulo}
+                        className="badge font-mono transition-all" style={{
+                          background: on ? `${corDe(a.cor)}28` : 'transparent',
+                          color: on ? corDe(a.cor) : 'rgba(255,255,255,0.35)',
+                          border: `1px solid ${on ? corDe(a.cor) + '66' : 'rgba(255,255,255,0.12)'}`, fontSize: 10,
+                        }}>
+                        {n.codigo}
+                      </button>
+                    )
+                  })}
+                </div>
               </div>
             ))}
           </div>

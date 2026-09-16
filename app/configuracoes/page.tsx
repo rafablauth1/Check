@@ -48,6 +48,8 @@ export default function ConfiguracoesPage() {
   const [pfxInfo,      setPfxInfo]      = useState<{ subject: string; notAfter: string } | null>(null)
   const [pfxLoading,   setPfxLoading]   = useState(false)
   const [pfxError,     setPfxError]     = useState<string | null>(null)
+  // Senha digitada, só em memória da tela — não entra em `settings`, não é salva.
+  const [pfxSenha,     setPfxSenha]     = useState('')
   const [backupStatus, setBackupStatus] = useState<{ kind: 'idle' | 'running' | 'restoring' | 'ok' | 'error'; msg: string }>({ kind: 'idle', msg: '' })
   const [backups,      setBackups]      = useState<{ name: string; date: string | null; items: string[] }[]>([])
   const [backupRoot,   setBackupRoot]   = useState('')
@@ -235,19 +237,33 @@ export default function ConfiguracoesPage() {
     }
   }
 
+  // A senha do .pfx nunca é salva: fica só nesta tela até ser validada, e daí
+  // vive no processo principal enquanto o app estiver aberto.
   async function validarPfx() {
     const api = (window as any).electronAPI
     if (!api?.validatePfx || !settings.pfxPath) return
     setPfxLoading(true); setPfxError(null); setPfxInfo(null)
     try {
-      const res = await api.validatePfx(settings.pfxPath, settings.pfxPassword)
-      if (res?.ok) setPfxInfo({ subject: res.subject, notAfter: res.notAfter })
-      else setPfxError(res?.error || 'Não foi possível abrir o .pfx (senha incorreta?).')
+      const res = await api.validatePfx(settings.pfxPath, pfxSenha)
+      if (res?.ok) {
+        setPfxInfo({ subject: res.subject, notAfter: res.notAfter })
+        setSettings(s => ({ ...s, pfxPasswordNaSessao: true }))
+        setPfxSenha('')   // some do estado da tela assim que o main assume
+      } else {
+        setPfxError(res?.error || 'Não foi possível abrir o .pfx (senha incorreta?).')
+      }
     } catch (e: any) {
       setPfxError(e.message)
     } finally {
       setPfxLoading(false)
     }
+  }
+
+  async function esquecerSenhaPfx() {
+    const api = (window as any).electronAPI
+    try { await api?.setPfxPassword?.('') } catch {}
+    setSettings(s => ({ ...s, pfxPasswordNaSessao: false }))
+    setPfxInfo(null); setPfxSenha('')
   }
 
   function restaurarPadroes() {
@@ -642,7 +658,7 @@ export default function ConfiguracoesPage() {
                       {pfxInfo?.subject || settings.pfxPath}
                     </p>
                     <button type="button"
-                      onClick={() => { setSettings(s => ({ ...s, pfxPath: '', pfxPassword: '' })); setPfxInfo(null); setPfxError(null) }}
+                      onClick={() => { setSettings(s => ({ ...s, pfxPath: '', pfxPasswordNaSessao: false })); esquecerSenhaPfx(); setPfxError(null) }}
                       className="text-[10px] text-white/30 hover:text-red-400 transition-colors shrink-0">Remover</button>
                   </div>
                 )}
@@ -657,16 +673,31 @@ export default function ConfiguracoesPage() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <input type="password" value={settings.pfxPassword ?? ''}
-                    onChange={e => { setSettings(s => ({ ...s, pfxPassword: e.target.value })); setPfxInfo(null) }}
-                    placeholder="Senha do .pfx"
-                    className="input flex-1 text-xs" />
-                  <button type="button" onClick={validarPfx} disabled={!settings.pfxPath || pfxLoading}
-                    className="px-3 py-2 rounded-lg border border-teal/30 text-teal text-xs hover:bg-teal/10 transition-all disabled:opacity-40">
-                    {pfxLoading ? 'Validando…' : 'Validar'}
-                  </button>
-                </div>
+                {settings.pfxPasswordNaSessao ? (
+                  <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-teal/8 border border-teal/20">
+                    <BadgeCheck size={12} className="text-teal shrink-0" />
+                    <p className="flex-1 text-[10px] text-teal/90">Senha informada nesta sessão</p>
+                    <button type="button" onClick={esquecerSenhaPfx}
+                      className="text-[10px] text-white/30 hover:text-red-400 transition-colors shrink-0">Esquecer</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <input type="password" value={pfxSenha}
+                      onChange={e => { setPfxSenha(e.target.value); setPfxInfo(null) }}
+                      placeholder="Senha do .pfx"
+                      autoComplete="new-password"
+                      className="input flex-1 text-xs" />
+                    <button type="button" onClick={validarPfx} disabled={!settings.pfxPath || pfxLoading}
+                      className="px-3 py-2 rounded-lg border border-teal/30 text-teal text-xs hover:bg-teal/10 transition-all disabled:opacity-40">
+                      {pfxLoading ? 'Validando…' : 'Validar'}
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-[10px] text-white/25">
+                  A senha não é gravada em disco — vale enquanto o app estiver aberto e é pedida
+                  de novo na próxima vez que você abrir.
+                </p>
 
                 {pfxInfo && (
                   <p className="text-[10px] text-teal/80 flex items-center gap-1">

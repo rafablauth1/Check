@@ -12,11 +12,13 @@ import { cn, normWatts } from '@/lib/utils'
 import { iniciarMarcadorSeAusente, finalizarMarcador, registrarTempo } from '@/lib/tempos'
 import {
   type LoteAmostra, type LoteConfig, type Cispr15Config, type RelatorioSalvo, type EquipamentoSalvo, type AgendaItem,
-  newAmostra, today, LOTE_KEY, RELATORIOS_KEY, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, EQUIPAMENTOS_KEY, RELATORIO_DOCX_PFX, AGENDA_KEY,
+  newAmostra, today, LOTE_KEY, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, EQUIPAMENTOS_KEY, AGENDA_KEY,
   AUTH_KEY, SETTINGS_KEY, docxTemFail, docxOndeFail, extrairTensaoMaxima, TENSAO_CONFIG_MAX,
   validarSecoesRadimation, docxTensoesTestadas,
 } from '../types'
-import { savePhotos } from '@/lib/cispr15/photo-store'
+import { savePhotos, salvarValor, lerValor, apagarValor, salvarAssetsLocais, lerAssetsLocais } from '@/lib/cispr15/photo-store'
+import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
+import { abrirRelatorio } from '../abrir-relatorio'
 
 const TENSAO_AMOSTRA_OPTS = [
   { value: '127' as const,         label: '127V' },
@@ -85,6 +87,16 @@ async function rotarFotoBase64(base64: string): Promise<string> {
     img.onerror = reject
     img.src = `data:image/jpeg;base64,${base64}`
   })
+}
+
+/* Esqueleto do lote: os mesmos dados, sem os anexos pesados (fotos em base64 e
+   DOCX). É o que vai pro localStorage — sem as fotos sobram poucos KB, e as
+   outras telas só leem daí a lista de amostras para contar as pendentes. */
+function semAnexos(lote: LoteConfig): LoteConfig {
+  return {
+    ...lote,
+    amostras: lote.amostras.map(a => ({ ...a, photos: [], docxHtml: null })),
+  }
 }
 
 function base64ToFile(name: string, base64: string, mime: string): File {
@@ -669,6 +681,11 @@ function LotePageInner() {
           }
         } catch {}
       }
+      // IndexedDB primeiro: é lá que mora o lote COMPLETO, com as fotos. O
+      // localStorage tem só o esqueleto, que serve de última rede de proteção
+      // (IDB indisponível, ou lote criado por uma versão anterior a esta).
+      const completo = await lerValor<LoteConfig>(LOTE_KEY)
+      if (completo) { setLote(completo); return }
       try {
         const raw = localStorage.getItem(LOTE_KEY)
         if (raw) { setLote(JSON.parse(raw)); return }
@@ -707,17 +724,16 @@ function LotePageInner() {
       allLotesRef.current = atualizados
       api.saveLotes(atualizados).catch(() => {})
     }
-    try { localStorage.setItem(LOTE_KEY, JSON.stringify(next)) }
-    catch {
-      // Quota exceeded: try saving without docxHtml (keep it only in memory)
-      try {
-        const compact = { ...next, amostras: next.amostras.map(a => ({ ...a, docxHtml: null })) }
-        localStorage.setItem(LOTE_KEY, JSON.stringify(compact))
-      } catch {
-        // No Electron a coleção acima já guardou tudo; só alerta na web
-        if (!api) alert('Armazenamento cheio — reduza o número de fotos.')
-      }
-    }
+    // O lote inteiro — várias amostras, cada uma com suas fotos em base64 —
+    // passa fácil dos ~5 MB do localStorage. Era essa gravação que estourava a
+    // cota e mandava "Armazenamento cheio — reduza o número de fotos", pedindo
+    // ao usuário que trabalhasse menos para caber no lugar errado. O fallback
+    // antigo não resolvia: tirava o docxHtml e mantinha as fotos, que são o
+    // grosso. Agora o lote completo vai pro IndexedDB (cota em centenas de MB)
+    // e o localStorage guarda só o esqueleto — que é tudo que as outras telas
+    // leem dele (a contagem de amostras pendentes).
+    void salvarValor(LOTE_KEY, next)
+    try { localStorage.setItem(LOTE_KEY, JSON.stringify(semAnexos(next))) } catch {}
   }
 
   // Atualiza a tela na hora (não trava a digitação); a gravação em disco/rede
@@ -1060,35 +1076,17 @@ function LotePageInner() {
       docxFilename: am.docxFilename,
       emendas: [],
     }
-    // Save docxHtml FIRST (before the larger list save that can push storage over quota)
-    if (am.docxHtml) {
-      try { localStorage.setItem(RELATORIO_DOCX_PFX + novo.id, am.docxHtml) } catch {}
-    }
+    // Anexos pesados no IndexedDB (deste PC) e na rede (para qualquer PC). O
+    // HTML do .docx passa de 5 MB sozinho: no localStorage ele estourava a cota
+    // e, a partir daí, TODA escrita local falhava calada — inclusive a do índice.
+    if (am.docxHtml) await salvarAssetsLocais(novo.id, { docxHtml: am.docxHtml })
+    // Grava só este relatório. A lista inteira não trafega mais — era por ela
+    // que um cache truncado apagava o trabalho feito nos outros PCs.
+    const res = await salvarRelatorio(novo)
+    if (!res.ok) alert('O relatório ' + numRelatorio + ' não foi gravado na rede: ' + (res.error ?? ''))
     const api = (window as any).electronAPI
-    let lista: RelatorioSalvo[] = []
-    if (api) {
-      try { const r = await api.getRelatorios(); if (r.ok && Array.isArray(r.relatorios)) lista = r.relatorios } catch {}
-    }
-    if (!lista.length) {
-      try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) lista = JSON.parse(raw) } catch {}
-    }
-    // For localStorage, strip photos from the list to avoid quota overflow;
-    // photos remain in LOTE_KEY so they're still accessible within the session.
-    const novoSemFotos = { ...novo, photos: [] as typeof novo.photos }
-    const listaSemFotos = [...lista, novoSemFotos]
-    if (api) {
-      try { await api.saveRelatorios(listaSemFotos) } catch {}
-      // Vincula fotos+DOCX ao relatório (assets por id) p/ reabrir completo em qualquer PC
-      try { if (api.saveRelatorioAssets) await api.saveRelatorioAssets(novo.id, am.photos ?? [], am.docxHtml ?? null) } catch {}
-    }
-    try {
-      localStorage.setItem(RELATORIOS_KEY, JSON.stringify(listaSemFotos))
-    } catch {
-      // Quota: try even without previous entries' photos
-      try {
-        const listaMini = [...lista.map(r => ({ ...r, photos: [] as typeof r.photos })), novoSemFotos]
-        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(listaMini))
-      } catch {}
+    if (api?.saveRelatorioAssets) {
+      try { await api.saveRelatorioAssets(novo.id, am.photos ?? [], am.docxHtml ?? null) } catch {}
     }
     return novo
   }
@@ -1279,13 +1277,13 @@ function LotePageInner() {
     localStorage.setItem(CFG_KEY, JSON.stringify(cfg))
     await savePhotos(PHOTOS_KEY, am.photos)
 
-    // docxHtml: preferir da memória; fallback: buscar no localStorage pelo relatório salvo
+    // docxHtml: preferir o da memória; senão, os anexos do relatório salvo
     let docxHtml = am.docxHtml
     if (!docxHtml && am.numRelatorio) {
       try {
-        const lista: RelatorioSalvo[] = JSON.parse(localStorage.getItem(RELATORIOS_KEY) ?? '[]')
+        const lista = await carregarRelatorios()
         const rel = lista.find(r => r.numRelatorio === am.numRelatorio && r.protocolo === am.protocolo)
-        if (rel) docxHtml = localStorage.getItem(RELATORIO_DOCX_PFX + rel.id)
+        if (rel) docxHtml = (await lerAssetsLocais(rel.id)).docxHtml
       } catch {}
     }
 
@@ -1296,7 +1294,7 @@ function LotePageInner() {
       sessionStorage.removeItem(DOCX_HTML_KEY)
       sessionStorage.removeItem(DOCX_NAME_KEY)
     }
-    router.push('/cispr15/relatorio?from=lote')
+    abrirRelatorio('?from=lote')
   }
 
   if (!lote) {
@@ -1469,6 +1467,9 @@ function LotePageInner() {
           if (!lote) return
           if (!confirm('Limpar todos os dados deste lote?')) return
           localStorage.removeItem(LOTE_KEY)
+          // O lote completo vive no IndexedDB; sem apagar aqui também, "limpar"
+          // deixaria as fotos para trás e elas voltariam na próxima abertura.
+          void apagarValor(LOTE_KEY)
           const api = (window as any).electronAPI
           if (api?.saveLotes) {
             const atualizados = allLotesRef.current.filter(l => l.id !== lote.id)

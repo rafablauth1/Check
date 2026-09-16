@@ -4,6 +4,8 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { Plus, ChevronRight, Zap, Gauge, Waves, Radio, SlidersHorizontal, Thermometer, FolderInput, Loader2, CheckCircle2, AlertTriangle, XCircle, ArrowUpDown, ArrowUp, ArrowDown, FileWarning, X, Search, Trash2, Lock, Cpu, RefreshCw } from 'lucide-react'
 import { FilterDropdown } from '@/components/FilterDropdown'
+import type { Norma } from '@/lib/normas/tipos'
+import type { AparelhoAuxiliar } from '@/lib/auxiliares/tipos'
 import { Paginacao } from '@/components/Paginacao'
 import { fmt, diasAte } from '@/lib/utils'
 import { cn } from '@/lib/utils'
@@ -148,6 +150,8 @@ export default function EquipamentosPage() {
   const [fGrupos, setFGrupos] = useState<string[]>([])
   const [fSubs,   setFSubs]   = useState<string[]>([])
   const [fLabs,   setFLabs]   = useState<string[]>([])            // filtro por laboratório calibrador
+  const [fEnsaios, setFEnsaios] = useState<string[]>([])          // filtro por ensaio (norma → ensaio → padrões)
+  const [normas,  setNormas]  = useState<Norma[]>([])             // fonte dos ensaios
   const [busca,   setBusca]   = useState('')
   const [sortKey, setSortKey] = useState<SortKey>('tag')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc')
@@ -159,7 +163,11 @@ export default function EquipamentosPage() {
   const [impProgresso, setImpProgresso] = useState<string | null>(null)
   const [impRelatorio, setImpRelatorio] = useState<RelatorioImport | null>(null)
   const [rascunho, setRascunho] = useState<RascunhoItem[]>([])
-  const [abaEquip, setAbaEquip] = useState<'lista' | 'rascunho'>('lista')
+  const [abaEquip, setAbaEquip] = useState<'lista' | 'auxiliares' | 'rascunho'>('lista')
+  // Cadastro de aparelhos auxiliares (acessórios de ensaio, sem calibração).
+  const [auxiliares, setAuxiliares] = useState<AparelhoAuxiliar[]>([])
+  const [auxSujo,    setAuxSujo]    = useState(false)   // há alteração não salva?
+  const [auxSalvando, setAuxSalvando] = useState(false)
   const [sel, setSel] = useState<string[]>([])   // ids selecionados p/ exclusão em lote
   const [selRasc, setSelRasc] = useState<string[]>([])  // folders selecionados no rascunho
   const [rascSort, setRascSort] = useState<'asc' | 'desc'>('asc')  // ordenação do rascunho por motivo
@@ -183,6 +191,7 @@ export default function EquipamentosPage() {
         const s = JSON.parse(raw)
         setFAreas(s.fAreas ?? [])
         setFSiglas(s.fSiglas ?? []); setFGrupos(s.fGrupos ?? []); setFSubs(s.fSubs ?? [])
+        setFEnsaios(s.fEnsaios ?? [])
         setFPend(Array.isArray(s.fPend) ? s.fPend : [])
         setFLabs(Array.isArray(s.fLabs) ? s.fLabs : [])
         if (s.sortKey) setSortKey(s.sortKey); if (s.sortDir) setSortDir(s.sortDir)
@@ -194,11 +203,11 @@ export default function EquipamentosPage() {
   // Salva filtros sempre que mudam (após o carregamento inicial)
   useEffect(() => {
     if (!pronto) return
-    try { localStorage.setItem(FILTROS_KEY, JSON.stringify({ fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs })) } catch {}
-  }, [pronto, fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs])
+    try { localStorage.setItem(FILTROS_KEY, JSON.stringify({ fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs, fEnsaios })) } catch {}
+  }, [pronto, fAreas, fSiglas, fGrupos, fSubs, sortKey, sortDir, fPend, fLabs, fEnsaios])
 
   // Volta pra página 1 quando o filtro/busca/tamanho muda
-  useEffect(() => { setPagina(1) }, [busca, fAreas, fSiglas, fGrupos, fSubs, fPend, fLabs, vencIdx, porPagina])
+  useEffect(() => { setPagina(1) }, [busca, fAreas, fSiglas, fGrupos, fSubs, fPend, fLabs, fEnsaios, vencIdx, porPagina])
 
   function carregarRascunho() {
     fetch('/api/equipamentos/importar-lote').then(r => r.json()).then(d => setRascunho(Array.isArray(d) ? d : [])).catch(() => {})
@@ -209,13 +218,55 @@ export default function EquipamentosPage() {
       fetch('/api/equipamentos').then(r => r.json()),
       fetch('/api/grupos').then(r => r.json()),
       fetch('/api/taxonomia').then(r => r.json()),
-    ]).then(([e, g, t]) => {
+      fetch('/api/normas').then(r => r.json()),
+      fetch('/api/auxiliares').then(r => r.json()),
+    ]).then(([e, g, t, n, x]) => {
       setEquips(Array.isArray(e) ? e : [])
       setGrupos(Array.isArray(g) ? g : [])
       if (t && !t.error) setTax({ areas: t.areas ?? [], siglas: t.siglas ?? [], tipos: t.tipos ?? [] })
+      setNormas(Array.isArray(n) ? n : [])
+      setAuxiliares(Array.isArray(x) ? x : [])
     }).catch(() => {})
     carregarRascunho()
   }, [])
+
+  /* ── Aparelhos auxiliares ─────────────────────────────────────────────────
+     Cadastro leve e separado do de equipamentos: acessório de ensaio não tem
+     certificado nem vencimento (ver lib/auxiliares/tipos.ts). A aba edita a
+     tabela em memória e grava a lista inteira no "Salvar". */
+  const novoIdAux = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
+
+  function addAux() {
+    setAuxiliares(a => [{ id: novoIdAux(), tag: '', nome: '', fabricante: '', modelo: '', serie: '', observacao: '' }, ...a])
+    setAuxSujo(true)
+  }
+  function setAux(id: string, campo: keyof AparelhoAuxiliar, valor: string) {
+    setAuxiliares(a => a.map(x => x.id === id
+      ? { ...x, [campo]: campo === 'tag' ? valor.toUpperCase() : valor }
+      : x))
+    setAuxSujo(true)
+  }
+  function delAux(id: string) {
+    const alvo = auxiliares.find(x => x.id === id)
+    if (!confirm(`Excluir o aparelho auxiliar "${alvo?.tag || alvo?.nome || 'sem nome'}"?`)) return
+    setAuxiliares(a => a.filter(x => x.id !== id))
+    setAuxSujo(true)
+  }
+  async function salvarAux() {
+    // Sem TAG nem nome a linha é lixo de clique — não vai pro arquivo.
+    const limpa = auxiliares.filter(a => a.tag.trim() || a.nome.trim())
+    setAuxSalvando(true)
+    try {
+      const r = await fetch('/api/auxiliares', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(limpa),
+      })
+      if (!r.ok) { alert('Falha ao salvar os aparelhos auxiliares.'); return }
+      setAuxiliares(await r.json())
+      setAuxSujo(false)
+    } catch (e) {
+      alert('Erro ao salvar: ' + String(e))
+    } finally { setAuxSalvando(false) }
+  }
 
   // Exclusão TOTAL (equipamentos + certificados) — protegida por senha fixa.
   // Usa MODAL próprio: window.prompt() não é suportado no Electron (retorna null).
@@ -327,8 +378,8 @@ export default function EquipamentosPage() {
     finally { setVerificando(false) }
   }
 
-  const temFiltro = fAreas.length + fSiglas.length + fGrupos.length + fSubs.length + fPend.length + fLabs.length > 0 || !!busca.trim()
-  const limpar = () => { setFAreas([]); setFSiglas([]); setFGrupos([]); setFSubs([]); setFPend([]); setFLabs([]); setBusca('') }
+  const temFiltro = fAreas.length + fSiglas.length + fGrupos.length + fSubs.length + fPend.length + fLabs.length + fEnsaios.length > 0 || !!busca.trim()
+  const limpar = () => { setFAreas([]); setFSiglas([]); setFGrupos([]); setFSubs([]); setFPend([]); setFLabs([]); setFEnsaios([]); setBusca('') }
 
   // Área de um equipamento = área da sigla da sua TAG (via taxonomia)
   const areaDoEquip = (e: EquipamentoEMC) =>
@@ -340,6 +391,30 @@ export default function EquipamentosPage() {
   // não por si mesmo (senão suas opções colapsariam nas já marcadas). Assim,
   // marcar uma sigla recalcula os contadores de grupos/subgrupos/pendências
   // consequentes do filtro.
+  /* Ensaios disponíveis = os das normas vinculadas às áreas em foco. É a cadeia
+     laboratório → norma → ensaio → padrões: marcar a área EMC restringe os
+     ensaios oferecidos aos das normas daquele laboratório. Enquanto nenhuma
+     área tiver norma vinculada (config nova), oferece os ensaios de todas as
+     normas — melhor mostrar algo do que um filtro vazio sem explicação. */
+  const ensaiosDisponiveis = (() => {
+    const areasEmFoco = fAreas.length ? tax.areas.filter(a => fAreas.includes(a.id)) : tax.areas
+    const vinculadas = new Set(areasEmFoco.flatMap(a => a.normaIds ?? []))
+    const usaVinculo = vinculadas.size > 0
+    return normas
+      .filter(n => !usaVinculo || vinculadas.has(n.id))
+      .flatMap(n => (n.ensaios ?? []).map(en => ({
+        id: en.id,
+        rotulo: `${en.codigo ? en.codigo + ' · ' : ''}${en.nome}`,
+        normaCodigo: n.codigo,
+        // Padrões E auxiliares: filtrar por um ensaio tem que trazer todo
+        // equipamento usado nele, não só os que dão rastreabilidade.
+        equipamentoIds: [...en.equipamentoIds, ...(en.auxiliaresIds ?? [])],
+      })))
+  })()
+
+  // Precisa existir ANTES de `passa`: é consultado pelo predicado do filtro.
+  const equipsPorEnsaio = new Map(ensaiosDisponiveis.map(en => [en.id, new Set(en.equipamentoIds)]))
+
   const _q = busca.trim().toLowerCase()
   const passa = {
     area:  (e: EquipamentoEMC) => fAreas.length === 0  || fAreas.includes(areaDoEquip(e)),
@@ -347,6 +422,9 @@ export default function EquipamentosPage() {
     grupo: (e: EquipamentoEMC) => fGrupos.length === 0 || fGrupos.includes(e.grupoId),
     sub:   (e: EquipamentoEMC) => fSubs.length === 0   || fSubs.includes(e.subgrupoId),
     lab:   (e: EquipamentoEMC) => fLabs.length === 0   || fLabs.includes(e.labCalibracao || ''),
+    // Vínculo por ID do equipamento (ver lib/normas/tipos.ts): sobrevive a
+    // renomear a TAG, que é justamente o caso que quebraria um vínculo por TAG.
+    ensaio: (e: EquipamentoEMC) => fEnsaios.length === 0 || fEnsaios.some(id => equipsPorEnsaio.get(id)?.has(e.id)),
     pend:  (e: EquipamentoEMC) => fPend.length === 0   || fPend.some(t => {
       const cods = codigosPendencia(e)
       if (t === 'vencido') return cods.includes('vencido') && mesesVencido(e) >= VENC_DEGRAUS[vencIdx].meses
@@ -363,6 +441,7 @@ export default function EquipamentosPage() {
   const baseGrupo = filtrarExceto('grupo')
   const baseSub   = filtrarExceto('sub')
   const baseLab   = filtrarExceto('lab')
+  const baseEnsaio = filtrarExceto('ensaio')
   const basePend  = filtrarExceto('pend')
 
   const pendPorTipo = (id: string) => basePend.filter(e => codigosPendencia(e).includes(id)).length
@@ -400,6 +479,15 @@ export default function EquipamentosPage() {
     for (const l of fLabs) if (!cont.has(l)) cont.set(l, 0)   // mantém visíveis os já marcados
     return [...cont.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt')).map(([lab, n]) => ({ id: lab, label: lab, n }))
   })()
+
+  /* Ensaios presentes: conta quantos equipamentos do conjunto encadeado estão
+     vinculados a cada ensaio. Ensaio sem nenhum padrão vinculado ainda aparece
+     (com 0), senão um ensaio recém-criado sumiria da lista e pareceria bug. */
+  const ensaiosPresentes = ensaiosDisponiveis.map(en => ({
+    id: en.id,
+    label: `${en.rotulo}${normas.length > 1 ? ` (${en.normaCodigo})` : ''}`,
+    n: baseEnsaio.filter(e => en.equipamentoIds.includes(e.id)).length,
+  }))
 
   // Aplica filtros (AND entre dimensões, OR dentro de cada uma) + ordenação
   const grupoNome = (id: string) => grupos.find(g => g.id === id)?.nome ?? id
@@ -607,7 +695,7 @@ export default function EquipamentosPage() {
 
       {/* Sub-abas: Equipamentos | Rascunho */}
       <div className="flex items-center gap-1 border-b border-white/8 mb-5">
-        {([['lista', 'Equipamentos', equips.length], ['rascunho', 'Rascunho', rascunho.length]] as const).map(([id, label, n]) => (
+        {([['lista', 'Equipamentos', equips.length], ['auxiliares', 'Auxiliares', auxiliares.length], ['rascunho', 'Rascunho', rascunho.length]] as const).map(([id, label, n]) => (
           <button key={id} type="button" onClick={() => setAbaEquip(id)}
             className={cn('flex items-center gap-1.5 px-3.5 py-2 text-[12px] font-medium rounded-t-lg transition-all border-b-2 -mb-px',
               abaEquip === id ? 'text-white border-gold' : 'text-white/40 border-transparent hover:text-white/70')}>
@@ -618,6 +706,84 @@ export default function EquipamentosPage() {
           </button>
         ))}
       </div>
+
+      {/* ══ Aba AUXILIARES — acessórios de ensaio, sem calibração ══════════ */}
+      {abaEquip === 'auxiliares' && (
+        <div className="card overflow-hidden">
+          <div className="px-4 py-2.5 border-b border-white/5 flex items-center gap-2 flex-wrap">
+            <Cpu size={15} className="text-gold"/>
+            <span className="text-[12px] text-white/60">
+              Acopladores, redes de desacoplamento, fontes e afins. Não têm certificado nem vencimento —
+              por isso ficam fora do cadastro de equipamentos.
+            </span>
+            <div className="ml-auto flex items-center gap-2">
+              <button type="button" onClick={addAux} className="btn-ghost text-xs py-1"><Plus size={12}/> Aparelho</button>
+              <button type="button" onClick={salvarAux} disabled={!auxSujo || auxSalvando}
+                className="btn-primary text-xs py-1 disabled:opacity-40">
+                {auxSalvando ? <Loader2 size={12} className="animate-spin"/> : <CheckCircle2 size={12}/>}
+                {auxSalvando ? 'Salvando…' : auxSujo ? 'Salvar' : 'Salvo'}
+              </button>
+            </div>
+          </div>
+
+          {auxiliares.length === 0 ? (
+            <div className="p-10 text-center text-white/25 text-sm">
+              Nenhum aparelho auxiliar cadastrado. Clique em &quot;+ Aparelho&quot; para adicionar.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-[12px]">
+                <thead>
+                  <tr className="text-white/35 text-[10px] uppercase tracking-wider border-b border-white/5">
+                    <th className="text-left px-3 py-2 w-32">TAG</th>
+                    <th className="text-left px-3 py-2">Nome</th>
+                    <th className="text-left px-3 py-2 w-40">Fabricante</th>
+                    <th className="text-left px-3 py-2 w-36">Modelo</th>
+                    <th className="text-left px-3 py-2 w-36">Série</th>
+                    <th className="text-left px-3 py-2">Observação</th>
+                    <th className="w-10"/>
+                  </tr>
+                </thead>
+                <tbody>
+                  {auxiliares.map(a => (
+                    <tr key={a.id} className="border-b border-white/5">
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1 font-mono" placeholder="A1062-AB"
+                          value={a.tag} onChange={e => setAux(a.id, 'tag', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1" placeholder="Acoplador Burst"
+                          value={a.nome} onChange={e => setAux(a.id, 'nome', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1" value={a.fabricante ?? ''}
+                          onChange={e => setAux(a.id, 'fabricante', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1" value={a.modelo ?? ''}
+                          onChange={e => setAux(a.id, 'modelo', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1" value={a.serie ?? ''}
+                          onChange={e => setAux(a.id, 'serie', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input className="input text-[12px] py-1" value={a.observacao ?? ''}
+                          onChange={e => setAux(a.id, 'observacao', e.target.value)}/>
+                      </td>
+                      <td className="px-2 py-1 text-center">
+                        <button type="button" onClick={() => delAux(a.id)} className="text-white/25 hover:text-red-400 p-1">
+                          <Trash2 size={13}/>
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ══ Aba RASCUNHO — TAGs de pasta não cadastradas ═══════════════════ */}
       {abaEquip === 'rascunho' && (
@@ -735,6 +901,8 @@ export default function EquipamentosPage() {
             options={grupos.flatMap(g => g.subgrupos.map(s => ({ id: s.id, label: s.nome, count: baseSub.filter(e => e.subgrupoId === s.id).length, color: GRUPO_CORES[g.cor] ?? '#94A3B8' }))).filter(o => o.count > 0 || fSubs.includes(o.id))} />
           <FilterDropdown label="Calibrado por" selected={fLabs} onChange={setFLabs}
             options={labsPresentes.map(l => ({ id: l.id, label: l.label, count: l.n }))} />
+          <FilterDropdown label="Ensaio" selected={fEnsaios} onChange={setFEnsaios}
+            options={ensaiosPresentes.map(en => ({ id: en.id, label: en.label, count: en.n }))} />
           <FilterDropdown label="Pendências" selected={fPend} onChange={setFPend} icon={<AlertTriangle size={12}/>}
             options={PEND_OPCOES.map(o => ({ id: o.id, label: o.label, count: pendPorTipo(o.id) })).filter(o => o.count > 0 || fPend.includes(o.id))} />
           {temFiltro && (

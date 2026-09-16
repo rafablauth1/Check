@@ -6,23 +6,29 @@ import {
   Lightbulb, Lamp, ArrowRight, Upload, X, Loader2,
   Trash2, CheckCircle2, FileText, FolderOpen, Users, Database, History,
   BookOpen, AlertTriangle, Lock, Settings, ScanText, RefreshCw, Plus, ChevronDown, Search,
-  Shield, ShieldCheck, ShieldX, RotateCw,
+  Shield, ShieldCheck, ShieldX, RotateCw, Check,
 } from 'lucide-react'
 import { cn, normWatts } from '@/lib/utils'
 import {
-  type Cispr15Config, type LoteConfig, type ClienteDB, type RelatorioSalvo,
+  type Cispr15Config, type LoteConfig, type ClienteDB, type RelatorioSalvo, type EmendaDraft,
   DEFAULTS,
   CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, LOTE_KEY, CLIENTES_KEY,
-  RELATORIOS_KEY, RELATORIO_DOCX_PFX, EMENDA_DRAFT_KEY, LOCKED_KEY, formatEmendaNumero,
+  EMENDA_DRAFT_KEY, LOCKED_KEY, formatEmendaNumero, formatNumeroRelatorio,
+  emendasDoRelatorio,
   AGENDA_KEY, SETTINGS_KEY, SESSION_KEY, AUTH_KEY,
   newAmostra, docxTemFail, tensaoDeclaradaExcedeEnsaio, TENSAO_CONFIG_MAX,
   getTensoes, validarSecoesRadimation, extrairTensaoMaxima, docxTensoesTestadas,
 } from './types'
+import { abrirRelatorio } from './abrir-relatorio'
 import { ClientesTab }     from './ClientesTab'
 import { RelatoriosTab }   from './RelatoriosTab'
 import { EmendasTab }      from './EmendasTab'
 import { iniciarMarcador, iniciarMarcadorSeAusente } from '@/lib/tempos'
-import { loadPhotos, savePhotos, clearPhotos } from '@/lib/cispr15/photo-store'
+import {
+  loadPhotos, savePhotos, clearPhotos, salvarValor,
+  lerAssetsLocais, salvarAssetsLocais,
+} from '@/lib/cispr15/photo-store'
+import { carregarRelatorios, salvarRelatorio, removerRelatorio } from '@/lib/cispr15/relatorios-store'
 
 /* ─── helpers ─────────────────────────────────────────────────────────────── */
 async function resizeToBase64(file: File, maxW = 800): Promise<{ base64: string; url: string }> {
@@ -240,30 +246,11 @@ export default function Cispr15ConfigPage() {
   }
 
   async function loadRelatorios() {
-    const api = (window as any).electronAPI
-    if (api) {
-      try {
-        const res = await api.getRelatorios()
-        if (res.ok && Array.isArray(res.relatorios) && res.relatorios.length > 0) {
-          setRelatoriosList(res.relatorios); return
-        }
-        try {
-          const raw = localStorage.getItem(RELATORIOS_KEY)
-          if (raw) {
-            const migrated = JSON.parse(raw)
-            if (Array.isArray(migrated) && migrated.length > 0) {
-              await api.saveRelatorios(migrated)
-              setRelatoriosList(migrated); return
-            }
-          }
-        } catch {}
-        if (res.ok) { setRelatoriosList([]); return }
-      } catch {}
-    }
-    try {
-      const raw = localStorage.getItem(RELATORIOS_KEY)
-      if (raw) setRelatoriosList(JSON.parse(raw))
-    } catch {}
+    /* Fonte única: a rede. A "migração" que existia aqui lia o cache do
+       localStorage e o devolvia com saveRelatorios — com o cache truncado pela
+       cota, era literalmente assim que uma lista curta virava o conteúdo do
+       arquivo compartilhado. */
+    setRelatoriosList(await carregarRelatorios())
   }
 
   async function loadClientesLocal() {
@@ -403,6 +390,16 @@ export default function Cispr15ConfigPage() {
     setEutFolder(null)
     setCertificadoPdf(null)
     iniciarMarcador('emissao') // reinicia o cronômetro para a nova emissão
+  }
+
+  /* "Gerar Emenda" leva DIRETO para o relatório que está carregado no
+     formulário — antes caía na tela de emenda com a lista solta, dando pra
+     emendar qualquer outro relatório sem perceber. Sem relatório carregado
+     (formulário em branco), segue abrindo a lista, que aí é o único jeito de
+     escolher um. */
+  function abrirEmenda() {
+    const num = cfg.numRelatorio.trim()
+    router.push(num ? `/cispr15/emenda?num=${encodeURIComponent(num)}` : '/cispr15/emenda')
   }
 
   function novoRelatorio() {
@@ -568,6 +565,27 @@ export default function Cispr15ConfigPage() {
       if (!temAssets) await aplicarConteudoPastaEut(res)
       return true
     } catch { return false }
+  }
+
+  /* Vincula a pasta da EUT AO RELATÓRIO que está sendo aberto.
+     Precisa rodar em TODO caminho que carrega um relatório. O "Ver PDF" da
+     lista não fazia nada disso: abria o relatório B com a pasta do relatório A
+     ainda valendo em sessionStorage, e o "Baixar PDF" gravava o PDF do B dentro
+     da pasta do A. Sem pasta resolvida, o certo é ficar VAZIA e o app pedir a
+     pasta — errar de pasta calado é pior do que perguntar. */
+  async function vincularPastaAoRelatorio(entry: RelatorioSalvo, temAssets: boolean) {
+    if (await autoResolverPastaEut(entry, temAssets)) return
+    if (entry.eutFolderPath) {
+      setEutFolder(entry.eutFolderPath)
+      sessionStorage.setItem('eutFolderPath', entry.eutFolderPath)
+    } else {
+      setEutFolder(null)
+      sessionStorage.removeItem('eutFolderPath')
+      void (window as any).electronAPI?.limparPastaEut?.()
+    }
+    setCertificadoPdf(entry.certificadoPdfPath
+      ? { path: entry.certificadoPdfPath, nome: entry.certificadoPdfNome || 'certificado.pdf' }
+      : null)
   }
 
   function removePhoto(i: number) {
@@ -868,13 +886,10 @@ export default function Cispr15ConfigPage() {
   /* ── salvar no histórico local + rede ── */
   async function salvarRelatorioLocal(finalCfg: Cispr15Config) {
     try {
-      // Base: estado em memória (já sincronizado da rede por loadRelatorios) —
-      // NUNCA parte só do localStorage deste PC, senão um PC com cache desatualizado
-      // sobrescreve o arquivo compartilhado e apaga relatórios feitos em outros PCs.
-      let list: RelatorioSalvo[] = [...relatoriosList]   // cópia — nunca muta o estado por referência
-      if (!list.length) {
-        try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) list = JSON.parse(raw) } catch {}
-      }
+      // A lista da rede serve só para descobrir se este número já tem registro
+      // (e então reaproveitar id e emendas). A gravação em si é de um relatório
+      // só — a lista não volta para o arquivo.
+      const list = await carregarRelatorios()
       const existingIdx = list.findIndex(r =>
         finalCfg.numRelatorio && r.numRelatorio === finalCfg.numRelatorio
       )
@@ -894,48 +909,25 @@ export default function Cispr15ConfigPage() {
         certificadoPdfPath: certificadoPdf?.path,
         certificadoPdfNome: certificadoPdf?.nome,
       }
-      if (existingIdx >= 0) list[existingIdx] = entry
-      else list.unshift(entry)
-      setRelatoriosList(list)
+      // Grava SÓ este relatório: o processo principal lê o arquivo bom, aplica a
+      // mudança e grava. A lista inteira não trafega mais — era o parâmetro por
+      // onde um cache truncado apagava o trabalho feito nos outros PCs.
+      const res = await salvarRelatorio(entry)
+      if (!res.ok) {
+        alert('O relatório NÃO foi gravado na rede:\n\n' + (res.error ?? 'erro desconhecido') +
+              '\n\nO número já foi registrado na planilha. Tente gerar de novo.')
+      }
+      setRelatoriosList(await carregarRelatorios())
 
-      // 1) Salvar no sistema/rede PRIMEIRO — índice leve (sem fotos/docxHtml) + assets
-      //    pesados por id. Roda independente do localStorage: assim uma cota local cheia
-      //    não impede o salvamento das fotos/DOCX no sistema (senão o relatório reabria vazio).
+      // Anexos pesados por id: IndexedDB neste PC e arquivo na rede (para
+      // qualquer PC reabrir o relatório completo). Nunca no localStorage — as
+      // fotos de um relatório daqui passam de 8 MB e o teto de lá é ~5 MB.
       const api = (window as any).electronAPI
-      if (api) {
-        try {
-          const netEntry: RelatorioSalvo = { ...entry, photos: [], }
-          const netList = list.map(r => r.id === id ? netEntry : { ...r, photos: [] })
-          await api.saveRelatorios(netList)
-        } catch {}
-        try {
-          if (api.saveRelatorioAssets) {
-            await api.saveRelatorioAssets(id, entry.photos, docx.html ?? null)
-          }
-        } catch {}
+      void salvarAssetsLocais(id, { photos: entry.photos, docxHtml: docx.html ?? null })
+      if (api?.saveRelatorioAssets) {
+        try { await api.saveRelatorioAssets(id, entry.photos, docx.html ?? null) } catch {}
       }
       try { sessionStorage.setItem('relatorioAtualId', id) } catch {}   // habilita "Salvar arquivos" a re-vincular
-
-      // 2) Cache local (best-effort) — pode estourar a cota sem comprometer o save acima.
-      // Mescla na lista já cacheada (em vez de sobrescrever com `list`, que pode ter
-      // vindo do estado da rede sem fotos) pra não apagar fotos cacheadas de OUTRAS
-      // entradas neste PC.
-      try {
-        const rawLocal = localStorage.getItem(RELATORIOS_KEY)
-        const localList: RelatorioSalvo[] = rawLocal ? JSON.parse(rawLocal) : []
-        const li = localList.findIndex(r => r.id === id)
-        if (li >= 0) localList[li] = entry
-        else localList.unshift(entry)
-        localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
-        if (docx.html) localStorage.setItem(RELATORIO_DOCX_PFX + id, docx.html)
-      } catch (e: any) {
-        const msg = String(e)
-        const quota = msg.includes('Quota') || msg.includes('quota') || msg.includes('QUOTA')
-        // No Electron os assets já foram salvos no sistema acima; só alerta na versão web.
-        if (quota && !api) {
-          alert('Aviso: armazenamento local cheio — fotos não salvas no histórico. O relatório foi registrado normalmente na planilha.')
-        }
-      }
     } catch (e: any) {
       const msg = String(e)
       if (msg.includes('QuotaExceeded') || msg.includes('quota') || msg.includes('QUOTA')) {
@@ -948,14 +940,11 @@ export default function Cispr15ConfigPage() {
      busca os assets na rede — assim qualquer PC reabre o relatório completo. */
   async function resolverAssets(entry: RelatorioSalvo): Promise<{ photos: { name: string; base64: string }[]; docxHtml: string | null }> {
     let photos = entry.photos ?? []
-    let docxHtml = localStorage.getItem(RELATORIO_DOCX_PFX + entry.id)
-    // Fallback local: lista completa no localStorage deste PC (com fotos base64)
-    if (!photos.length) {
-      try {
-        const raw = localStorage.getItem(RELATORIOS_KEY)
-        if (raw) { const found = (JSON.parse(raw) as RelatorioSalvo[]).find(r => r.id === entry.id); if (found?.photos?.length) photos = found.photos }
-      } catch {}
-    }
+    // Anexos deste PC: IndexedDB, ainda lendo a chave legada do localStorage
+    // para o que foi gravado antes. Evita ir na rede à toa.
+    const locais = await lerAssetsLocais(entry.id)
+    let docxHtml = locais.docxHtml
+    if (!photos.length && locais.photos.length) photos = locais.photos
     // Fallback rede: assets por id (outro PC)
     if (!photos.length || !docxHtml) {
       const api = (window as any).electronAPI
@@ -978,8 +967,8 @@ export default function Cispr15ConfigPage() {
     const api = (window as any).electronAPI
     if (!api?.syncEutCopy || !entry.eutFolderPath) return
     const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
-    const le = (entry.emendas ?? []).slice().sort((a, b) => b.numero - a.numero)[0]
-    const dnum = le ? formatEmendaNumero(entry.numRelatorio, le.numero) : entry.numRelatorio
+    const le = emendasDoRelatorio(relatoriosList, entry).slice().sort((a, b) => b.numero - a.numero)[0]
+    const dnum = le ? formatEmendaNumero(entry.numRelatorio, le.numero, entry.cfg.foraDaRbc) : formatNumeroRelatorio(entry.numRelatorio, entry.cfg.foraDaRbc)
     const filename = `${san(dnum || entry.protocolo)}_${entry.cfg.tipo}_${san(entry.cfg.fabricante)}.pdf`
     const ano = (entry.dataEmissao || '').match(/\d{4}/)?.[0]
     try {
@@ -1003,17 +992,10 @@ export default function Cispr15ConfigPage() {
     else sessionStorage.removeItem(DOCX_HTML_KEY)
     sessionStorage.setItem(DOCX_NAME_KEY, entry.docxFilename ?? '')
     sessionStorage.setItem('relatorioAtualId', entry.id)   // p/ "Salvar arquivos" vincular assets
-    // Sempre tenta achar a pasta da EUT pelo protocolo (pasta de rede por ano) —
-    // não depende de eutFolderPath já ter sido salvo (ex.: relatórios do lote,
-    // que nunca guardam esse campo). Cai pro valor salvo se não achar.
-    const achouPasta = await autoResolverPastaEut(entry, relPhotos.length > 0 || !!docxHtml)
-    if (!achouPasta) {
-      if (entry.eutFolderPath) {
-        setEutFolder(entry.eutFolderPath)
-        sessionStorage.setItem('eutFolderPath', entry.eutFolderPath)
-      }
-      setCertificadoPdf(entry.certificadoPdfPath ? { path: entry.certificadoPdfPath, nome: entry.certificadoPdfNome || 'certificado.pdf' } : null)
-    }
+    // Acha a pasta da EUT pelo protocolo (pasta de rede por ano) — não depende
+    // de eutFolderPath já ter sido salvo (ex.: relatórios do lote, que nunca
+    // guardam esse campo). Cai pro valor salvo, e pra vazio se não houver.
+    await vincularPastaAoRelatorio(entry, relPhotos.length > 0 || !!docxHtml)
     setLocked(true)
     setTab('formulario')
     flash4(`Relatório "${entry.numRelatorio}" carregado`)
@@ -1040,35 +1022,51 @@ export default function Cispr15ConfigPage() {
 
   async function doDeleteEmenda(relatorioId: string, emendaNum: number) {
     try {
-      const raw = localStorage.getItem(RELATORIOS_KEY)
-      if (!raw) return
-      const lista: RelatorioSalvo[] = JSON.parse(raw)
+      // A lista TEM que vir da rede. Antes vinha do localStorage deste PC, e
+      // essa era a origem de uma perda real de dados: quando a cota do
+      // localStorage estourava, a cópia daqui ficava truncada; excluir uma
+      // emenda gravava essa lista curta por cima do arquivo compartilhado e
+      // ainda envenenava relatoriosList, de modo que a emissão seguinte
+      // repetia o estrago. Foi assim que 17 relatórios sumiram em 09/09/2026.
+      const lista = await carregarRelatorios()
+      if (!lista.length) return
+      // O relatório de ORIGEM dá o número, o tipo e o fabricante que compõem o
+      // nome do PDF da emenda — isso vale para os dois formatos.
       const idx = lista.findIndex(r => r.id === relatorioId)
       if (idx < 0) return
       const rel = lista[idx]
 
-      // Tentar excluir PDF da pasta de cópias
+      /* Exclui a cópia do PDF ANTES de mexer na lista, e fora dos dois ramos:
+         serve tanto para a emenda em registro próprio quanto para a aninhada.
+         Estava só no caminho antigo, então excluir uma emenda do formato novo
+         deixava o PDF órfão na pasta de cópias. */
       const san = (v: string) => (v ?? '').replace(/[/\\:*?"<>|\s]/g, '_').replace(/_+/g, '_')
-      const emendaDisplayNum = formatEmendaNumero(rel.numRelatorio, emendaNum)
+      const emendaDisplayNum = formatEmendaNumero(rel.numRelatorio, emendaNum, rel.cfg.foraDaRbc)
       const pdfFilename = `${san(emendaDisplayNum || rel.protocolo)}_${rel.cfg.tipo}_${san(rel.cfg.fabricante)}.pdf`
       try {
         const api = (window as any).electronAPI
         if (api) await api.deletePdfCopy(pdfFilename)
       } catch {}
 
-      // Remover emenda e recalcular currentCfg
+      // Emenda em REGISTRO próprio: excluir é remover o registro, sem tocar no
+      // original. O caminho antigo (aninhada) segue abaixo, para o que já foi
+      // emitido antes desta mudança.
+      const idRegistro = `${relatorioId}-e${emendaNum}`
+      const registro = lista.find(r => r.id === idRegistro || (r.emendaDe === relatorioId && r.emendaNum === emendaNum))
+      if (registro) {
+        // Remove SÓ este registro, pelo id — nada mais pode ir junto.
+        const resDel = await removerRelatorio(registro.id)
+        if (!resDel.ok) { alert('Não foi possível excluir a emenda: ' + (resDel.error ?? '')); return }
+        setRelatoriosList(await carregarRelatorios())
+        return
+      }
+
+      // Formato antigo (emenda aninhada): grava só o relatório original alterado.
       const newEmendas = rel.emendas.filter(e => e.numero !== emendaNum)
       const lastEmenda = [...newEmendas].sort((a, b) => b.numero - a.numero)[0]
-      const newCurrentCfg = lastEmenda?.cfgSnapshot
-
-      lista[idx] = { ...rel, emendas: newEmendas, currentCfg: newCurrentCfg }
-      localStorage.setItem(RELATORIOS_KEY, JSON.stringify(lista))
-      setRelatoriosList(lista)
-
-      const api2 = (window as any).electronAPI
-      if (api2) {
-        try { await api2.saveRelatorios(lista.map(r => ({ ...r, photos: [] }))) } catch {}
-      }
+      const resUp = await salvarRelatorio({ ...rel, emendas: newEmendas, currentCfg: lastEmenda?.cfgSnapshot })
+      if (!resUp.ok) { alert('Não foi possível excluir a emenda: ' + (resUp.error ?? '')); return }
+      setRelatoriosList(await carregarRelatorios())
     } catch (err) {
       alert('Erro ao excluir emenda: ' + String(err))
     }
@@ -1089,8 +1087,61 @@ export default function Cispr15ConfigPage() {
     else sessionStorage.removeItem(DOCX_HTML_KEY)
     sessionStorage.setItem(DOCX_NAME_KEY, entry.docxFilename ?? '')
     sessionStorage.setItem('relatorioAtualId', entry.id)   // p/ "Salvar arquivos" vincular assets
+    // Este caminho não vinculava pasta nenhuma: abria o relatório clicado com a
+    // pasta do relatório aberto ANTES ainda em sessionStorage, e o "Baixar PDF"
+    // gravava na pasta do outro protocolo. Tem que rodar antes de navegar,
+    // porque quem lê o sessionStorage é a tela do PDF, já do outro lado.
+    await vincularPastaAoRelatorio(entry, relPhotos.length > 0 || !!docxHtml)
     setLocked(true)
-    router.push('/cispr15/relatorio')
+    abrirRelatorio()
+  }
+
+  /* ── ver PDF de uma EMENDA ──────────────────────────────────────────────────
+     Abre a tela do relatório renderizando aquela emenda: numeração com a letra,
+     a frase "Cancela e Substitui" e a página de histórico de alterações. Sem
+     montar o rascunho de emenda, a tela abriria o relatório BASE — que é
+     justamente o que este botão não deve fazer.
+
+     É só leitura: nada é gravado no relatório. O rascunho existe para a tela
+     saber o que desenhar, e é o mesmo formato que a tela de emenda produz. */
+  async function handleVerPDFEmenda(entry: RelatorioSalvo, emendaNum: number) {
+    // Busca nos dois formatos (registro próprio e aninhada antiga).
+    const emenda = emendasDoRelatorio(relatoriosList, entry).find(e => e.numero === emendaNum)
+    if (!emenda) { alert('Emenda não encontrada neste relatório.'); return }
+
+    const { photos: relPhotos, docxHtml } = await resolverAssets(entry)
+    // A emenda guarda o cfg de quando foi emitida. Emendas antigas (anteriores
+    // ao snapshot) caem no cfg vigente do relatório — melhor que não abrir.
+    const cfgEmenda = emenda.cfgSnapshot ?? entry.currentCfg ?? entry.cfg
+
+    setCfg(cfgEmenda)
+    setPhotos(relPhotos.map(p => ({ ...p, url: `data:image/jpeg;base64,${p.base64}` })))
+    setDocx({ loading: false, html: docxHtml, filename: entry.docxFilename })
+    localStorage.setItem(CFG_KEY, JSON.stringify(cfgEmenda))
+    await savePhotos(PHOTOS_KEY, relPhotos)
+    localStorage.setItem(LOCKED_KEY, '1')
+
+    const draft: EmendaDraft = {
+      relatorioId: entry.id,
+      numRelatorioOriginal: entry.numRelatorio,
+      emendaNum: emenda.numero,
+      dataEmenda: emenda.dataEmenda,
+      alteracoes: emenda.alteracoes ?? [],
+      cfgOriginal: entry.cfg,
+      photoNamesOriginal: relPhotos.map(p => p.name),
+      docxFilenameOriginal: entry.docxFilename ?? null,
+      eutFolderPath: entry.eutFolderPath,
+    }
+    localStorage.setItem(EMENDA_DRAFT_KEY, JSON.stringify(draft))
+
+    if (docxHtml) sessionStorage.setItem(DOCX_HTML_KEY, docxHtml)
+    else sessionStorage.removeItem(DOCX_HTML_KEY)
+    sessionStorage.setItem(DOCX_NAME_KEY, entry.docxFilename ?? '')
+    sessionStorage.setItem('relatorioAtualId', entry.id)
+
+    await vincularPastaAoRelatorio(entry, relPhotos.length > 0 || !!docxHtml)
+    setLocked(true)
+    abrirRelatorio()
   }
 
   /* ── gerar relatório ── */
@@ -1104,10 +1155,11 @@ export default function Cispr15ConfigPage() {
       // Verificar protocolo duplicado (somente para novos relatórios)
       if (!cfg.numRelatorio && cfg.protocolo.trim()) {
         // Verificar localmente primeiro
-        const localRaw = localStorage.getItem(RELATORIOS_KEY)
-        if (localRaw) {
-          const localList: RelatorioSalvo[] = JSON.parse(localRaw)
-          const dup = localList.find(r => r.protocolo.trim().toLowerCase() === cfg.protocolo.trim().toLowerCase())
+        // Confere contra a lista da rede, não contra o cache: um cache velho
+        // tanto deixa passar duplicata quanto acusa uma que já não existe.
+        {
+          const listaAtual = await carregarRelatorios()
+          const dup = listaAtual.find(r => r.protocolo?.trim().toLowerCase() === cfg.protocolo.trim().toLowerCase())
           if (dup) {
             const ok = confirm(
               `⚠ Protocolo "${cfg.protocolo}" já possui o relatório "${dup.numRelatorio}" no histórico local.\n\nDeseja continuar e criar um novo registro mesmo assim?`
@@ -1153,7 +1205,7 @@ export default function Cispr15ConfigPage() {
       sincronizarAgenda(finalCfg.protocolo, finalCfg.numRelatorio, finalCfg.dataEmissao)
 
       flash4(`Registrado: ${finalCfg.numRelatorio}`)
-      router.push('/cispr15/relatorio')
+      abrirRelatorio()
     } catch (err: any) {
       alert(`Erro ao registrar no Excel: ${err.message}`)
     } finally {
@@ -1254,6 +1306,10 @@ export default function Cispr15ConfigPage() {
       amostras: Array.from({ length: 3 }, newAmostra),
     }
     localStorage.setItem(LOTE_KEY, JSON.stringify(config))
+    // A tela do lote lê o IndexedDB primeiro (é lá que cabem as fotos). Sem
+    // gravar o lote novo aqui também, um lote anterior ainda no IDB seria
+    // aberto no lugar deste.
+    await salvarValor(LOTE_KEY, config)
     if (api?.saveLotes) { try { await api.saveLotes([config]) } catch {} }
     router.push(`/cispr15/lote?id=${config.id}`)
   }
@@ -1308,7 +1364,7 @@ export default function Cispr15ConfigPage() {
       </div>
 
       {tab === 'clientes'     && <ClientesTab     onUsar={handleUsarCliente} />}
-      {tab === 'emendas'      && <EmendasTab    relatorios={relatoriosList} onCarregarRelatorio={handleCarregarRelatorio} onDeleteEmenda={handleDeleteEmenda} />}
+      {tab === 'emendas'      && <EmendasTab    relatorios={relatoriosList} onCarregarRelatorio={handleCarregarRelatorio} onVerPDF={handleVerPDFEmenda} onDeleteEmenda={handleDeleteEmenda} />}
       {tab === 'relatorios'   && <RelatoriosTab onCarregar={handleCarregarRelatorio} onVerPDF={handleVerPDFRelatorio} />}
 
       {tab === 'formulario' && <div className="space-y-5">
@@ -1710,6 +1766,58 @@ export default function Cispr15ConfigPage() {
             </Row>
           </div>
 
+          {/* Fora da RBC — ensaio fora do escopo acreditado */}
+          <button type="button"
+            onClick={() => setCfg(c => ({ ...c, foraDaRbc: !c.foraDaRbc }))}
+            className={cn(
+              'mt-4 w-full flex items-start gap-3 px-3.5 py-3 rounded-xl border text-left transition-all',
+              cfg.foraDaRbc
+                ? 'border-amber-400/40 bg-amber-400/8'
+                : 'border-white/10 bg-white/[0.02] hover:border-white/20',
+            )}>
+            <div className={cn(
+              'w-4 h-4 mt-0.5 rounded border flex items-center justify-center shrink-0 transition-all',
+              cfg.foraDaRbc ? 'bg-amber-400 border-amber-400 text-[#0B0E14]' : 'border-white/25',
+            )}>
+              {cfg.foraDaRbc && <Check size={11} strokeWidth={3.5} />}
+            </div>
+            <div className="min-w-0">
+              <p className={cn('text-xs font-semibold', cfg.foraDaRbc ? 'text-amber-300' : 'text-white/70')}>
+                Emitir FORA DA RBC
+              </p>
+              <p className="text-[10px] text-white/35 leading-relaxed mt-0.5">
+                Ensaio fora do escopo acreditado. O relatório sai sem a etiqueta da Cgcre no cabeçalho,
+                sem a frase do CRL 0075 (capa e demais páginas) e sem os itens de acreditação
+                (requisitos da Cgcre, ILAC e IAAC) nas Observações Finais.
+              </p>
+            </div>
+          </button>
+
+          {/* Idioma do relatório — traduz o corpo do modelo, não o que é digitado */}
+          <div className="mt-4">
+            <p className="text-[10px] text-white/35 uppercase tracking-widest font-mono mb-2">Idioma do relatório</p>
+            <div className="grid grid-cols-2 gap-2">
+              {([['pt', 'Português', 'Padrão'], ['en', 'English', 'Corpo do modelo traduzido']] as const).map(([id, label, sub]) => {
+                const ativo = (cfg.idioma ?? 'pt') === id
+                return (
+                  <button key={id} type="button" onClick={() => setCfg(c => ({ ...c, idioma: id }))}
+                    className={cn('px-3 py-2 rounded-xl border text-left transition-all',
+                      ativo ? 'border-teal/40 bg-teal/8' : 'border-white/10 bg-white/[0.02] hover:border-white/20')}>
+                    <p className={cn('text-xs font-semibold', ativo ? 'text-teal' : 'text-white/70')}>{label}</p>
+                    <p className="text-[10px] text-white/35 mt-0.5">{sub}</p>
+                  </button>
+                )
+              })}
+            </div>
+            {(cfg.idioma ?? 'pt') === 'en' && (
+              <p className="text-[10px] text-white/35 leading-relaxed mt-2">
+                Títulos, rótulos, tabelas de limites, notas e observações finais saem em inglês, com data e
+                separador decimal no formato internacional. O que você digita — cliente, endereço, produto,
+                observações — sai exatamente como foi digitado.
+              </p>
+            )}
+          </div>
+
           {/* Resultado dos ensaios */}
           <p className="text-[10px] text-white/35 uppercase tracking-widest font-mono mt-5 mb-2">Resultado dos ensaios</p>
           <div className="grid grid-cols-3 gap-3">
@@ -1977,13 +2085,13 @@ export default function Cispr15ConfigPage() {
           </button>
 
           <button type="button"
-            onClick={() => locked ? setShowPwdModal(true) : router.push('/cispr15/emenda')}
+            onClick={() => locked ? setShowPwdModal(true) : abrirEmenda()}
             className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm">
             {locked ? <Lock size={14} /> : <History size={14} />}
             Gerar Emenda
           </button>
 
-          <button type="button" onClick={() => router.push('/cispr15/relatorio')}
+          <button type="button" onClick={() => abrirRelatorio()}
             className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm">
             <FileText size={14} /> Ver PDF
           </button>
@@ -2101,7 +2209,7 @@ export default function Cispr15ConfigPage() {
                   if (e.key === 'Enter') {
                     if (pwdInput === correta) {
                       setShowPwdModal(false); setPwdInput(''); setPwdError(false)
-                      router.push('/cispr15/emenda')
+                      abrirEmenda()
                     } else {
                       setPwdError(true); setPwdInput('')
                       setTimeout(() => pwdInputRef.current?.focus(), 0)
@@ -2125,7 +2233,7 @@ export default function Cispr15ConfigPage() {
                   const correta = appPassword || '123'
                   if (pwdInput === correta) {
                     setShowPwdModal(false); setPwdInput(''); setPwdError(false)
-                    router.push('/cispr15/emenda')
+                    abrirEmenda()
                   } else {
                     setPwdError(true); setPwdInput('')
                     setTimeout(() => pwdInputRef.current?.focus(), 0)

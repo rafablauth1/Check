@@ -36,6 +36,20 @@ export interface Cispr15Config {
   periodoFim: string
   dataEmissao: string
   responsavel: string
+  /** Ensaio FORA DA RBC — fora do escopo acreditado.
+   *  Quando true, o relatório sai SEM nenhuma marca de acreditação: sem a
+   *  etiqueta azul da Cgcre no cabeçalho da capa, sem a frase do CRL 0075
+   *  (capa e demais páginas) e sem os três itens das Observações Finais que
+   *  invocam a acreditação (requisitos da Cgcre, ILAC e IAAC). Exibir marca de
+   *  acreditação em ensaio fora do escopo é justamente o que não pode. */
+  foraDaRbc?: boolean
+  /** Idioma do corpo do relatório. Afeta SÓ o texto do modelo — títulos,
+   *  rótulos, tabelas de limites, notas e observações finais —, além do
+   *  formato de data e do separador decimal. O que o usuário digita (cliente,
+   *  endereço, produto, observações livres) sai como foi digitado: não há
+   *  tradutor embutido, e inventar tradução de dado do cliente num documento
+   *  assinado seria pior que manter o original. Ausente = português. */
+  idioma?: 'pt' | 'en'
   // Resultados dos ensaios
   resultadoConduzida: 'pass' | 'fail'
   resultadoLoop: 'pass' | 'fail'
@@ -151,6 +165,8 @@ export const DEFAULTS: Cispr15Config = {
   numRelatorio: '', orcamento: '', protocolo: '',
   periodoInicio: today(), periodoFim: today(), dataEmissao: today(),
   responsavel: '',
+  foraDaRbc: false,   // padrão é dentro do escopo acreditado
+  idioma: 'pt',       // português é o padrão; inglês é opção por relatório
   resultadoConduzida: 'pass', resultadoLoop: 'pass', resultadoAnexoB: 'pass',
 }
 
@@ -172,15 +188,44 @@ export const LOTE_KEY        = 'cispr15_lote_v1'
 export const CLIENTES_KEY    = 'cispr15_clientes_v1'
 export const RELATORIOS_KEY      = 'cispr15_relatorios_v1'
 export const EMENDA_DRAFT_KEY    = 'cispr15_emenda_draft_v1'
-export const RELATORIO_DOCX_PFX  = 'cispr15_docx_v1_'
+/* RELATORIO_DOCX_PFX foi REMOVIDO de propósito.
+   Era uma chave de localStorage por relatório guardando o HTML do .docx — 5 a
+   10 MB cada, com as imagens em base64. Em 11/09/2026 havia 13 delas ocupando
+   97 MB num cofre de ~5 MB; com a cota estourada toda escrita local passa a
+   falhar em silêncio, o cache do índice congela truncado e uma tela que monte a
+   gravação a partir dele manda para a rede menos relatórios do que existem.
+   O HTML do .docx agora vive no IndexedDB: lib/cispr15/photo-store.ts
+   (lerAssetsLocais / salvarAssetsLocais). Não recrie esta constante. */
 export const LOCKED_KEY          = 'cispr15_locked_v1'
 
-/** EMC 1244/2026 + emenda 1 → EMC1244a/2026 */
-export function formatEmendaNumero(numRelatorio: string, emendaNum: number): string {
-  const letter = String.fromCharCode(96 + Math.min(emendaNum, 26))
-  if (!numRelatorio) return `Emenda ${letter}`
-  const clean = numRelatorio.replace(/\s+/g, '')
-  return clean.includes('/') ? clean.replace('/', `${letter}/`) : `${clean}${letter}`
+/** Marca de ensaio FORA DA RBC no número do relatório. */
+const SUFIXO_FORA_RBC = 's'
+
+/** Insere o sufixo antes da barra do ano: EMC 1244/2026 + 'a' → EMC1244a/2026.
+ *  Número sem barra recebe o sufixo no fim. */
+function comSufixo(numRelatorio: string, sufixo: string): string {
+  const limpo = numRelatorio.replace(/\s+/g, '')
+  return limpo.includes('/') ? limpo.replace('/', `${sufixo}/`) : `${limpo}${sufixo}`
+}
+
+/** Número como ele sai NO RELATÓRIO.
+ *  Dentro da RBC sai como está; fora da RBC ganha o "s" antes da barra:
+ *  EMC 0610/2026 → EMC0610s/2026.
+ *
+ *  O número guardado em `numRelatorio` continua sendo o canônico (o mesmo que
+ *  está na planilha de emissão e com que a agenda casa os itens emitidos) — o
+ *  "s" é aplicado só na hora de exibir/emitir. */
+export function formatNumeroRelatorio(numRelatorio: string, foraDaRbc?: boolean): string {
+  if (!numRelatorio || !foraDaRbc) return numRelatorio
+  return comSufixo(numRelatorio, SUFIXO_FORA_RBC)
+}
+
+/** EMC 1244/2026 + emenda 1 → EMC1244a/2026.
+ *  Fora da RBC o "s" permanece e a letra vem depois: EMC1244sa/2026. */
+export function formatEmendaNumero(numRelatorio: string, emendaNum: number, foraDaRbc?: boolean): string {
+  const letra = String.fromCharCode(96 + Math.min(emendaNum, 26))
+  if (!numRelatorio) return `Emenda ${letra}`
+  return comSufixo(numRelatorio, (foraDaRbc ? SUFIXO_FORA_RBC : '') + letra)
 }
 
 /* Detecta reprovação no relatório Radimation (HTML já parseado pelo parse-docx):
@@ -407,10 +452,68 @@ export interface RelatorioSalvo {
   currentCfg?: Cispr15Config
   photos: { name: string; base64: string }[]
   docxFilename: string | null
+  /** Formato ANTIGO: emenda aninhada dentro do relatório original. Continua
+   *  sendo lido para tudo que já foi emitido — ver emendasDoRelatorio(). */
   emendas: { numero: number; dataEmenda: string; alteracoes: AmendmentChange[]; cfgSnapshot?: Cispr15Config }[]
+  /* ── Emenda como REGISTRO PRÓPRIO (formato novo) ───────────────────────────
+     Emitir uma emenda passa a criar um RelatorioSalvo novo, deixando o original
+     intacto. Estes três campos existem só nesse registro-emenda: `emendaDe`
+     aponta para o id do relatório original, `emendaNum` é o número (1 = "a",
+     2 = "b"…) e `alteracoes` é o que mudou em relação ao original. */
+  emendaDe?: string
+  emendaNum?: number
+  alteracoes?: AmendmentChange[]
   eutFolderPath?: string
   certificadoPdfPath?: string
   certificadoPdfNome?: string
+}
+
+/* ─── emendas: os dois formatos num lugar só ─────────────────────────────────
+   Existem emendas gravadas de duas maneiras: como registro próprio (novo) e
+   aninhadas no relatório original (antigo, tudo que já foi emitido). Juntar
+   isso num ponto único — e não em cada tela — é a mesma lição que a perda de
+   relatórios deixou: sete arquivos lendo a regra por conta própria é como um
+   deles diverge. */
+
+export interface EmendaUnificada {
+  numero: number
+  dataEmenda: string
+  alteracoes: AmendmentChange[]
+  cfgSnapshot?: Cispr15Config
+  /** Só no formato novo: o id do registro-emenda. */
+  registroId?: string
+}
+
+/** É um registro-emenda (e não um relatório de origem)? */
+export function ehEmenda(r: RelatorioSalvo): boolean {
+  return !!r.emendaDe
+}
+
+/** Emendas de um relatório, nos dois formatos, ordenadas pelo número.
+ *  O registro próprio tem precedência sobre a versão aninhada de mesmo número:
+ *  durante a migração os dois podem coexistir, e o novo é o que vale. */
+export function emendasDoRelatorio(lista: RelatorioSalvo[], original: RelatorioSalvo): EmendaUnificada[] {
+  const doRegistro: EmendaUnificada[] = lista
+    .filter(r => r.emendaDe === original.id)
+    .map(r => ({
+      numero: r.emendaNum ?? 1,
+      dataEmenda: r.dataEmissao,
+      alteracoes: r.alteracoes ?? [],
+      cfgSnapshot: r.cfg,
+      registroId: r.id,
+    }))
+  const jaVistos = new Set(doRegistro.map(e => e.numero))
+  const aninhadas: EmendaUnificada[] = (original.emendas ?? [])
+    .filter(e => !jaVistos.has(e.numero))
+    .map(e => ({ numero: e.numero, dataEmenda: e.dataEmenda, alteracoes: e.alteracoes, cfgSnapshot: e.cfgSnapshot }))
+  return [...doRegistro, ...aninhadas].sort((a, b) => a.numero - b.numero)
+}
+
+/** Número da próxima emenda deste relatório (1 = "a"). Conta os dois formatos,
+ *  senão emendar um relatório antigo repetiria a letra de uma emenda existente. */
+export function proximaEmenda(lista: RelatorioSalvo[], original: RelatorioSalvo): number {
+  const atuais = emendasDoRelatorio(lista, original)
+  return atuais.length ? Math.max(...atuais.map(e => e.numero)) + 1 : 1
 }
 
 /* ─── configurações do app ─────────────────────────────────────────────────── */
@@ -427,7 +530,9 @@ export interface AppSettings {
   updateFolder: string
   certThumbprint: string
   pfxPath: string
-  pfxPassword: string
+  /** Só leitura: diz se a senha do .pfx já foi informada NESTA sessão do app.
+   *  A senha em si não trafega — vive no processo principal e nunca vai a disco. */
+  pfxPasswordNaSessao?: boolean
   backupFolder: string
   autoBackup: boolean
 }
@@ -444,7 +549,6 @@ export const SETTINGS_DEFAULTS: AppSettings = {
   updateFolder: '',
   certThumbprint: '',
   pfxPath: '',
-  pfxPassword: '',
   backupFolder: '',
   autoBackup: true,
 }

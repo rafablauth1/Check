@@ -72,6 +72,41 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             window.alert = function(m){ _a.call(window,m); restoreFocus(); };
           })();
         `}} />
+        {/* Vigia de travamento DA TELA.
+            O processo principal já se cronometra (ver electron/main.js). Falta o
+            outro lado: quando a thread da tela fica ocupada, nem tecla nem
+            clique são processados, e é exatamente isso que se sente como "os
+            campos e os botões travaram". Um intervalo de 500ms que atrasa 8s
+            significa 8s de tela morta. Só registra travadas de verdade (≥1s),
+            para o log não virar ruído. */}
+        <script dangerouslySetInnerHTML={{ __html: `
+          (function(){
+            try {
+              var INTERVALO = 500, LIMITE = 1000, ultimo = Date.now(), pendentes = [];
+              // Janela oculta/minimizada: o Chromium estrangula timers para 1x
+              // por minuto, e o vigia lia isso como "59,5s travado". Foi o que
+              // encheu o log de 192 falsos positivos — quase todos na /agenda,
+              // que fica aberta em segundo plano. Zerar a referência ao voltar
+              // a ficar visível, senão o primeiro tique depois de voltar ainda
+              // carrega todo o tempo em que a janela esteve escondida.
+              document.addEventListener('visibilitychange', function(){ ultimo = Date.now() });
+              setInterval(function(){
+                var agora = Date.now(), atraso = agora - ultimo - INTERVALO;
+                ultimo = agora;
+                if (document.visibilityState !== 'visible') return;
+                if (atraso < LIMITE) return;
+                var evento = { bloqueadoMs: atraso, tela: location.pathname };
+                var api = window.electronAPI;
+                if (api && api.reportarTravamentoTela) {
+                  while (pendentes.length) { try { api.reportarTravamentoTela(pendentes.shift()) } catch(e){} }
+                  try { api.reportarTravamentoTela(evento) } catch(e){}
+                } else if (pendentes.length < 20) {
+                  pendentes.push(evento);   // preload ainda não chegou: guarda p/ depois
+                }
+              }, INTERVALO);
+            } catch(e){}
+          })();
+        `}} />
       </head>
       <body className="bg-navy text-white antialiased font-body">
         <ErrorBoundary>

@@ -1,6 +1,26 @@
+/* Tamanho do pool de threads que atende I/O de arquivo. TEM que ser definido
+   antes de qualquer operação assíncrona de fs, porque o pool é criado na
+   primeira delas e o tamanho não muda depois — por isso está na linha 1.
+
+   O padrão do Node é 4. Este app conversa com dois drives de rede (R: e T:), e
+   quando um share engasga o Windows leva 30-45s para desistir de cada chamada.
+   Com 4 threads, bastam 4 chamadas presas para TODA operação de arquivo
+   seguinte entrar na fila: todo botão de ação morre junto, embora o laço de
+   eventos siga livre (é por isso que o vigia de travamento não acusa nada).
+
+   Ampliar o pool não conserta um share caído — nada no app conserta —, e a
+   RESSALVA importante: não consegui MEDIR o ganho. Duas tentativas falharam por
+   vício de medição (pbkdf2 é limitado por CPU, e a segunda leitura dos mesmos
+   arquivos vem do cache do sistema), e isolar o efeito sobre SMB não se mostrou
+   viável aqui. Fica como endurecimento padrão para app que faz I/O de rede —
+   barato e sem risco conhecido —, não como correção comprovada do
+   congelamento. Quem vai apontar o culpado é o `lento:ipc` do log. */
+process.env.UV_THREADPOOL_SIZE = process.env.UV_THREADPOOL_SIZE || '16'
+
 const { app, BrowserWindow, ipcMain, dialog, shell, Menu, nativeImage, nativeTheme } = require('electron')
 const path    = require('path')
 const http    = require('http')
+const net     = require('net')
 const https   = require('https')
 const fs      = require('fs')
 const os      = require('os')
@@ -9,6 +29,69 @@ const { execFile, spawn } = require('child_process')
 const XLSX    = require('xlsx')
 const mammoth = require('mammoth')
 const { listSigningCerts, signPDF, signPDFWithPfx, validatePfx } = require('./pdf-signer')
+const { configurarLog, logErro, logInfo, caminhoDoLog } = require('./lib/log')
+const { encolheDemais, mensagemRecusa, caminhosComBackups, rotacionarBackups } = require('./lib/guarda-dados')
+
+/* ─── Instrumentação: quem congela a janela ───────────────────────────────────
+ *
+ * Sintoma relatado: ao clicar "Gerar Relatório" / "Gerar Emenda" / "Emitir
+ * Lote", os campos de digitação E os botões morrem por 30s a 1min e depois
+ * voltam sozinhos. Campos e botões morrendo JUNTOS e voltando é assinatura de
+ * bloqueio, não de estado preso.
+ *
+ * Medi de fora tudo que dava (rede ~30ms, planilha ~250ms, varredura de 13 mil
+ * PDFs 0,2s, foco, corretor) e nada explicou 30s. Então em vez de continuar
+ * chutando, o app passa a se cronometrar sozinho:
+ *
+ *   1) todo handler IPC que passar de 400ms vira uma linha no log;
+ *   2) um vigia mede o atraso do laço de eventos do processo principal — se ele
+ *      travar, registra QUANTO travou, mesmo que a causa não seja um IPC.
+ *
+ * Com (1) e (2) o log responde de uma vez: se aparecer o nome de um handler, a
+ * culpa é dele; se só aparecer o vigia, o bloqueio está fora do IPC; se não
+ * aparecer nada, o congelamento é do renderer e não deste processo.
+ */
+const LIMITE_IPC_LENTO_MS = 400
+
+/* Handlers que abrem um diálogo nativo e ficam parados esperando a pessoa
+   escolher um arquivo ou pasta. A duração deles é tempo do USUÁRIO decidindo,
+   não lentidão do app — na primeira coleta, `eut:open-folder` apareceu com 13s
+   e 14,5s só porque o seletor de pasta ficou aberto. Registrar isso afoga o
+   sinal que interessa, então ficam de fora. */
+const CANAIS_QUE_ESPERAM_USUARIO = new Set([
+  'settings:browse-excel', 'settings:browse-folder', 'settings:browse-pdf',
+  'agenda:organizar-resultados', 'lote:importar-pasta-mae',
+  'pdf:save', 'pdf:pick-pfx', 'pdf:save-html', 'eut:open-folder',
+])
+
+const handleOriginal = ipcMain.handle.bind(ipcMain)
+ipcMain.handle = (canal, ouvinte) => handleOriginal(canal, async (...args) => {
+  const inicio = Date.now()
+  try {
+    return await ouvinte(...args)
+  } finally {
+    const ms = Date.now() - inicio
+    if (ms >= LIMITE_IPC_LENTO_MS && !CANAIS_QUE_ESPERAM_USUARIO.has(canal)) {
+      logInfo('lento:ipc', { canal, ms })
+    }
+  }
+})
+
+/* Vigia do laço de eventos. Um setInterval de 500ms que atrasa 8s significa que
+   o processo principal ficou 8s sem respirar — e, nesse tempo, nenhuma tecla e
+   nenhum clique chegam na janela. */
+const INTERVALO_VIGIA_MS = 500
+const LIMITE_TRAVA_MS = 700
+function iniciarVigiaDeTravamento() {
+  let ultimo = Date.now()
+  const t = setInterval(() => {
+    const agora = Date.now()
+    const atraso = agora - ultimo - INTERVALO_VIGIA_MS
+    if (atraso >= LIMITE_TRAVA_MS) logInfo('travou:processo-principal', { bloqueadoMs: atraso })
+    ultimo = agora
+  }, INTERVALO_VIGIA_MS)
+  t.unref?.()
+}
 
 /* ─── PowerShell script para Windows OCR ─────────────────────────────────── */
 const PS_OCR_SCRIPT = `
@@ -37,6 +120,9 @@ try {
 `
 
 const DEV_PORT  = 3000
+// Tempo mínimo que a tela de "iniciando" fica na frente no modo dev — com o
+// servidor já de pé ela sumia num piscar e ninguém via o Sahur.
+const SPLASH_MIN_MS = 7000
 const PROD_PORT = 3721
 const APP_PATH  = '/dashboard'
 
@@ -78,37 +164,28 @@ let eutFolderPath = null
 
 // Pasta de rede única pra TODOS os dados (cadastros, agenda, relatórios,
 // clientes) — mesma pasta em todos os PCs, sem precisar configurar nada.
-// Mantida em sincronia com lib/settings-server.ts (CADASTROS_FOLDER_PADRAO).
-const CADASTROS_FOLDER_PADRAO = 'R:\\Compartilhado\\CISPR15'
-const DATA_FOLDER_PADRAO       = 'R:\\Compartilhado\\CISPR15'
-const AGENDA_FOLDER_PADRAO     = 'R:\\Compartilhado\\CISPR15\\agenda'
+// Os caminhos em si vivem em electron/lib/network-paths.js. O lado servidor
+// do Next tem a própria cópia (lib/settings-server.ts) porque importar este
+// módulo lá estoura a heap do webpack — scripts/conferir-constantes.js compara
+// os dois e quebra o build se divergirem.
+const {
+  CADASTROS_FOLDER_PADRAO,
+  DATA_FOLDER_PADRAO,
+  AGENDA_FOLDER_PADRAO,
+  REGISTROS_ENSAIOS_BASE,
+  MIRROR_FOLDER_PADRAO,
+  UPDATE_FOLDER_PADRAO,
+  ILUMINACAO_LAMPADA_BASE,
+  ILUMINACAO_LUMINARIA_BASE,
+  RELATORIOS_COPIA_FOLDER,
+} = require('./lib/network-paths')
 
-// Pasta espelho padrão: recebe cópia automática de TODOS os dados (cadastros,
-// agenda, relatórios, clientes) a cada save — best-effort, sem bloquear o save
-// principal (ver espelharArquivo). Existe pra PCs que só conseguem escrever
-// na pasta de Alta Tecnologia, mas continuam enxergando os dados atualizados
-// através do espelho.
-const MIRROR_FOLDER_PADRAO =
-  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15'
+// pfxPassword NÃO entra aqui de propósito: a senha do certificado que assina
+// juridicamente os relatórios não é gravada em disco (ver pfxPasswordSessao).
+const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: DATA_FOLDER_PADRAO, agendaFolder: AGENDA_FOLDER_PADRAO, pdfCopyFolder: '', cadastrosFolder: CADASTROS_FOLDER_PADRAO, mirrorFolder: MIRROR_FOLDER_PADRAO, pdfAutoSaveToEut: true, updateFolder: UPDATE_FOLDER_PADRAO, certThumbprint: '', pfxPath: '', backupFolder: '', autoBackup: true }
 
-// Pasta de rede com o instalador mais recente + version.json — o app confere
-// aqui (silenciosamente, ver ipcMain 'update:check') se há versão mais nova e
-// oferece instalar sem precisar copiar nada manualmente em cada PC. Mantida
-// atualizada automaticamente pelo script scripts/publish-update.js a cada
-// "npm run dist".
-const UPDATE_FOLDER_PADRAO =
-  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios\\CISPR15\\instalador'
-
-const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: DATA_FOLDER_PADRAO, agendaFolder: AGENDA_FOLDER_PADRAO, pdfCopyFolder: '', cadastrosFolder: CADASTROS_FOLDER_PADRAO, mirrorFolder: MIRROR_FOLDER_PADRAO, pdfAutoSaveToEut: true, updateFolder: UPDATE_FOLDER_PADRAO, certThumbprint: '', pfxPath: '', pfxPassword: '', backupFolder: '', autoBackup: true }
-
-// Pastas de rede da Iluminação onde ficam as pastas por protocolo (uma pasta
-// por ano) — usadas pra importar fotos de amostras pra nossa rede (EMC). O
-// tipo do item na agenda ('lampada'/'luminaria') decide qual base usar.
-const ILUMINACAO_LAMPADA_BASE   = 'T:\\Laboratórios\\Iluminação\\2 - Lâmpadas\\!Protocolos'
-const ILUMINACAO_LUMINARIA_BASE = 'T:\\Laboratórios\\Iluminação\\5 - Luminárias\\!Protocolos'
 // Pasta de rede EMC onde as pastas por protocolo (com "fotos" dentro) são criadas.
-const FOTOS_DESTINO_BASE =
-  'T:\\Laboratórios\\Alta Tecnologia\\Compatibilidade Eletromagnética\\3 - Planilhas de ensaios\\3.2 - Registros de ensaios'
+const FOTOS_DESTINO_BASE = REGISTROS_ENSAIOS_BASE
 const IMG_EXTENSOES = new Set(['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.tif', '.tiff'])
 
 /* pasta raiz do app:
@@ -125,7 +202,9 @@ function getAppRoot() {
 function getDefaultPaths() {
   const userData = app.getPath('userData')
   return {
-    excelPath:     'C:\\Users\\Notla\\OneDrive\\Área de Trabalho\\Compatibilidade eletromagnética_2026.xlsx',
+    // Sem padrão de planilha: o caminho que estava aqui era o Desktop de OUTRA
+    // máquina ("C:\Users\Notla\..."), que não existe em PC nenhum do lab.
+    excelPath:     '',
     pdfCopyFolder: path.join(userData, 'pdfs'),
   }
 }
@@ -138,16 +217,60 @@ function getSettingsFile() {
   return path.join(getUserDataDir(), 'settings.json')
 }
 
-function readSettings() {
-  const def = { ...SETTINGS_DEFAULTS, ...getDefaultPaths() }
+/* ─── senha do .pfx: memória, nunca disco ──────────────────────────────────
+   Essa senha destrava o certificado que assina JURIDICAMENTE os relatórios do
+   laboratório. Ficava em texto puro no settings.json (e ainda era devolvida ao
+   renderer a cada settings:get) — qualquer um com acesso ao perfil, a um
+   backup ou a uma cópia da pasta assinava no lugar do responsável técnico.
+   Agora vive só nesta variável, pelo tempo que o app estiver aberto: informou
+   uma vez, assina o lote inteiro sem repetir; fechou o app, some. */
+let pfxPasswordSessao = null
+
+/* Apaga a senha que ficou gravada nas versões antigas. Roda uma vez no boot —
+   sem isso o texto puro continuaria no disco de quem já usava o app. */
+function migrarSenhaPfxDoDisco() {
   try {
     const f = getSettingsFile()
-    if (fs.existsSync(f)) {
-      const saved = JSON.parse(fs.readFileSync(f, 'utf-8'))
-      return { ...def, ...saved }
-    }
+    if (!fs.existsSync(f)) return
+    const saved = JSON.parse(fs.readFileSync(f, 'utf-8'))
+    if (!('pfxPassword' in saved)) return
+    delete saved.pfxPassword
+    fs.writeFileSync(f, JSON.stringify(saved, null, 2), 'utf-8')
+    invalidarCacheSettings()
   } catch {}
-  return def
+}
+
+/* Cache das settings em memória.
+   readSettings() é chamado dezenas de vezes por operação — dentro de
+   dataFilePath(), agendaFilePath(), espelharArquivo() (uma vez por arquivo
+   espelhado) e dentro dos laços de verificar-pdfs e importar-fotos-rede. Cada
+   chamada fazia existsSync + readFileSync + JSON.parse SÍNCRONOS, no processo
+   principal, o que congela a janela inteira.
+   Só este app escreve o arquivo (instância única garantida pelo
+   requestSingleInstanceLock), então invalidar nas nossas próprias escritas
+   basta. */
+let settingsCache = null
+function invalidarCacheSettings() { settingsCache = null }
+
+function readSettings() {
+  if (settingsCache) return settingsCache
+  const def = { ...SETTINGS_DEFAULTS, ...getDefaultPaths() }
+  const f = getSettingsFile()
+  // Principal e, se ele estiver ilegível, o .bak escrito pelo writeSettings.
+  // Cair direto nos defaults com o arquivo corrompido troca silenciosamente
+  // todas as pastas de rede configuradas pelos caminhos padrão.
+  for (const caminho of [f, f + '.bak']) {
+    try {
+      if (!fs.existsSync(caminho)) continue
+      const saved = JSON.parse(fs.readFileSync(caminho, 'utf-8'))
+      // Arquivo legado ainda pode trazer a senha; não reintroduz em memória.
+      delete saved.pfxPassword
+      settingsCache = { ...def, ...saved }
+      return settingsCache
+    } catch {}
+  }
+  settingsCache = def
+  return settingsCache
 }
 
 /* Migra dados antigos (dentro da pasta do app) para userData, uma única vez */
@@ -218,13 +341,32 @@ function writeSettings(partial) {
   // final) — um caminho com espaço sobrando aponta pra uma pasta que não
   // existe, e o erro fica difícil de perceber só olhando a tela.
   const limpo = { ...partial }
+  // A senha do .pfx nunca é gravada: se vier no partial (tela de Configurações,
+  // settings antigo em cache no renderer), fica só na sessão.
+  if ('pfxPassword' in limpo) {
+    if (typeof limpo.pfxPassword === 'string' && limpo.pfxPassword) pfxPasswordSessao = limpo.pfxPassword
+    delete limpo.pfxPassword
+  }
   for (const k of Object.keys(limpo)) {
     if (typeof limpo[k] === 'string') limpo[k] = limpo[k].trim()
   }
   const merged = { ...readSettings(), ...limpo }
   const f = getSettingsFile()
   fs.mkdirSync(path.dirname(f), { recursive: true })
-  fs.writeFileSync(f, JSON.stringify(merged, null, 2), 'utf-8')
+  const texto = JSON.stringify(merged, null, 2)
+  // Atômico + .bak. Um settings.json truncado é engolido pelo catch do
+  // readSettings e vira "defaults" — ou seja, TODOS os caminhos de pasta
+  // configurados voltam ao padrão sem ninguém perceber.
+  try { fs.copyFileSync(f, f + '.bak') } catch {}
+  const tmp = `${f}.tmp.${process.pid}.${Date.now()}`
+  try {
+    fs.writeFileSync(tmp, texto, 'utf-8')
+    fs.renameSync(tmp, f)
+  } catch {
+    try { fs.unlinkSync(tmp) } catch {}
+    fs.writeFileSync(f, texto, 'utf-8')
+  }
+  settingsCache = merged
   return merged
 }
 
@@ -235,32 +377,17 @@ function writeSettings(partial) {
 // clientes, que são lidos/gravados direto pelo processo principal via IPC.
 // Objetivo: impedir edição casual/acidental abrindo o .json fora do app (não é
 // proteção contra alguém disposto a extrair a chave do próprio executável).
-const ENC_MAGIC = 'CISPR15ENC1:'
-const ENC_KEY = crypto.scryptSync('cispr15-labelo-dados-em-repouso', 'cispr15-labelo-salt-fixo', 32)
-
-function encriptar(json) {
-  const iv = crypto.randomBytes(12)
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENC_KEY, iv)
-  const enc = Buffer.concat([cipher.update(json, 'utf-8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return ENC_MAGIC + Buffer.concat([iv, tag, enc]).toString('base64')
-}
-
-function decriptar(conteudo) {
-  const buf = Buffer.from(conteudo.slice(ENC_MAGIC.length), 'base64')
-  const iv = buf.subarray(0, 12)
-  const tag = buf.subarray(12, 28)
-  const dados = buf.subarray(28)
-  const decipher = crypto.createDecipheriv('aes-256-gcm', ENC_KEY, iv)
-  decipher.setAuthTag(tag)
-  return Buffer.concat([decipher.update(dados), decipher.final()]).toString('utf-8')
-}
+// Chave e funções vêm de electron/lib/cripto-dados.js. O lado servidor do
+// Next mantém a própria cópia (lib/dados.ts); conferir-constantes.js garante
+// que as duas não divirjam — no dia em que divergissem, um lado gravaria e o
+// outro não leria, e o arquivo pareceria corrompido com os dados intactos.
+const { encriptar, decriptar, estaCriptografado } = require('./lib/cripto-dados')
 
 // Interpreta o conteúdo lido do disco: criptografado (formato novo) ou JSON
 // puro (arquivo legado, de antes desta mudança — segue funcionando, e é
 // migrado no próximo save).
 function parseConteudo(bruto) {
-  if (bruto.startsWith(ENC_MAGIC)) return JSON.parse(decriptar(bruto))
+  if (estaCriptografado(bruto)) return JSON.parse(decriptar(bruto))
   return JSON.parse(bruto)
 }
 
@@ -272,8 +399,18 @@ async function espelharArquivo(relPath, conteudo) {
   try {
     const mp = path.join(mirrorFolder, relPath)
     await fs.promises.mkdir(path.dirname(mp), { recursive: true })
-    await fs.promises.writeFile(mp, conteudo, 'utf-8')
-  } catch {}
+    // .tmp + rename como em lib/dados.ts: o espelho é lido por outros PCs, e
+    // um writeFile interrompido deixaria lá um arquivo pela metade que o outro
+    // lado leria como "corrompido".
+    const tmp = `${mp}.tmp.${process.pid}.${Date.now()}`
+    try {
+      await fs.promises.writeFile(tmp, conteudo, 'utf-8')
+      await fs.promises.rename(tmp, mp)
+    } catch {
+      try { await fs.promises.unlink(tmp) } catch {}
+      await fs.promises.writeFile(mp, conteudo, 'utf-8')
+    }
+  } catch (err) { logErro('espelho', err, { arquivo: relPath }) }
 }
 
 // Fallback de último recurso (pasta local) — só entra em jogo se dataFolder
@@ -296,27 +433,70 @@ function agendaFilePath() {
 // Lê um arquivo já decriptografando; se o principal estiver corrompido/ilegível
 // (ex.: PC ainda no build antigo lendo um arquivo já migrado por outro PC),
 // tenta o .bak antes de desistir — mesma proteção que lib/dados.ts já tinha
-// para os cadastros. Evita que a agenda/relatórios/clientes "sumam" (vejam
-// lista vazia) durante a janela de atualização entre PCs.
+// para os cadastros.
+//
+// Devolve o ESTADO junto com os dados, e essa distinção é o ponto:
+//   'ok'         → leu
+//   'ausente'    → arquivo não existe (primeiro uso) → lista vazia é correta
+//   'corrompido' → existe mas não abre, nem ele nem o .bak
+// Antes tudo isso virava `null` → `?? []` → a tela mostrava lista VAZIA de um
+// arquivo que na verdade estava cheio. O usuário mexia em qualquer coisa, o
+// app salvava `[]` por cima do arquivo de rede e o .bak ia junto no save
+// seguinte. Com o estado explícito, 'corrompido' vira erro na tela e o save
+// fica bloqueado, em vez de apagar tudo em silêncio.
 async function lerArquivoComFallback(fp) {
-  try { return parseConteudo(await fs.promises.readFile(fp, 'utf-8')) }
-  catch {
-    try { return parseConteudo(await fs.promises.readFile(fp + '.bak', 'utf-8')) }
-    catch { return null }
+  const candidatos = caminhosComBackups(fp)
+  // "Ausente" só quando NENHUM candidato existe. Se algum existir e não puder
+  // ser lido (JSON quebrado, decriptação falhando, permissão negada), é
+  // corrompido — a distinção é o que impede a tela de mostrar lista vazia e o
+  // save seguinte apagar o arquivo de verdade.
+  let todosAusentes = true
+  for (let i = 0; i < candidatos.length; i++) {
+    try {
+      const dados = parseConteudo(await fs.promises.readFile(candidatos[i], 'utf-8'))
+      // Ler de um backup nunca deve ser silencioso: é sinal de que o arquivo
+      // principal se perdeu, e sem registro isso passa despercebido até doer.
+      if (i > 0) logErro('leitura:usou-backup', new Error('arquivo principal ilegivel'), {
+        arquivo: fp, usado: candidatos[i],
+      })
+      return { dados, estado: 'ok' }
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') todosAusentes = false
+    }
+  }
+  return { dados: null, estado: todosAusentes ? 'ausente' : 'corrompido' }
+}
+
+// Grava com backup da versão anterior antes de sobrescrever. Escrita ATÔMICA
+// (.tmp + rename, atômico no mesmo volume) — mesmo padrão já provado no
+// escreverJSON de lib/dados.ts. Sem isso, uma queda no meio do writeFile
+// deixava o arquivo pela metade. Se o rename falhar (filesystem sem rename
+// atômico), cai pra escrita direta: melhor gravar do que perder o save.
+async function gravarComBackup(fp, conteudo) {
+  await rotacionarBackups(fp)
+  const tmp = `${fp}.tmp.${process.pid}.${Date.now()}`
+  try {
+    await fs.promises.writeFile(tmp, conteudo, 'utf-8')
+    await fs.promises.rename(tmp, fp)
+  } catch {
+    try { await fs.promises.unlink(tmp) } catch {}
+    await fs.promises.writeFile(fp, conteudo, 'utf-8')
   }
 }
 
-// Grava com backup da versão anterior antes de sobrescrever (mesmo padrão do
-// escreverJSON de lib/dados.ts) — best-effort, não impede o save principal.
-async function gravarComBackup(fp, conteudo) {
-  try { await fs.promises.copyFile(fp, fp + '.bak') } catch {}
-  await fs.promises.writeFile(fp, conteudo, 'utf-8')
-}
+// Espera entre tentativas de gravação. Sem isso as 4 tentativas acontecem em
+// poucos milissegundos e falham todas pelo mesmo motivo — um share que caiu
+// não volta nesse intervalo.
+const ESPERAS_REGRAVACAO = [0, 150, 400, 1000]
+const dormir = ms => new Promise(r => setTimeout(r, ms))
 
 // ASSÍNCRONOS (fs.promises): escrita/leitura síncrona no processo PRINCIPAL congela
 // a janela inteira (inclusive a digitação) durante o I/O — pior em pasta de rede.
+// Devolve { itens, estado }. Só quem PRECISA distinguir arquivo corrompido de
+// arquivo vazio olha o estado (o handler data:get-agenda); o resto usa .itens.
 async function readAgendaFile() {
-  return (await lerArquivoComFallback(agendaFilePath())) ?? []
+  const { dados, estado } = await lerArquivoComFallback(agendaFilePath())
+  return { itens: Array.isArray(dados) ? dados : [], estado }
 }
 
 async function writeAgendaFile(data) {
@@ -324,7 +504,8 @@ async function writeAgendaFile(data) {
   await fs.promises.mkdir(path.dirname(fp), { recursive: true })
   const conteudo = encriptar(JSON.stringify(data, null, 2))
   let lastErr = null
-  for (let i = 0; i < 4; i++) {
+  for (const espera of ESPERAS_REGRAVACAO) {
+    if (espera) await dormir(espera)
     try {
       await gravarComBackup(fp, conteudo)
       // Mirror da agenda vai para a subpasta "agenda/" dentro da pasta espelho —
@@ -333,44 +514,35 @@ async function writeAgendaFile(data) {
       espelharArquivo('agenda/cispr15_agenda.json', conteudo).catch(() => {})
       return
     }
-    catch (e) { lastErr = e }
+    catch (e) { lastErr = e; logErro('gravar:agenda', e, { arquivo: fp, espera }) }
   }
   throw lastErr
-}
-
-function copyPdfToFolder(filePath) {
-  const { pdfCopyFolder } = readSettings()
-  if (!pdfCopyFolder || !filePath) return
-  try {
-    fs.mkdirSync(pdfCopyFolder, { recursive: true })
-    fs.copyFileSync(filePath, path.join(pdfCopyFolder, path.basename(filePath)))
-  } catch {}
 }
 
 /* Lista todos os PDFs sob a pasta de cópias, incluindo subpastas por ano
    (organização .../pdfs/2026/). Mantém compatibilidade com PDFs antigos
    salvos direto na raiz (flat). */
-function listPdfsDeep(root) {
+// Recursivo de verdade: antes descia UM nível só, então um PDF em
+// .../2026/janeiro/ era invisível pro findPdfCopy e pro deletePdfCopy — o
+// arquivo estava lá e o app dizia que não existia. Profundidade limitada
+// porque a pasta de cópias vive em rede e não vale varrer uma árvore inteira.
+function listPdfsDeep(root, profundidade = 4) {
   const out = []
+  if (profundidade < 0) return out
   try {
     for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       const full = path.join(root, entry.name)
-      if (entry.isDirectory()) {
-        try {
-          for (const f of fs.readdirSync(full)) {
-            if (f.toLowerCase().endsWith('.pdf')) out.push(path.join(full, f))
-          }
-        } catch {}
-      } else if (entry.name.toLowerCase().endsWith('.pdf')) {
-        out.push(full)
-      }
+      if (entry.isDirectory()) out.push(...listPdfsDeep(full, profundidade - 1))
+      else if (entry.name.toLowerCase().endsWith('.pdf')) out.push(full)
     }
   } catch {}
   return out
 }
 
+// Devolve { itens, estado } — mesma convenção de readAgendaFile.
 async function readDataFile(filename) {
-  return (await lerArquivoComFallback(dataFilePath(filename))) ?? []
+  const { dados, estado } = await lerArquivoComFallback(dataFilePath(filename))
+  return { itens: Array.isArray(dados) ? dados : [], estado }
 }
 
 async function writeDataFile(filename, data) {
@@ -378,13 +550,14 @@ async function writeDataFile(filename, data) {
   await fs.promises.mkdir(path.dirname(fp), { recursive: true })
   const conteudo = encriptar(JSON.stringify(data, null, 2))
   let lastErr = null
-  for (let i = 0; i < 4; i++) {
+  for (const espera of ESPERAS_REGRAVACAO) {
+    if (espera) await dormir(espera)
     try {
       await gravarComBackup(fp, conteudo)
       espelharArquivo(filename, conteudo).catch(() => {})
       return
     }
-    catch (e) { lastErr = e }
+    catch (e) { lastErr = e; logErro('gravar:dados', e, { arquivo: fp, espera }) }
   }
   throw lastErr
 }
@@ -514,15 +687,35 @@ async function maybeAutoBackup() {
 
 /* ─── utilitários ─────────────────────────────────────────────────────────── */
 
-function ping(port) {
+/* "Tem servidor nesta porta?" — conexão TCP pura, NÃO um GET.
+   Antes isto fazia http.get('/') com timeout de 800ms. Com o `next dev` recém
+   iniciado (ou com .next apagado), a rota "/" leva ~9s compilando na primeira
+   vez: o GET estourava, o ping respondia "não tem servidor", e o app caía no
+   ramo do standalone — que no modo dev não existe — abrindo um diálogo modal
+   de erro e morrendo. Era essa a origem da janela "Error" que aparecia e
+   travava tudo. O socket responde assim que a porta está escutando,
+   independente de qualquer rota estar compilada. */
+function ping(port, timeoutMs = 800) {
   return new Promise(resolve => {
-    const req = http.get({ host: '127.0.0.1', port, path: '/', timeout: 800 }, () => {
-      req.destroy(); resolve(true)
-    })
-    req.on('error',   () => resolve(false))
-    req.on('timeout', () => { req.destroy(); resolve(false) })
-    req.end()
+    const socket = new net.Socket()
+    const encerrar = valor => { socket.removeAllListeners(); socket.destroy(); resolve(valor) }
+    socket.setTimeout(timeoutMs)
+    socket.once('connect', () => encerrar(true))
+    socket.once('timeout', () => encerrar(false))
+    socket.once('error',   () => encerrar(false))
+    socket.connect(port, '127.0.0.1')
   })
+}
+
+/* O dev server pode ainda estar subindo quando o app abre (o .bat lança os dois
+   quase juntos). Insiste por alguns segundos antes de concluir que não há
+   servidor — desistir cedo é o que mandava o app pro caminho errado. */
+async function pingComEspera(port, tentativas = 12, intervaloMs = 500) {
+  for (let i = 0; i < tentativas; i++) {
+    if (await ping(port)) return true
+    if (i < tentativas - 1) await dormir(intervaloMs)
+  }
+  return false
 }
 
 function waitForServer(port, timeoutMs = 120_000, proc) {
@@ -602,13 +795,17 @@ async function createWindow() {
   // Tela de "iniciando": versão divertida só no modo dev (não empacotado) —
   // não sai no build de produção.
   win.loadFile(path.join(__dirname, app.isPackaged ? 'loading.html' : 'loading-dev.html'))
+  const splashInicio = Date.now()
   win.maximize()
   win.show()
+  logInfo('janela:splash-exibido', {})
 
   let port
 
   if (!app.isPackaged) {
-    if (await ping(DEV_PORT)) {
+    const respondeu = await pingComEspera(DEV_PORT)
+    logInfo('janela:ping-dev', { porta: DEV_PORT, respondeu })
+    if (respondeu) {
       port = DEV_PORT
     } else {
       const standaloneDir    = path.resolve(__dirname, '../.next/standalone')
@@ -631,12 +828,41 @@ async function createWindow() {
   }
 
   currentAppPort = port
+  logInfo('janela:porta-definida', { porta: port })
 
   // Pasta arrastada pro atalho no cold start → abre direto no formulário do
   // CISPR15 (em vez do dashboard) e manda o conteúdo assim que a página carrega.
   const folderToOpen = pendingFolderPath
   pendingFolderPath = null
-  win.loadURL('http://127.0.0.1:' + port + (folderToOpen ? '/cispr15' : APP_PATH))
+
+  // Segura o splash até completar SPLASH_MIN_MS (só no dev). Se a janela já
+  // tiver sido fechada nesse meio tempo, não tenta navegar num objeto morto.
+  if (!app.isPackaged) {
+    const resta = SPLASH_MIN_MS - (Date.now() - splashInicio)
+    if (resta > 0) await new Promise(r => setTimeout(r, resta))
+    if (win.isDestroyed()) return
+  }
+
+  const urlInicial = 'http://127.0.0.1:' + port + (folderToOpen ? '/cispr15' : APP_PATH)
+
+  /* Se a primeira navegação falhar, o Chromium pinta a página de erro dele e
+     fica lá — a janela mostra "Error" e nada mais acontece, porque ninguém
+     tenta de novo. É o que fazia o app "abrir quebrado" de vez em quando: o
+     servidor responde na porta (o ping passa), mas a PRIMEIRA rota ainda está
+     compilando/subindo e a resposta demora além do limite do Chromium.
+     Aqui: até 5 tentativas espaçadas antes de desistir. */
+  let tentativasDeCarga = 0
+  win.webContents.on('did-fail-load', (_e, codigo, descricao, urlQueFalhou, ehQuadroPrincipal) => {
+    if (!ehQuadroPrincipal || codigo === -3) return   // -3 = navegação abortada (normal)
+    if (win.isDestroyed() || tentativasDeCarga >= 5) return
+    tentativasDeCarga++
+    logErro('janela:carga', new Error(descricao + ' (' + codigo + ')'), { url: urlQueFalhou, tentativa: tentativasDeCarga })
+    setTimeout(() => { if (!win.isDestroyed()) win.loadURL(urlInicial) }, 1200 * tentativasDeCarga)
+  })
+  win.webContents.on('did-finish-load', () => { tentativasDeCarga = 0 })
+
+  logInfo('janela:navegando', { url: urlInicial })
+  win.loadURL(urlInicial)
   if (folderToOpen) {
     win.webContents.once('did-finish-load', () => processarPastaArrastada(win, folderToOpen))
   }
@@ -864,7 +1090,13 @@ async function checkUpdate() {
 
 const PS_EXE = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
-async function applyUpdate(downloadUrl, version) {
+/* Aplica um update a partir de um ZIP: extrai e copia por cima da pasta do
+   app (robocopy), sem instalador e sem UAC. O zip pode chegar de dois jeitos:
+     - downloadUrl → baixado do GitHub (precisa de internet)
+     - zipLocal    → arquivo que já está na pasta de rede
+   O segundo é o que funciona nos PCs do lab, onde nada pode ser instalado e a
+   internet é restrita. */
+async function applyUpdate({ downloadUrl, zipLocal, version }) {
   const tmpDir     = os.tmpdir()
   const stamp      = Date.now()
   // Nomes ÚNICOS por tentativa: evita EBUSY quando um zip/.bat de uma tentativa
@@ -886,13 +1118,19 @@ async function applyUpdate(downloadUrl, version) {
 
   const win = BrowserWindow.getAllWindows()[0]
 
-  // Download
-  await downloadFileHttps(downloadUrl, zipPath, pct => {
-    win?.setProgressBar(pct / 100)
-    win?.webContents.send('update:progress', pct)
-  })
-  win?.setProgressBar(-1)
-  win?.webContents.send('update:progress', -1)
+  if (zipLocal) {
+    // Já está na rede: só traz pro temp local (copiar de SMB é rápido e evita
+    // o robocopy ler direto do share durante a troca dos arquivos).
+    logInfo('update:copiando-zip-da-rede', { origem: zipLocal, destino: zipPath })
+    await fs.promises.copyFile(zipLocal, zipPath)
+  } else {
+    await downloadFileHttps(downloadUrl, zipPath, pct => {
+      win?.setProgressBar(pct / 100)
+      win?.webContents.send('update:progress', pct)
+    })
+    win?.setProgressBar(-1)
+    win?.webContents.send('update:progress', -1)
+  }
 
   const batPath = path.join(tmpDir, `cispr15-run-update-${stamp}.bat`)
   const exeName = path.basename(exePath)
@@ -1009,7 +1247,7 @@ async function runUpdateCheck(manual) {
 
     if (response !== 0) return
 
-    await applyUpdate(result.downloadUrl, result.latest)
+    await applyUpdate({ downloadUrl: result.downloadUrl, version: result.latest })
   } catch (err) {
     console.error('Update error:', err.message)
     if (manual) {
@@ -1085,20 +1323,38 @@ if (!gotSingleInstanceLock) {
 
 /* ─── ciclo de vida ───────────────────────────────────────────────────────── */
 
-app.whenReady().then(() => {
-  // migra dados antigos (dentro do app) para userData, se necessário
+/* Tudo que encosta em PASTA DE REDE (R:\, T:\) sai do caminho crítico do boot.
+   Com o share lento ou fora do ar, esses existsSync/copyFileSync/mkdirSync
+   síncronos seguravam o app na tela de "iniciando" até o timeout do SMB. São
+   migrações e criação de pasta — nada que a primeira tela precise. */
+async function tarefasDeInicioEmSegundoPlano() {
   try { migrateDataFolders() } catch {}
-  // migra cadastros/catálogos (equipamentos, normas, etc.) para a pasta de rede padrão
   try { migrateCadastrosParaRede() } catch {}
-  // garante que as pastas de dados existam (valores atuais, não os defaults —
-  // dataFolder/agendaFolder já vêm da pasta de rede via SETTINGS_DEFAULTS)
   const s = readSettings()
   for (const dir of [s.dataFolder, s.agendaFolder, s.cadastrosFolder, s.mirrorFolder, s.pdfCopyFolder, s.updateFolder]) {
-    if (dir) { try { fs.mkdirSync(dir, { recursive: true }) } catch {} }
+    if (!dir) continue
+    try { await fs.promises.mkdir(dir, { recursive: true }) } catch {}
   }
+}
+
+/* Exceção não tratada no processo principal deixava ZERO rastro: a janela
+   ficava numa tela de erro e o log não dizia nada. Sem isto, "o app abriu
+   quebrado" é impossível de diagnosticar depois do fato. */
+process.on('uncaughtException', err => logErro('excecao-nao-tratada', err))
+process.on('unhandledRejection', err => logErro('promessa-rejeitada', err instanceof Error ? err : new Error(String(err))))
+
+app.whenReady().then(() => {
+  // Depois do setPath('userData') do modo portátil, senão o log iria pro lugar errado.
+  configurarLog(getUserDataDir())
+  logInfo('app:inicio', { versao: app.getVersion(), empacotado: app.isPackaged })
+  iniciarVigiaDeTravamento()
+  // Local e rápido, e precisa rodar antes de qualquer leitura de settings:
+  // apaga a senha do .pfx que versões antigas gravavam em texto puro.
+  migrarSenhaPfxDoDisco()
   Menu.setApplicationMenu(buildMenu())
   createWindow()
   setupAutoUpdater()
+  setTimeout(() => { tarefasDeInicioEmSegundoPlano().catch(() => {}) }, 1500)
   // backup automático do banco (no máx. 1×/dia) — adiado p/ não travar o início
   setTimeout(() => { maybeAutoBackup().catch(() => {}) }, 8000)
 })
@@ -1110,7 +1366,15 @@ app.on('window-all-closed', () => {
 
 /* ─── IPC: Settings ───────────────────────────────────────────────────────── */
 
-ipcMain.handle('settings:get', () => readSettings())
+// A senha do .pfx não sai do processo principal — o renderer só recebe se ela
+// já foi informada nesta sessão, pra saber se pede ou não na hora de assinar.
+ipcMain.handle('settings:get', () => ({ ...readSettings(), pfxPasswordNaSessao: !!pfxPasswordSessao }))
+
+// Informar/limpar a senha da sessão (tela de Configurações e prompt da assinatura)
+ipcMain.handle('pdf:set-pfx-password', (_, { password } = {}) => {
+  pfxPasswordSessao = password ? String(password) : null
+  return { ok: true, definida: !!pfxPasswordSessao }
+})
 
 ipcMain.handle('settings:set', (_, partial) => {
   try { return { ok: true, settings: writeSettings(partial) } }
@@ -1175,8 +1439,24 @@ ipcMain.handle('settings:browse-pdf', async () => {
   return { filePath: filePaths[0] }
 })
 
+/* shell.openPath num arquivo executável EXECUTA o arquivo. Boa parte dos
+   caminhos que passam por aqui vem de R:\Compartilhado\CISPR15 e das pastas em
+   T:\ — lugares onde outras pessoas escrevem. Abrir pasta e abrir documento
+   (PDF, DOCX, XLSX…) segue liberado; executável, não. */
+const EXTENSOES_EXECUTAVEIS = new Set([
+  '.exe', '.bat', '.cmd', '.com', '.msi', '.scr', '.pif',
+  '.ps1', '.psm1', '.vbs', '.vbe', '.js', '.jse', '.wsf', '.wsh', '.hta', '.lnk', '.reg',
+])
+
 ipcMain.handle('shell:open-path', async (_, { path: p }) => {
-  try { await shell.openPath(p); return { ok: true } }
+  try {
+    if (!p) return { ok: false, error: 'Caminho vazio.' }
+    if (EXTENSOES_EXECUTAVEIS.has(path.extname(String(p)).toLowerCase())) {
+      return { ok: false, error: 'Por segurança, o app não abre arquivos executáveis.' }
+    }
+    await shell.openPath(p)
+    return { ok: true }
+  }
   catch (err) { return { ok: false, error: String(err) } }
 })
 
@@ -1497,26 +1777,131 @@ ipcMain.handle('pdf:extract-page1', async (_, { base64 }) => {
 
 /* ─── IPC: Dados de rede (clientes / relatórios) ─────────────────────────── */
 
+// `corrompido: true` = o arquivo existe mas não abre. O renderer tem que
+// mostrar erro e BLOQUEAR o save — se deixar salvar por cima, a lista vazia da
+// tela vira o novo conteúdo do arquivo de rede.
 ipcMain.handle('data:get-clientes', async () => {
   const { dataFolder } = readSettings()
-  const data = await readDataFile('cispr15_clientes.json')
-  return { ok: true, clientes: data ?? [], fromNetwork: !!dataFolder }
+  const { itens, estado } = await readDataFile('cispr15_clientes.json')
+  return { ok: true, clientes: itens, fromNetwork: !!dataFolder, corrompido: estado === 'corrompido' }
 })
 
-ipcMain.handle('data:save-clientes', async (_, { clientes }) => {
-  try { await writeDataFile('cispr15_clientes.json', clientes); return { ok: true } }
-  catch (err) { return { ok: false, error: String(err) } }
-})
+/* Gravação protegida de uma coleção compartilhada (relatórios, agenda,
+   clientes, lotes).
+
+   PONTO ÚNICO de propósito. Existem 19 caminhos diferentes nas telas em que uma
+   leitura de localStorage acaba virando uma gravação na rede, e basta UM deles
+   partir de um cache velho para apagar o trabalho de todo mundo — foi o que
+   aconteceu em 09/09/2026, quando 48 relatórios viraram 32. Auditar 19 telas e
+   torcer para nenhuma nova aparecer não é solução; conferir aqui é, porque
+   nenhuma tela grava sem passar por este funil.
+
+   Também registra antes/depois no log: se uma coleção encolher, dá pra ver
+   quando e quanto sem depender de alguém notar na tela. */
+async function gravarColecaoProtegida(rotulo, recebida, ler, gravar) {
+  try {
+    const nova = Array.isArray(recebida) ? recebida : []
+    const { itens: atuais, estado } = await ler()
+    if (encolheDemais(atuais.length, nova.length, estado)) {
+      logErro('recusado:gravacao', new Error('gravacao encolheria a colecao'), {
+        colecao: rotulo, emDisco: atuais.length, recebidos: nova.length,
+        perdidos: atuais.length - nova.length,
+      })
+      const aviso = mensagemRecusa(atuais.length, nova.length, rotulo)
+      // O aviso sai DAQUI, não das telas: quase todo ponto de gravação faz
+      // `try { await api.saveX(...) } catch {}`, e uma recusa não é exceção —
+      // seria engolida em silêncio e o usuário seguiria achando que salvou.
+      // Como a proteção é ponto único, o aviso também precisa ser.
+      try {
+        const janela = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
+        const opcoes = { type: 'warning', title: 'Gravação bloqueada', message: aviso, buttons: ['Entendi'] }
+        if (janela) dialog.showMessageBox(janela, opcoes); else dialog.showMessageBox(opcoes)
+      } catch {}
+      return { ok: false, recusado: true, error: aviso }
+    }
+    await gravar(nova)
+    logInfo('gravou:colecao', { colecao: rotulo, antes: atuais.length, depois: nova.length })
+    return { ok: true }
+  } catch (err) {
+    logErro('gravar:colecao', err, { colecao: rotulo })
+    return { ok: false, error: String(err) }
+  }
+}
+
+ipcMain.handle('data:save-clientes', (_, { clientes }) => gravarColecaoProtegida(
+  'clientes', clientes,
+  () => readDataFile('cispr15_clientes.json'),
+  lista => writeDataFile('cispr15_clientes.json', lista),
+))
 
 ipcMain.handle('data:get-relatorios', async () => {
   const { dataFolder } = readSettings()
-  const data = await readDataFile('cispr15_relatorios.json')
-  return { ok: true, relatorios: data ?? [], fromNetwork: !!dataFolder }
+  const { itens, estado } = await readDataFile('cispr15_relatorios.json')
+  return { ok: true, relatorios: itens, fromNetwork: !!dataFolder, corrompido: estado === 'corrompido' }
 })
 
-ipcMain.handle('data:save-relatorios', async (_, { relatorios }) => {
-  try { await writeDataFile('cispr15_relatorios.json', relatorios); return { ok: true } }
-  catch (err) { return { ok: false, error: String(err) } }
+ipcMain.handle('data:save-relatorios', (_, { relatorios }) => gravarColecaoProtegida(
+  'relatórios', relatorios,
+  () => readDataFile('cispr15_relatorios.json'),
+  lista => writeDataFile('cispr15_relatorios.json', lista),
+))
+
+/* ─── gravação por INTENÇÃO (substitui a gravação de lista inteira) ──────────
+ *
+ * `data:save-relatorios` recebe a lista completa montada pela tela. Essa forma é,
+ * por construção, capaz de apagar tudo: basta a lista de entrada estar curta.
+ * Foi o que aconteceu duas vezes — a tela montou a lista a partir do cache do
+ * localStorage, que estava truncado porque a cota de ~5 MB havia estourado, e
+ * mandou 33 relatórios contra 51 no arquivo. A guarda avisou, mas o buraco
+ * continua existindo enquanto houver um parâmetro onde uma lista curta caiba.
+ *
+ * Aqui a tela manda a INTENÇÃO ("salva este relatório", "remove este id") e quem
+ * lê o arquivo bom, aplica a mudança e grava é este processo. Uma lista curta
+ * deixa de ser representável, e a cota do renderer sai do caminho de gravação.
+ *
+ * As fotos são removidas AQUI, e não na tela: o índice compartilhado precisa
+ * continuar leve independentemente de quem chame (os anexos pesados vão para
+ * cispr15_assets/<id>.json, via data:save-relatorio-assets).
+ */
+async function mutarRelatorios(mutador) {
+  try {
+    const { itens, estado } = await readDataFile('cispr15_relatorios.json')
+    // Arquivo ilegível não serve de base: aplicar uma mudança sobre o que não
+    // foi lido direito grava por cima do conteúdo bom com uma lista inventada.
+    if (estado === 'corrompido') {
+      logErro('mutar:relatorios', new Error('arquivo ilegivel'), { estado })
+      return { ok: false, error: 'O arquivo de relatórios da rede está ilegível. Nada foi gravado.' }
+    }
+    const efeito = mutador(itens)
+    if (!efeito) return { ok: true, total: itens.length, semMudanca: true }
+    await writeDataFile('cispr15_relatorios.json', efeito.lista)
+    logInfo(efeito.evento, { antes: itens.length, depois: efeito.lista.length, id: efeito.id })
+    return { ok: true, total: efeito.lista.length }
+  } catch (err) {
+    logErro('mutar:relatorios', err)
+    return { ok: false, error: String(err) }
+  }
+}
+
+ipcMain.handle('data:upsert-relatorio', async (_, { relatorio }) => {
+  if (!relatorio || !relatorio.id) return { ok: false, error: 'relatório sem id' }
+  const leve = { ...relatorio, photos: [] }
+  return mutarRelatorios(lista => {
+    const i = lista.findIndex(r => r.id === leve.id)
+    const nova = lista.slice()
+    if (i >= 0) nova[i] = leve
+    else nova.unshift(leve)
+    return { lista: nova, evento: 'relatorio:gravado', id: leve.id }
+  })
+})
+
+ipcMain.handle('data:remove-relatorio', async (_, { id }) => {
+  if (!id) return { ok: false, error: 'id ausente' }
+  return mutarRelatorios(lista => {
+    const nova = lista.filter(r => r.id !== id)
+    if (nova.length === lista.length) return null   // já não estava lá
+    return { lista: nova, evento: 'relatorio:removido', id }
+  })
 })
 
 /* Assets pesados (fotos + DOCX) por relatório — ficam num arquivo separado por id,
@@ -1592,24 +1977,40 @@ ipcMain.handle('relatorio:export-files', async (_, { folderPath, numRelatorio, p
 
 ipcMain.handle('data:get-agenda', async () => {
   const { agendaFolder, dataFolder } = readSettings()
-  const data = await readAgendaFile()
-  return { ok: true, agenda: data ?? [], fromNetwork: !!(agendaFolder || dataFolder) }
+  const { itens, estado } = await readAgendaFile()
+  return { ok: true, agenda: itens, fromNetwork: !!(agendaFolder || dataFolder), corrompido: estado === 'corrompido' }
 })
 
-ipcMain.handle('data:save-agenda', async (_, { agenda }) => {
-  try { await writeAgendaFile(agenda); return { ok: true } }
-  catch (err) { return { ok: false, error: String(err) } }
+ipcMain.handle('data:save-agenda', (_, { agenda }) => gravarColecaoProtegida(
+  'itens da agenda', agenda, readAgendaFile, writeAgendaFile,
+))
+
+/* A tela avisando que ficou travada. Junto com o vigia do processo principal,
+   fecha o diagnóstico do congelamento: se a linha vier daqui, quem travou foi o
+   renderer; se vier de travou:processo-principal, foi o main; se só aparecer
+   lento:ipc, foi um handler específico — e o nome dele está na linha. */
+ipcMain.handle('diag:travou-tela', (_, dados = {}) => {
+  logInfo('travou:tela', {
+    bloqueadoMs: Number(dados.bloqueadoMs) || 0,
+    tela: String(dados.tela || '').slice(0, 80),
+  })
+  return { ok: true }
 })
 
 // Acha, dentro de baseDir, a subpasta cujo nome contém o protocolo (ex.: pasta
 // "0887 - Cliente X" casa com protocolo "0887"). Não exige nome exato porque
 // a pasta da Iluminação costuma ter texto extra no nome.
+// Um "O" opcional na frente (protocolo ou nome da pasta) não conta pra
+// comparação — "O26062252" e "26062252" são o mesmo protocolo.
+function normProtocolo(v) {
+  return v.trim().toLowerCase().replace(/^o(?=\d)/, '')
+}
 function acharPastaProtocolo(baseDir, protocolo) {
   try {
-    const alvo = protocolo.trim().toLowerCase()
+    const alvo = normProtocolo(protocolo)
     if (!alvo) return null
     const entrada = fs.readdirSync(baseDir, { withFileTypes: true })
-      .find(e => e.isDirectory() && e.name.toLowerCase().includes(alvo))
+      .find(e => e.isDirectory() && normProtocolo(e.name).includes(alvo))
     return entrada ? path.join(baseDir, entrada.name) : null
   } catch { return null }
 }
@@ -1642,17 +2043,30 @@ async function copiarFotosDir(origemDir, destinoDir, apenasImagens) {
 // Iluminação (por tipo lâmpada/luminária, na pasta do ano atual) e copia as
 // fotos pra nossa rede (Alta Tecnologia), criando <protocolo>\fotos. Best-
 // effort por item — um protocolo sem pasta/foto não impede os demais.
-ipcMain.handle('agenda:importar-fotos-rede', async () => {
+const FOTOS_MINIMO_JA_TEM = 4   // pasta com esse tanto de fotos ou mais não precisa importar de novo
+
+ipcMain.handle('agenda:importar-fotos-rede', async (_, { protocolos } = {}) => {
   try {
-    const agenda = await readAgendaFile()
+    const { itens: agenda } = await readAgendaFile()
     const ano = String(new Date().getFullYear())
-    const resultado = { processados: 0, copiados: 0, semPasta: [], semFotos: [], erros: [] }
+    const resultado = { processados: 0, copiados: 0, jaTinha: [], semPasta: [], semFotos: [], erros: [] }
+    const filtro = Array.isArray(protocolos) && protocolos.length
+      ? new Set(protocolos.map(p => normProtocolo(String(p || ''))))
+      : null
     const vistos = new Set()
     for (const item of agenda) {
       const protocolo = String(item.protocolo || '').trim()
       if (!protocolo || vistos.has(protocolo)) continue
+      if (filtro && !filtro.has(normProtocolo(protocolo))) continue
       vistos.add(protocolo)
       resultado.processados++
+
+      const destino = path.join(FOTOS_DESTINO_BASE, ano, protocolo, 'fotos')
+      try {
+        const existentes = await fs.promises.readdir(destino)
+        const jaTem = existentes.filter(f => IMG_EXTENSOES.has(path.extname(f).toLowerCase())).length
+        if (jaTem >= FOTOS_MINIMO_JA_TEM) { resultado.jaTinha.push(protocolo); continue }
+      } catch {}
 
       const baseOrigem = path.join(
         item.tipo === 'luminaria' ? ILUMINACAO_LUMINARIA_BASE : ILUMINACAO_LAMPADA_BASE,
@@ -1664,7 +2078,6 @@ ipcMain.handle('agenda:importar-fotos-rede', async () => {
       const pastaFotos    = acharSubpastaFotos(pastaProtocolo)
       const origemFotos   = pastaFotos || pastaProtocolo
       const apenasImagens = !pastaFotos
-      const destino       = path.join(FOTOS_DESTINO_BASE, ano, protocolo, 'fotos')
 
       try {
         const n = await copiarFotosDir(origemFotos, destino, apenasImagens)
@@ -1852,7 +2265,7 @@ ipcMain.handle('lote:clear', async () => {
    mesma pasta de rede. */
 ipcMain.handle('data:get-lotes', async () => {
   try {
-    let lotes = await readDataFile('cispr15_lotes.json')
+    let { itens: lotes } = await readDataFile('cispr15_lotes.json')
     if (!Array.isArray(lotes)) lotes = []
 
     // Migração única do lote antigo (armazenamento local, um só por vez) —
@@ -1877,10 +2290,11 @@ ipcMain.handle('data:get-lotes', async () => {
   }
 })
 
-ipcMain.handle('data:save-lotes', async (_, { lotes }) => {
-  try { await writeDataFile('cispr15_lotes.json', lotes); return { ok: true } }
-  catch (err) { return { ok: false, error: String(err) } }
-})
+ipcMain.handle('data:save-lotes', (_, { lotes }) => gravarColecaoProtegida(
+  'lotes', lotes,
+  () => readDataFile('cispr15_lotes.json'),
+  lista => writeDataFile('cispr15_lotes.json', lista),
+))
 
 /* Grava o PDF (+ DOCX + fotos) de uma amostra na subpasta do protocolo,
    dentro da pasta-mãe escolhida. Usado pelo "Baixar PDFs" do lote. */
@@ -1969,8 +2383,13 @@ ipcMain.handle('pdf:save-eut', async (_, { filename, folderPath, force }) => {
   const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0]
   if (!win) return { ok: false, error: 'sem janela' }
   try {
-    let outDir = folderPath || eutFolderPath || app.getPath('documents')
-    let usedDocuments = false
+    // Sem pasta vinda da tela, vai pra Documentos e AVISA (usedDocuments faz a
+    // tela alertar). Antes caía na global `eutFolderPath` — a última pasta
+    // aberta no app inteiro —, então o PDF de um protocolo ia parar, sem uma
+    // linha de aviso, na pasta de outro. Destino errado e silencioso é pior que
+    // destino óbvio e avisado.
+    let outDir = folderPath || app.getPath('documents')
+    let usedDocuments = !folderPath
     // Tenta garantir que o diretório exista; se falhar (ex: pasta de rede inacessível), recai para Documentos
     if (outDir !== app.getPath('documents')) {
       try {
@@ -2014,8 +2433,12 @@ ipcMain.handle('pdf:list-certs', async () => {
 
 // Assina digitalmente um PDF já salvo na pasta da EUT
 ipcMain.handle('pdf:sign-file', async (_, { eutFolderPath: eutPath, pdfFilename }) => {
-  const { certThumbprint, pfxPath, pfxPassword } = readSettings()
+  const { certThumbprint, pfxPath } = readSettings()
   if (!pfxPath && !certThumbprint) return { ok: false, error: 'Nenhum certificado/.pfx configurado em Configurações → Assinatura Digital.' }
+  // Senha não fica em disco: sem ela na sessão, o renderer abre o prompt.
+  if (pfxPath && !pfxPasswordSessao) {
+    return { ok: false, precisaSenha: true, error: 'Informe a senha do certificado para assinar.' }
+  }
   if (!eutPath || !pdfFilename) return { ok: false, error: 'Caminho da pasta EUT não disponível.' }
   const pdfPath = path.join(eutPath, pdfFilename)
   if (!fs.existsSync(pdfPath)) return { ok: false, error: `PDF não encontrado:\n${pdfPath}` }
@@ -2024,7 +2447,7 @@ ipcMain.handle('pdf:sign-file', async (_, { eutFolderPath: eutPath, pdfFilename 
     let signed
     if (pfxPath) {
       if (!fs.existsSync(pfxPath)) return { ok: false, error: `Arquivo .pfx não encontrado:\n${pfxPath}` }
-      signed = await signPDFWithPfx(pdfBuffer, fs.readFileSync(pfxPath), pfxPassword || '')
+      signed = await signPDFWithPfx(pdfBuffer, fs.readFileSync(pfxPath), pfxPasswordSessao || '')
     } else {
       signed = await signPDF(pdfBuffer, certThumbprint)
     }
@@ -2049,13 +2472,27 @@ ipcMain.handle('pdf:pick-pfx', async () => {
   } catch (err) { return { ok: false, error: String(err) } }
 })
 
-// Valida o .pfx + senha e devolve dados do certificado (subject / validade)
+// Valida o .pfx + senha e devolve dados do certificado (subject / validade).
+// Senha em branco = revalida com a que já está na sessão (a tela não tem mais
+// o valor pra reenviar). Validou, a senha fica guardada na sessão — é assim que
+// "Validar" no Configurações também serve pra destravar a assinatura do dia.
 ipcMain.handle('pdf:validate-pfx', async (_, { pfxPath: p, password }) => {
   try {
     if (!p || !fs.existsSync(p)) return { ok: false, error: 'Arquivo .pfx não encontrado.' }
-    return validatePfx(fs.readFileSync(p), password || '')
+    const senha = password || pfxPasswordSessao || ''
+    const res = validatePfx(fs.readFileSync(p), senha)
+    if (res?.ok && senha) pfxPasswordSessao = senha
+    return res
   } catch (err) { return { ok: false, error: err.message || String(err) } }
 })
+
+// A "Pasta de destino" das Configurações pode já apontar direto pra pasta do
+// ano — é o caso aqui: ...\Compatibilidade eletromagnética\2026. Juntar o ano
+// de novo criava ...\2026\2026 e o PDF sumia de vista.
+function subpastaDoAno(base, anoStr) {
+  if (!anoStr) return base
+  return path.basename(base) === anoStr ? base : path.join(base, anoStr)
+}
 
 // Copia o PDF assinado da pasta EUT para a pasta da agenda (acionado manualmente após assinatura)
 ipcMain.handle('pdf:publish', async (_, { eutFolderPath: eutPath, pdfFilename, ano }) => {
@@ -2067,18 +2504,22 @@ ipcMain.handle('pdf:publish', async (_, { eutFolderPath: eutPath, pdfFilename, a
   try {
     // Organiza por ano em subpasta (.../pdfs/2026/); sem ano cai na raiz (legado)
     const anoStr = ano ? String(ano).replace(/\D/g, '').slice(0, 4) : ''
-    const destDir = anoStr ? path.join(pdfCopyFolder, anoStr) : pdfCopyFolder
+    const destDir = subpastaDoAno(pdfCopyFolder, anoStr)
     fs.mkdirSync(destDir, { recursive: true })
     const dest = path.join(destDir, pdfFilename)
     fs.copyFileSync(src, dest)
+    logInfo('pdf:publish', { src, dest, anoRecebido: ano, anoUsado: anoStr })
     return { ok: true, dest }
-  } catch (err) { return { ok: false, error: String(err) } }
+  } catch (err) {
+    logErro('pdf:publish', err, { eutPath, pdfFilename, ano })
+    return { ok: false, error: String(err) }
+  }
 })
 
-// Pasta fixa de cópia dos relatórios CISPR 15 (LABELO) — mesma pasta em todos
-// os PCs, sem depender da "Pasta de destino" configurável em Configurações
-// (essa é usada só pelo fluxo de assinatura/publicação acima).
-const RELATORIOS_COPIA_FOLDER = 'T:\\Relatórios\\Compatibilidade eletromagnética'
+// A pasta fixa de cópia dos relatórios (RELATORIOS_COPIA_FOLDER) vem de
+// electron/lib/network-paths.js — mesma pasta em todos os PCs, sem depender da
+// "Pasta de destino" configurável em Configurações (essa é usada só pelo fluxo
+// de assinatura/publicação acima).
 
 // Botão "Enviar cópia" da aba Relatórios: manda o PDF mais recente da pasta da
 // EUT pra pasta fixa acima, organizada por ano (uma subpasta "2026", "2027" etc.
@@ -2097,13 +2538,21 @@ ipcMain.handle('pdf:send-copy', async (_, { eutFolderPath: eutPath, ano }) => {
     const maisRecente = pdfs
       .map(p => ({ p, mtime: fs.statSync(p).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime)[0].p
-    const anoStr = ano ? String(ano).replace(/\D/g, '').slice(0, 4) : ''
-    const destDir = anoStr ? path.join(RELATORIOS_COPIA_FOLDER, anoStr) : RELATORIOS_COPIA_FOLDER
+    // Ano inválido (vazio, '—', qualquer coisa sem 4 dígitos) não pode jogar o
+    // PDF na raiz — de lá ninguém acha. Sem ano confiável, usa o ano do próprio
+    // arquivo, que é sempre melhor que a pasta-mãe.
+    let anoStr = String(ano || '').replace(/\D/g, '').slice(0, 4)
+    if (!/^\d{4}$/.test(anoStr)) anoStr = String(new Date(fs.statSync(maisRecente).mtimeMs).getFullYear())
+    const destDir = path.join(RELATORIOS_COPIA_FOLDER, anoStr)
     fs.mkdirSync(destDir, { recursive: true })
     const dest = path.join(destDir, path.basename(maisRecente))
     fs.copyFileSync(maisRecente, dest)
+    logInfo('pdf:send-copy', { origem: maisRecente, dest, anoRecebido: ano, anoUsado: anoStr })
     return { ok: true, dest }
-  } catch (err) { return { ok: false, error: String(err) } }
+  } catch (err) {
+    logErro('pdf:send-copy', err, { eutPath, ano })
+    return { ok: false, error: String(err) }
+  }
 })
 
 /* Reconcilia a CÓPIA do PDF: ao reabrir/ver o relatório, se o PDF original (na
@@ -2123,7 +2572,7 @@ ipcMain.handle('pdf:sync-eut-copy', (_, { eutFolderPath: eutPath, pdfFilename, a
     const src = path.join(eutPath, pdfFilename)
     if (!fs.existsSync(src)) return { ok: true, copied: false }
     const anoStr = ano ? String(ano).replace(/\D/g, '').slice(0, 4) : ''
-    const destDir = anoStr ? path.join(pdfCopyFolder, anoStr) : pdfCopyFolder
+    const destDir = subpastaDoAno(pdfCopyFolder, anoStr)
     const dest = path.join(destDir, pdfFilename)
     const s = fs.statSync(src)
     // Cópia já em dia? (mesmo tamanho e não mais antiga) → nada a fazer
@@ -2135,8 +2584,12 @@ ipcMain.handle('pdf:sync-eut-copy', (_, { eutFolderPath: eutPath, pdfFilename, a
     if (!pdfEstaAssinado(src)) return { ok: true, copied: false }
     fs.mkdirSync(destDir, { recursive: true })
     fs.copyFileSync(src, dest)
+    logInfo('pdf:sync-eut-copy', { src, dest, anoRecebido: ano, anoUsado: anoStr })
     return { ok: true, copied: true, dest }
-  } catch (err) { return { ok: false, error: String(err) } }
+  } catch (err) {
+    logErro('pdf:sync-eut-copy', err, { eutPath, pdfFilename, ano })
+    return { ok: false, error: String(err) }
+  }
 })
 
 // "Verificar PDFs" da Agenda: para itens sem assinatura registrada, acha a
@@ -2167,40 +2620,66 @@ async function acharPastaProtocoloQualquerAno(protocolo) {
   return null
 }
 
+// O diagnostico do "Verificar PDFs" agora usa o log do app (electron/lib/log.js),
+// que rotaciona sozinho — antes era um arquivo temporario que so crescia.
+const debugLog = linha => { logInfo('verificar-pdfs', { msg: String(linha).trim() }) }
+
 ipcMain.handle('agenda:verificar-pdfs', async (_, { itens }) => {
   let pdfCopyFolder
   try { ({ pdfCopyFolder } = readSettings()) } catch { pdfCopyFolder = '' }
+  debugLog(`\n=== ${new Date().toISOString()} — ${(itens || []).length} item(ns) recebidos ===`)
   const atualizados = []
   for (const it of itens || []) {
     try {
       let anoStr = String(it.ano || (it.dataEmissao || '').match(/\d{4}/)?.[0] || '').slice(0, 4)
       let folderPath = it.eutFolderPath
+      debugLog(`item id=${it.id} protocolo="${it.protocolo}" numRelatorio="${it.numRelatorio}" dataEmissao="${it.dataEmissao}" anoStr="${anoStr}" eutFolderPath="${it.eutFolderPath || ''}"`)
       if ((!folderPath || !(await existeAsync(folderPath))) && it.protocolo && anoStr) {
         const baseDir = path.join(FOTOS_DESTINO_BASE, anoStr)
         if (await existeAsync(baseDir)) folderPath = acharPastaProtocolo(baseDir, String(it.protocolo).trim())
+        debugLog(`  tentativa por ano ${anoStr}: baseDir existe=${await existeAsync(baseDir)} -> folderPath="${folderPath || ''}"`)
       }
       // Sem ano conhecido (ou não achou nele) — varre todos os anos da pasta-mãe.
       if ((!folderPath || !(await existeAsync(folderPath))) && it.protocolo) {
         const achou = await acharPastaProtocoloQualquerAno(String(it.protocolo).trim())
         if (achou) { folderPath = achou.folderPath; anoStr = achou.ano }
+        debugLog(`  tentativa qualquer ano -> ${achou ? achou.folderPath + ' (ano ' + achou.ano + ')' : 'NADA'}`)
       }
-      if (!folderPath || !(await existeAsync(folderPath))) continue
+      if (!folderPath || !(await existeAsync(folderPath))) { debugLog(`  SEM PASTA — pulando item`); continue }
       const entries = await fs.promises.readdir(folderPath, { withFileTypes: true })
       const pdfs = entries.filter(e => e.isFile() && /\.pdf$/i.test(e.name)).map(e => path.join(folderPath, e.name))
+      debugLog(`  pasta="${folderPath}" PDFs encontrados=${pdfs.length}: ${pdfs.map(p => path.basename(p)).join(' | ')}`)
       if (!pdfs.length) continue
-      const comMtime = await Promise.all(pdfs.map(async p => ({ p, mtime: (await fs.promises.stat(p)).mtimeMs })))
+      // Não exige assinatura digital — vale ter o PDF do relatório já com o
+      // N° do relatório no nome (prova que foi emitido de fato). Sem N° de
+      // relatório conhecido não dá pra confirmar qual PDF é o definitivo.
+      const numRel = String(it.numRelatorio || '').trim()
+      if (!numRel) { debugLog(`  SEM N° DE RELATÓRIO — pulando item`); continue }
+      // Compara só letras/dígitos (descarta espaço, "/", "_", etc.) — o mesmo
+      // número aparece formatado de jeitos diferentes no campo da agenda
+      // ("EMC 2542/2026") e no nome do arquivo ("EMC2542_2026...pdf").
+      const canon = v => v.toLowerCase().replace(/[^a-z0-9]/g, '')
+      const alvo = canon(numRel)
+      const combatidos = pdfs.filter(p => canon(path.basename(p)).includes(alvo))
+      debugLog(`  procurando N° "${numRel}" nos PDFs -> ${combatidos.length} bateram: ${combatidos.map(p => path.basename(p)).join(' | ')}`)
+      if (!combatidos.length) continue
+      const comMtime = await Promise.all(combatidos.map(async p => ({ p, mtime: (await fs.promises.stat(p)).mtimeMs })))
       const maisRecente = comMtime.sort((a, b) => b.mtime - a.mtime)[0]
-      if (!pdfEstaAssinado(maisRecente.p)) continue
       if (pdfCopyFolder) {
         try {
-          const destDir = anoStr ? path.join(pdfCopyFolder, anoStr) : pdfCopyFolder
+          const destDir = subpastaDoAno(pdfCopyFolder, anoStr)
           await fs.promises.mkdir(destDir, { recursive: true })
           await fs.promises.copyFile(maisRecente.p, path.join(destDir, path.basename(maisRecente.p)))
         } catch {}
       }
-      atualizados.push({ id: it.id, assinadoEm: new Date(maisRecente.mtime).toISOString().slice(0, 10) })
-    } catch {}
+      atualizados.push({
+        id: it.id, assinadoEm: new Date(maisRecente.mtime).toISOString().slice(0, 10),
+        protocolo: it.protocolo || '', numRelatorio: numRel, arquivo: path.basename(maisRecente.p),
+        eutFolderPath: folderPath,
+      })
+    } catch (err) { debugLog(`  ERRO: ${String(err)}`) }
   }
+  debugLog(`=== fim: ${atualizados.length} atualizado(s) ===`)
   return { ok: true, atualizados }
 })
 
@@ -2433,9 +2912,10 @@ function findNextEmptyRow(rows) {
 }
 
 function getExcelPath() {
-  const s = readSettings()
-  if (s.excelPath) return s.excelPath
-  return 'C:\\Users\\Notla\\OneDrive\\Área de Trabalho\\Compatibilidade eletromagnética_2026.xlsx'
+  // Vazio quando não configurada: quem chama já trata "planilha não
+  // encontrada". Melhor essa mensagem do que apontar pro Desktop de outra
+  // pessoa e dizer que o arquivo sumiu.
+  return readSettings().excelPath || ''
 }
 
 ipcMain.handle('excel:check-protocolo', async (_, { protocolo }) => {
@@ -2529,9 +3009,12 @@ ipcMain.handle('update:check', async () => {
     const versionFile = path.join(s.updateFolder, 'version.json')
     if (!fs.existsSync(versionFile)) return { available: false }
     const remote = JSON.parse(fs.readFileSync(versionFile, 'utf-8'))
-    if (!remote.version || !remote.installer) return { available: false }
+    // O zip é o caminho preferido: troca os arquivos por robocopy, sem
+    // instalador e sem UAC — nos PCs do lab não dá pra instalar nada. O
+    // instalador continua aceito como alternativa para quem tiver permissão.
+    if (!remote.version || !(remote.zip || remote.installer)) return { available: false }
     if (semverGt(remote.version, app.getVersion())) {
-      return { available: true, version: remote.version, installer: remote.installer }
+      return { available: true, version: remote.version, installer: remote.installer, zip: remote.zip }
     }
     return { available: false }
   } catch (err) {
@@ -2539,16 +3022,46 @@ ipcMain.handle('update:check', async () => {
   }
 })
 
-ipcMain.handle('update:install', async (_, { installer }) => {
+/* O nome vem do version.json que está numa pasta de REDE compartilhada. Sem
+   validar, um "..\..\qualquer.exe" escapa da updateFolder e o spawn abaixo
+   executa o que estiver lá. Exige nome puro (sem separador de caminho) e no
+   formato do nosso instalador. */
+const NOME_INSTALADOR = /^CISPR 15 LABELO Setup \d+\.\d+\.\d+\.exe$/
+
+const NOME_ZIP = /^CISPR 15 LABELO-\d+\.\d+\.\d+-win\.zip$/
+
+ipcMain.handle('update:install', async (_, { installer, zip, version } = {}) => {
+  const s = readSettings()
   try {
-    const s = readSettings()
-    const src  = path.join(s.updateFolder, installer)
-    const dest = path.join(os.tmpdir(), installer)
+    // Preferência pelo ZIP: extrai e copia por cima da pasta do app, sem
+    // instalador e sem UAC — é o único caminho viável nos PCs onde nada pode
+    // ser instalado. Nome validado igual ao do instalador: o version.json vem
+    // de uma pasta de rede que outras pessoas escrevem.
+    const nomeZip = String(zip || '')
+    if (nomeZip) {
+      if (path.basename(nomeZip) !== nomeZip || !NOME_ZIP.test(nomeZip)) {
+        return { ok: false, error: 'Nome de pacote inválido — atualização recusada por segurança.' }
+      }
+      const origem = path.join(s.updateFolder, nomeZip)
+      if (!fs.existsSync(origem)) return { ok: false, error: `Pacote não encontrado:\n${origem}` }
+      logInfo('update:install', { via: 'zip', origem, version })
+      await applyUpdate({ zipLocal: origem, version: String(version || 'nova') })
+      return { ok: true }
+    }
+
+    const nome = String(installer || '')
+    if (path.basename(nome) !== nome || !NOME_INSTALADOR.test(nome)) {
+      return { ok: false, error: 'Nome de instalador inválido — atualização recusada por segurança.' }
+    }
+    const src  = path.join(s.updateFolder, nome)
+    const dest = path.join(os.tmpdir(), nome)
+    logInfo('update:install', { via: 'instalador', src })
     fs.copyFileSync(src, dest)
     spawn(dest, ['/SILENT', '/NORESTART'], { detached: true, stdio: 'ignore' }).unref()
     setTimeout(() => app.quit(), 800)
     return { ok: true }
   } catch (err) {
+    logErro('update:install', err, { installer, zip })
     return { ok: false, error: String(err) }
   }
 })
@@ -2556,8 +3069,15 @@ ipcMain.handle('update:install', async (_, { installer }) => {
 /* ─── IPC: OCR (Windows.Media.Ocr via PowerShell) ────────────────────────── */
 
 ipcMain.handle('ocr:recognize', async (_, { images }) => {
-  const scriptPath = path.join(os.tmpdir(), 'cispr15_ocr_engine.ps1')
-  try { fs.writeFileSync(scriptPath, PS_OCR_SCRIPT, 'utf-8') } catch {}
+  // Script no userData (pasta do app, só nossa) em vez do tmp, e escrito uma
+  // única vez — reescrever a cada chamada num diretório compartilhado, e logo
+  // em seguida executar com -ExecutionPolicy Bypass, é convite pra troca do
+  // conteúdo entre a escrita e a execução.
+  const scriptPath = path.join(getUserDataDir(), 'cispr15_ocr_engine.ps1')
+  try {
+    const atual = fs.existsSync(scriptPath) ? fs.readFileSync(scriptPath, 'utf-8') : null
+    if (atual !== PS_OCR_SCRIPT) fs.writeFileSync(scriptPath, PS_OCR_SCRIPT, 'utf-8')
+  } catch {}
 
   const runOcr = (base64, idx) => new Promise((resolve) => {
     const tmpImg = path.join(os.tmpdir(), `cispr15_img_${Date.now()}_${idx}.jpg`)

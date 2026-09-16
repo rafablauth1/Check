@@ -3,17 +3,20 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
 import {
-  ArrowLeft, History, CheckCircle2, AlertCircle, ChevronDown,
-  Upload, X, Loader2, Plus, ImageOff, RotateCcw,
+  ArrowLeft, History, CheckCircle2, AlertCircle, ChevronDown, FileText,
+  Upload, X, Loader2, Plus, ImageOff, RotateCcw, Lock, AlertTriangle,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
   type Cispr15Config, type RelatorioSalvo, type AmendmentChange, type EmendaDraft,
   DEFAULTS, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY,
-  RELATORIOS_KEY, EMENDA_DRAFT_KEY, RELATORIO_DOCX_PFX, today, formatEmendaNumero,
+  EMENDA_DRAFT_KEY, today, formatEmendaNumero,
+  proximaEmenda, emendasDoRelatorio,
 } from '../types'
 import { filterDocxForResult } from '../docx-filter'
-import { savePhotos } from '@/lib/cispr15/photo-store'
+import { abrirRelatorio } from '../abrir-relatorio'
+import { savePhotos, lerAssetsLocais } from '@/lib/cispr15/photo-store'
+import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
 
 /* ─── resize helper ───────────────────────────────────────────────────────── */
 async function resizeToBase64(file: File, maxW = 800, maxH = 800): Promise<string> {
@@ -148,6 +151,10 @@ export default function EmendaPage() {
   const router = useRouter()
   const [relatorios,  setRelatorios]  = useState<RelatorioSalvo[]>([])
   const [selectedId,  setSelectedId]  = useState<string>('')
+  /* Entrou pelo "Gerar Emenda" com um relatório carregado: a tela fica presa
+     nele e o seletor some. Falso quando se chega pela lista, sem alvo. */
+  const [travadoNoAlvo, setTravadoNoAlvo] = useState(false)
+  const [avisoAlvo,     setAvisoAlvo]     = useState<string | null>(null)
   const [cfg,         setCfg]         = useState<Cispr15Config>(DEFAULTS)
   const [dataEmenda,  setDataEmenda]  = useState(today())
   const [photosNovas, setPhotosNovas] = useState<(PhotoEntry | null | undefined)[]>([])
@@ -161,25 +168,29 @@ export default function EmendaPage() {
 
   useEffect(() => {
     async function load() {
-      const api = (window as any).electronAPI
-      let lista: RelatorioSalvo[] = []
-      // Lista vem da rede (índice compartilhado); fallback no localStorage deste PC
-      if (api?.getRelatorios) {
-        try {
-          const res = await api.getRelatorios()
-          if (res?.ok && Array.isArray(res.relatorios) && res.relatorios.length) lista = res.relatorios
-        } catch {}
-      }
-      if (!lista.length) {
-        try { const raw = localStorage.getItem(RELATORIOS_KEY); if (raw) lista = JSON.parse(raw) } catch {}
-      }
+      const lista = await carregarRelatorios()
       setRelatorios(lista)
-      if (lista.length > 0) {
-        const last = lista[lista.length - 1]
-        setSelectedId(last.id)
-        setCfg({ ...(last.currentCfg ?? last.cfg) })
-        carregarAssets(last)
+      if (!lista.length) return
+
+      /* Veio do botão "Gerar Emenda" com um relatório carregado no formulário
+         (?num=...): a emenda é DAQUELE relatório e de mais nenhum — a lista
+         solta deixava emendar outro sem perceber. Lê de window.location em vez
+         de useSearchParams pra não precisar de Suspense no build. */
+      const numAlvo = new URLSearchParams(window.location.search).get('num')?.trim()
+      const norm = (v?: string) => (v ?? '').replace(/\s+/g, '').toLowerCase()
+      const alvo = numAlvo ? lista.find(r => norm(r.numRelatorio) === norm(numAlvo)) : null
+
+      if (numAlvo && !alvo) {
+        // Relatório do formulário ainda não está salvo na lista — sem trava,
+        // com aviso, senão a tela ficaria vazia sem explicação.
+        setAvisoAlvo(`Relatório ${numAlvo} não encontrado na lista salva — escolha o original abaixo.`)
       }
+      if (alvo) setTravadoNoAlvo(true)
+
+      const escolhido = alvo ?? lista[lista.length - 1]
+      setSelectedId(escolhido.id)
+      setCfg({ ...(escolhido.currentCfg ?? escolhido.cfg) })
+      carregarAssets(escolhido)
     }
     load()
   }, [])
@@ -188,13 +199,10 @@ export default function EmendaPage() {
      lista, para a emenda mostrar/mesclar os originais mesmo em outro PC. */
   async function carregarAssets(entry: RelatorioSalvo) {
     let photos = entry.photos ?? []
-    let docxHtml = localStorage.getItem(RELATORIO_DOCX_PFX + entry.id)
-    if (!photos.length) {
-      try {
-        const raw = localStorage.getItem(RELATORIOS_KEY)
-        if (raw) { const f = (JSON.parse(raw) as RelatorioSalvo[]).find(r => r.id === entry.id); if (f?.photos?.length) photos = f.photos }
-      } catch {}
-    }
+    // Anexos deste PC: IndexedDB (ainda lê a chave legada do localStorage).
+    const locais = await lerAssetsLocais(entry.id)
+    let docxHtml = locais.docxHtml
+    if (!photos.length && locais.photos.length) photos = locais.photos
     if (!photos.length || !docxHtml) {
       const api = (window as any).electronAPI
       if (api?.getRelatorioAssets) {
@@ -301,13 +309,20 @@ export default function EmendaPage() {
     [selected, cfg, photosAlteradas, photosNovas, resultados],
   )
 
-  async function gerarEmenda() {
+  /* Prepara a emenda e abre o PDF. Com `persistir = false` é PRÉ-VISUALIZAÇÃO:
+     monta o rascunho, o cfg, as fotos e o docx (tudo local, só deste PC) e abre
+     a tela do relatório — sem criar o registro-emenda e sem tocar em nada na
+     rede. Um caminho só, com um parâmetro, em vez de duas funções quase iguais
+     que um dia divergiriam. */
+  async function gerarEmenda(persistir = true) {
     if (!selected) return
     if (alteracoes.length === 0) {
       alert('Nenhuma alteração detectada. Edite pelo menos um campo.')
       return
     }
-    const emendaNum = (selected.emendas.length || 0) + 1
+    // Conta os dois formatos (registro próprio e aninhada antiga): numerar só
+    // pelo array aninhado repetiria a letra ao emendar um relatório antigo.
+    const emendaNum = proximaEmenda(relatorios, selected)
     const draft: EmendaDraft = {
       relatorioId: selected.id,
       numRelatorioOriginal: selected.numRelatorio,
@@ -322,37 +337,37 @@ export default function EmendaPage() {
     localStorage.setItem(EMENDA_DRAFT_KEY, JSON.stringify(draft))
     localStorage.setItem(CFG_KEY, JSON.stringify(cfg))
 
-    // Commit emenda imediatamente para que apareça na aba de emendas antes do PDF.
-    // Usa o estado (que vem da rede) — funciona mesmo num PC sem cache local.
-    try {
-      const base: RelatorioSalvo[] = relatorios.length
-        ? relatorios
-        : (() => { try { return JSON.parse(localStorage.getItem(RELATORIOS_KEY) || '[]') } catch { return [] } })()
-      const lista: RelatorioSalvo[] = base.map(r => ({ ...r }))
+    /* Só o "Gerar" persiste. Sem esta guarda, abrir a prévia já criaria o
+       registro-emenda — a emenda passaria a existir, com número consumido, sem
+       o usuário ter confirmado nada. */
+    if (persistir) try {
+      const lista = await carregarRelatorios()
       const idx = lista.findIndex(r => r.id === selected.id)
       if (idx >= 0) {
-        const emendas = [...(lista[idx].emendas ?? [])]
-        if (!emendas.find(e => e.numero === emendaNum)) {
-          emendas.push({ numero: emendaNum, dataEmenda, alteracoes })
+        /* A emenda vira um REGISTRO PRÓPRIO e o original fica intacto.
+           Id determinístico (<id-original>-e<N>): a emenda é gravada aqui,
+           antes do PDF, e de novo no commitEmenda depois dele — com id
+           sorteado, cada passagem criaria um registro e a emenda apareceria
+           duplicada. Assim a segunda passagem atualiza esta. */
+        const idRegistro = `${selected.id}-e${emendaNum}`
+        const registro: RelatorioSalvo = {
+          ...lista[idx],
+          id: idRegistro,
+          numRelatorio: selected.numRelatorio,   // a letra vem de emendaNum
+          dataEmissao: dataEmenda,
+          cfg,
+          currentCfg: undefined,
+          photos: [],
+          emendas: [],
+          emendaDe: selected.id,
+          emendaNum,
+          alteracoes,
         }
-        lista[idx] = { ...lista[idx], emendas, currentCfg: cfg }
-        setRelatorios(lista)
-        const api = (window as any).electronAPI
-        if (api?.saveRelatorios) {
-          try { api.saveRelatorios(lista.map((r: RelatorioSalvo) => ({ ...r, photos: [] }))).catch(() => {}) } catch {}
-        }
-        // Cache local: atualiza só a entrada deste id, preservando as fotos locais
-        try {
-          const rawLocal = localStorage.getItem(RELATORIOS_KEY)
-          if (rawLocal) {
-            const localList: RelatorioSalvo[] = JSON.parse(rawLocal)
-            const li = localList.findIndex(r => r.id === selected.id)
-            if (li >= 0) {
-              localList[li] = { ...localList[li], emendas, currentCfg: cfg }
-              localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
-            }
-          }
-        } catch {}
+        // Grava SÓ o registro-emenda (upsert pelo id determinístico). O original
+        // fica intacto e a lista inteira não trafega.
+        const res = await salvarRelatorio(registro)
+        if (!res.ok) alert('Não foi possível gravar o registro da emenda: ' + (res.error ?? ''))
+        setRelatorios(await carregarRelatorios())
       }
     } catch {}
 
@@ -389,7 +404,7 @@ export default function EmendaPage() {
       sessionStorage.setItem(DOCX_HTML_KEY, finalDocxHtml)
       sessionStorage.setItem(DOCX_NAME_KEY, nameParts.join(' + '))
     } else {
-      finalDocxHtml = selectedDocxHtml ?? localStorage.getItem(RELATORIO_DOCX_PFX + selected.id)
+      finalDocxHtml = selectedDocxHtml ?? (await lerAssetsLocais(selected.id)).docxHtml
       if (finalDocxHtml) sessionStorage.setItem(DOCX_HTML_KEY, finalDocxHtml)
       else sessionStorage.removeItem(DOCX_HTML_KEY)
       sessionStorage.setItem(DOCX_NAME_KEY, selected.docxFilename ?? '')
@@ -397,12 +412,15 @@ export default function EmendaPage() {
 
     // Atualiza os assets na rede com as fotos mescladas e o docx final,
     // para o relatório emendado reabrir completo em qualquer PC.
+    /* Também fica fora da prévia: isto grava as fotos e o docx mesclados NA
+       REDE, no id do relatório ORIGINAL. Pré-visualizar não pode alterar dado
+       compartilhado — quem abre a prévia ainda não decidiu nada. */
     const api2 = (window as any).electronAPI
-    if (api2?.saveRelatorioAssets) {
+    if (persistir && api2?.saveRelatorioAssets) {
       try { api2.saveRelatorioAssets(selected.id, mergedPhotos, finalDocxHtml).catch(() => {}) } catch {}
     }
 
-    router.push('/cispr15/relatorio')
+    abrirRelatorio()
   }
 
   // Corrige o registro salvo (currentCfg + fotos/docx) sem contar como emenda
@@ -430,36 +448,20 @@ export default function EmendaPage() {
         else if (selected.photos[i]) mergedPhotos.push(selected.photos[i])
       }
 
-      const base: RelatorioSalvo[] = relatorios.length
-        ? relatorios
-        : (() => { try { return JSON.parse(localStorage.getItem(RELATORIOS_KEY) || '[]') } catch { return [] } })()
-      const lista: RelatorioSalvo[] = base.map(r => ({ ...r }))
+      const lista = await carregarRelatorios()
       const idx = lista.findIndex(r => r.id === selected.id)
       if (idx >= 0) {
         // Também reescreve `cfg` (o baseline original) — não só `currentCfg` —
         // pra correção não ficar marcada como "alterado" pra sempre toda vez
         // que a tela de emenda for reaberta (o diff compara contra `cfg`).
-        lista[idx] = { ...lista[idx], cfg, currentCfg: cfg }
-        setRelatorios(lista)
-        const api = (window as any).electronAPI
-        if (api?.saveRelatorios) {
-          try { await api.saveRelatorios(lista.map((r: RelatorioSalvo) => ({ ...r, photos: [] }))) } catch {}
-        }
-        try {
-          const rawLocal = localStorage.getItem(RELATORIOS_KEY)
-          if (rawLocal) {
-            const localList: RelatorioSalvo[] = JSON.parse(rawLocal)
-            const li = localList.findIndex(r => r.id === selected.id)
-            if (li >= 0) {
-              localList[li] = { ...localList[li], cfg, currentCfg: cfg }
-              localStorage.setItem(RELATORIOS_KEY, JSON.stringify(localList))
-            }
-          }
-        } catch {}
+        const corrigido = { ...lista[idx], cfg, currentCfg: cfg }
+        const res = await salvarRelatorio(corrigido)
+        if (!res.ok) alert('Não foi possível salvar a correção: ' + (res.error ?? ''))
+        setRelatorios(await carregarRelatorios())
       }
 
       const api2 = (window as any).electronAPI
-      const docxAtual = selectedDocxHtml ?? localStorage.getItem(RELATORIO_DOCX_PFX + selected.id)
+      const docxAtual = selectedDocxHtml ?? (await lerAssetsLocais(selected.id)).docxHtml
       if (api2?.saveRelatorioAssets) {
         try { await api2.saveRelatorioAssets(selected.id, mergedPhotos, docxAtual ?? null) } catch {}
       }
@@ -502,27 +504,47 @@ export default function EmendaPage() {
         <p className="text-white/40 text-sm mt-1">Edite os campos alterados — diferenças são detectadas automaticamente</p>
       </div>
 
-      {/* Seleção do relatório */}
+      {/* Relatório original — fixo quando veio do formulário, seletor quando não */}
       <div className="card p-5 mb-4">
         <p className="form-section mb-3">Relatório original</p>
-        <div className="relative">
-          <select
-            value={selectedId}
-            onChange={e => selectReport(e.target.value)}
-            className="input w-full appearance-none pr-8 text-sm"
-          >
-            {relatorios.map(r => (
-              <option key={r.id} value={r.id}>
-                {r.numRelatorio} — {r.clienteNome} — {r.dataEmissao}
-              </option>
-            ))}
-          </select>
-          <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none" />
-        </div>
+
+        {avisoAlvo && (
+          <div className="flex items-start gap-2 mb-3 px-3 py-2 rounded-lg border border-amber-400/25 bg-amber-400/8">
+            <AlertTriangle size={12} className="text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-[11px] text-amber-300/90">{avisoAlvo}</p>
+          </div>
+        )}
+
+        {travadoNoAlvo && selected ? (
+          <div className="flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-gold/6 border border-gold/20">
+            <Lock size={12} className="text-gold/70 shrink-0" />
+            <p className="text-sm text-white/80 min-w-0 truncate">
+              <span className="font-mono font-bold text-gold">{selected.numRelatorio}</span>
+              <span className="text-white/40"> — {selected.clienteNome} — {selected.dataEmissao}</span>
+            </p>
+          </div>
+        ) : (
+          <div className="relative">
+            <select
+              value={selectedId}
+              onChange={e => selectReport(e.target.value)}
+              className="input w-full appearance-none pr-8 text-sm"
+            >
+              {relatorios.map(r => (
+                <option key={r.id} value={r.id}>
+                  {r.numRelatorio} — {r.clienteNome} — {r.dataEmissao}
+                </option>
+              ))}
+            </select>
+            <ChevronDown size={14} className="absolute right-3 top-1/2 -translate-y-1/2 text-white/40 pointer-events-none" />
+          </div>
+        )}
         {selected && (
           <p className="text-[10px] text-white/25 font-mono mt-2">
-            Emendas anteriores: {selected.emendas.length === 0 ? 'nenhuma' : selected.emendas.map(e => formatEmendaNumero(selected.numRelatorio, e.numero)).join(', ')} ·
-            Próxima: {formatEmendaNumero(selected.numRelatorio, (selected.emendas.length || 0) + 1)}
+            Emendas anteriores: {emendasDoRelatorio(relatorios, selected).length === 0
+              ? 'nenhuma'
+              : emendasDoRelatorio(relatorios, selected).map(e => formatEmendaNumero(selected.numRelatorio, e.numero, selected.cfg?.foraDaRbc)).join(', ')} ·
+            Próxima: {formatEmendaNumero(selected.numRelatorio, proximaEmenda(relatorios, selected), selected.cfg?.foraDaRbc)}
           </p>
         )}
       </div>
@@ -800,10 +822,17 @@ export default function EmendaPage() {
           Salvar sem emenda
         </button>
         <button
-          onClick={gerarEmenda}
+          onClick={() => gerarEmenda(false)}
+          disabled={alteracoes.length === 0}
+          title="Abre o PDF da emenda para conferência, sem gerar a emenda nem gravar nada"
+          className="btn-secondary flex items-center gap-2 px-4 py-2.5 text-sm disabled:opacity-40">
+          <FileText size={14} /> Pré-visualizar
+        </button>
+        <button
+          onClick={() => gerarEmenda(true)}
           disabled={alteracoes.length === 0}
           className="btn-primary flex items-center gap-2 px-5 py-2.5 text-sm font-bold disabled:opacity-40">
-          <History size={14} /> Gerar {selected ? formatEmendaNumero(selected.numRelatorio, (selected.emendas.length || 0) + 1) : 'Emenda'}
+          <History size={14} /> Gerar {selected ? formatEmendaNumero(selected.numRelatorio, proximaEmenda(relatorios, selected), selected.cfg?.foraDaRbc) : 'Emenda'}
         </button>
       </div>
     </div>

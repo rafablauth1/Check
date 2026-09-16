@@ -4,6 +4,11 @@ const path = require('path')
 const pkg       = require('../package.json')
 const version   = pkg.version
 const installer = `CISPR 15 LABELO Setup ${version}.exe`
+// O ZIP é o pacote preferido pela atualização automática: o app extrai e copia
+// por cima da própria pasta (robocopy), sem instalador e sem UAC — nos PCs do
+// laboratório não dá pra instalar nada. O instalador segue publicado como
+// alternativa para quem tiver permissão de administrador.
+const zipNome = `CISPR 15 LABELO-${version}-win.zip`
 const buildOutput = pkg.build?.directories?.output || 'dist'
 const distDir   = path.isAbsolute(buildOutput)
   ? buildOutput
@@ -19,7 +24,13 @@ if (!fs.existsSync(path.join(distDir, installer))) {
   console.warn(`Aviso: instalador não encontrado em dist/${installer}`)
 }
 
-fs.writeFileSync(outFile, JSON.stringify({ version, installer }, null, 2), 'utf-8')
+const temZip = fs.existsSync(path.join(distDir, zipNome))
+if (!temZip) console.warn(`Aviso: pacote zip não encontrado em dist/${zipNome}`)
+fs.writeFileSync(
+  outFile,
+  JSON.stringify({ version, installer, ...(temZip ? { zip: zipNome } : {}) }, null, 2),
+  'utf-8',
+)
 
 // Copia o instalador para releases/ dentro do projeto
 const releasesDir = path.join(__dirname, '..', 'releases')
@@ -112,14 +123,71 @@ const NETWORK_UPDATE_FOLDER =
 try {
   fs.mkdirSync(NETWORK_UPDATE_FOLDER, { recursive: true })
   fs.copyFileSync(path.join(releasesDir, installer), path.join(NETWORK_UPDATE_FOLDER, installer))
+  // O zip vai direto do dist/ (não é copiado pra releases/, que é a pasta do
+  // pacote manual) — é ele que a atualização sem instalador consome.
+  if (temZip) fs.copyFileSync(path.join(distDir, zipNome), path.join(NETWORK_UPDATE_FOLDER, zipNome))
   fs.copyFileSync(outFile, path.join(NETWORK_UPDATE_FOLDER, 'version.json'))
   // remove instaladores antigos da pasta de rede (mantém só o atual)
   for (const f of fs.readdirSync(NETWORK_UPDATE_FOLDER)) {
-    if ((f.endsWith('.exe') || f.endsWith('.blockmap')) && f !== installer && f !== installer + '.blockmap') {
+    if ((f.endsWith('.exe') || f.endsWith('.blockmap') || f.endsWith('.zip')) && f !== installer && f !== installer + '.blockmap' && f !== zipNome) {
       try { fs.rmSync(path.join(NETWORK_UPDATE_FOLDER, f), { force: true }) } catch {}
     }
   }
   console.log(`✓ Publicado na rede para atualização automática: ${NETWORK_UPDATE_FOLDER}`)
 } catch (err) {
   console.warn('Aviso: não consegui publicar na pasta de rede de atualização —', err.message)
+}
+
+/* ── poda do dist/ ───────────────────────────────────────────────────────────
+   Cada build deixa ~260 MB em dist/ (instalador + blockmap + zip). Em
+   15/09/2026 havia 25 versões acumuladas ali, 6,1 GB — ninguém apaga isso na
+   mão, então acumula até acabar o disco.
+
+   Ficam a versão ATUAL e a ANTERIOR: a anterior é a volta rápida se a nova sair
+   com problema. As mais velhas já estão publicadas na rede e o código está no
+   git; não há motivo para ocupar disco.
+
+   Nunca toca em win-unpacked/ (é de onde o app roda neste PC) nem nos .yml e
+   version.json. */
+function versaoDoArquivo(nome) {
+  const m = nome.match(/(\d+\.\d+\.\d+)/)
+  return m ? m[1] : null
+}
+function comparaVersao(a, b) {
+  const pa = a.split('.').map(Number), pb = b.split('.').map(Number)
+  return (pa[0] - pb[0]) || (pa[1] - pb[1]) || (pa[2] - pb[2])
+}
+try {
+  const porVersao = new Map()
+  for (const f of fs.readdirSync(distDir)) {
+    if (!/\.(exe|blockmap|zip)$/i.test(f)) continue          // .yml e .json ficam
+    let st
+    try { st = fs.statSync(path.join(distDir, f)) } catch { continue }
+    if (st.isDirectory()) continue                            // win-unpacked fica
+    const v = versaoDoArquivo(f)
+    if (!v) continue
+    if (!porVersao.has(v)) porVersao.set(v, [])
+    porVersao.get(v).push(f)
+  }
+  const manter = [...porVersao.keys()].sort(comparaVersao).slice(-2)
+  let apagados = 0, liberado = 0
+  for (const [v, arquivos] of porVersao) {
+    if (manter.includes(v)) continue
+    for (const f of arquivos) {
+      const fp = path.join(distDir, f)
+      try {
+        const tam = fs.statSync(fp).size
+        fs.rmSync(fp, { force: true })
+        apagados++; liberado += tam
+      } catch {}
+    }
+  }
+  if (apagados) {
+    console.log('')
+    console.log('✓ dist/ podado: ' + apagados + ' arquivo(s) de versões antigas, ' +
+                (liberado / 1073741824).toFixed(2) + ' GB liberados')
+    console.log('  mantidas: ' + manter.join(', '))
+  }
+} catch (err) {
+  console.warn('Aviso: não consegui podar o dist/ —', err.message)
 }

@@ -11,6 +11,12 @@ export interface Area {
   id: string
   nome: string
   cor: string        // chave de GRUPO_CORES (blue/gold/purple/green/coral/gray/teal)
+  /* Normas/portarias deste laboratório (ids de lib/normas). É por aqui que a
+     cadeia fecha: área → normas → ensaios → padrões, que é o que alimenta o
+     filtro por ensaio na tela de equipamentos. Fica na Área (e não na Norma)
+     porque é esta tela que grava taxonomia.json — assim o vínculo é salvo no
+     mesmo "Salvar tudo", sem precisar gravar cada norma por fora. */
+  normaIds?: string[]
 }
 
 export interface SiglaTag {

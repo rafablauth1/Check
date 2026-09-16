@@ -28,6 +28,7 @@ export async function POST(req: NextRequest) {
       equipamentosNecessarios: body.equipamentosNecessarios || [],
       tabelasLimites: body.tabelasLimites || [],
       secoes: body.secoes || [],
+      ensaios: body.ensaios || [],
     }
     await escreverJSON('normas/index.json', [...normas, nova])
     return NextResponse.json(nova, { status: 201 })

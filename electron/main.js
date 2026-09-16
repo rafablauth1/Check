@@ -1874,6 +1874,12 @@ async function mutarRelatorios(mutador) {
     }
     const efeito = mutador(itens)
     if (!efeito) return { ok: true, total: itens.length, semMudanca: true }
+    // O mutador pode RECUSAR (ex.: violaria unicidade). Recusa não é erro de
+    // sistema: volta como mensagem para a tela mostrar ao usuário.
+    if (efeito.recusa) {
+      logErro('recusado:unicidade', new Error(efeito.recusa), { id: efeito.id })
+      return { ok: false, recusado: true, error: efeito.recusa }
+    }
     await writeDataFile('cispr15_relatorios.json', efeito.lista)
     logInfo(efeito.evento, { antes: itens.length, depois: efeito.lista.length, id: efeito.id })
     return { ok: true, total: efeito.lista.length }
@@ -1883,10 +1889,50 @@ async function mutarRelatorios(mutador) {
   }
 }
 
+/* ── unicidade de nº de relatório e de protocolo ─────────────────────────────
+ *
+ * Regra do laboratório: dois relatórios não podem dividir o mesmo número nem o
+ * mesmo protocolo. Fica AQUI, e não na tela, porque este é o único caminho por
+ * onde relatório entra — uma tela nova amanhã herda a regra de graça.
+ *
+ * A comparação ignora espaços: "EMC 2542/2026" e "EMC2542/2026" são o mesmo
+ * número. Sem isso a checagem não pegaria nada — foi exatamente assim que três
+ * relatórios acabaram gravados em duplicata, cada cópia por um caminho do app.
+ *
+ * A EMENDA é a exceção legítima: ela é um registro próprio que repete número e
+ * protocolo do original de propósito. Original e suas emendas não conflitam
+ * entre si.
+ */
+function canonNum(v) { return String(v ?? '').replace(/\s+/g, '').toLowerCase() }
+
+function conflitoDeUnicidade(lista, novo) {
+  const num  = canonNum(novo.numRelatorio)
+  const prot = canonNum(novo.protocolo)
+  for (const r of lista) {
+    if (r.id === novo.id) continue                        // é ele mesmo (atualização)
+    if (novo.emendaDe && r.id === novo.emendaDe) continue // emenda x seu original
+    if (novo.emendaDe && r.emendaDe === novo.emendaDe) continue // emendas irmãs
+    if (r.emendaDe && r.emendaDe === novo.id) continue    // original x suas emendas
+    if (num && canonNum(r.numRelatorio) === num) {
+      return 'Já existe um relatório com o número ' + (r.numRelatorio || '—') +
+             ' (protocolo ' + (r.protocolo || '—') + ', cliente ' + (r.clienteNome || '—') +
+             '). Dois relatórios não podem ter o mesmo número.'
+    }
+    if (prot && canonNum(r.protocolo) === prot) {
+      return 'O protocolo ' + (r.protocolo || '—') + ' já está no relatório ' +
+             (r.numRelatorio || '—') + ' (cliente ' + (r.clienteNome || '—') +
+             '). Dois relatórios não podem ter o mesmo protocolo.'
+    }
+  }
+  return null
+}
+
 ipcMain.handle('data:upsert-relatorio', async (_, { relatorio }) => {
   if (!relatorio || !relatorio.id) return { ok: false, error: 'relatório sem id' }
   const leve = { ...relatorio, photos: [] }
   return mutarRelatorios(lista => {
+    const recusa = conflitoDeUnicidade(lista, leve)
+    if (recusa) return { recusa, id: leve.id }
     const i = lista.findIndex(r => r.id === leve.id)
     const nova = lista.slice()
     if (i >= 0) nova[i] = leve

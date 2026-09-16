@@ -1160,12 +1160,20 @@ export default function Cispr15ConfigPage() {
         // tanto deixa passar duplicata quanto acusa uma que já não existe.
         {
           const listaAtual = await carregarRelatorios()
-          const dup = listaAtual.find(r => r.protocolo?.trim().toLowerCase() === cfg.protocolo.trim().toLowerCase())
+          const dup = listaAtual.find(r =>
+            !r.emendaDe && numeroCanonico(r.protocolo) === numeroCanonico(cfg.protocolo))
           if (dup) {
-            const ok = confirm(
-              `⚠ Protocolo "${cfg.protocolo}" já possui o relatório "${dup.numRelatorio}" no histórico local.\n\nDeseja continuar e criar um novo registro mesmo assim?`
+            // Bloqueio, não aviso: protocolo repetido não é permitido. Antes isto
+            // era um confirm() que deixava seguir, e foi por aí que protocolos
+            // acabaram em dois relatórios diferentes.
+            alert(
+              'Protocolo ' + cfg.protocolo + ' já está no relatório ' + (dup.numRelatorio || '—') +
+              ' (cliente ' + (dup.clienteNome || '—') + ').\n\n' +
+              'Dois relatórios não podem ter o mesmo protocolo. Corrija o protocolo ' +
+              'ou exclua o relatório anterior antes de emitir.'
             )
-            if (!ok) { setGerandoRel(false); return }
+            setGerandoRel(false)
+            return
           }
         }
         // Verificar na planilha Excel

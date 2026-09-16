@@ -189,26 +189,28 @@ export default function DashboardPage() {
      são um problema de foto, não três problemas diferentes.
      Por isso conta-se ocorrências E relatórios distintos atingidos. */
   const emendaTopicos = useMemo(() => {
-    const TOPICOS: [RegExp, string][] = [
-      [/^foto_/,         'Fotos da amostra'],
-      [/^resultados_/,   'Resultados de ensaio'],
-      [/^cliente$/,      'Identificação do cliente'],
-      [/^amostra$/,      'Identificação da amostra'],
-      [/^tecnico$/,      'Dados técnicos'],
-      [/^protocolo$/,    'Protocolo e orçamento'],
-      [/^periodo$/,      'Período de ensaios'],
-      [/^documentacao$/, 'Documentação da amostra'],
+    /* Cor fixa por tópico: a fatia de "Fotos" precisa ser a mesma cor toda vez
+       que alguém abrir o dashboard, senão comparar dois meses engana. */
+    const TOPICOS: [RegExp, string, string][] = [
+      [/^foto_/,         'Fotos da amostra',         '#F87171'],
+      [/^resultados_/,   'Resultados de ensaio',     '#F59E0B'],
+      [/^cliente$/,      'Identificação do cliente', '#9B8CFF'],
+      [/^amostra$/,      'Identificação da amostra', '#4F8EF7'],
+      [/^tecnico$/,      'Dados técnicos',           '#34D399'],
+      [/^protocolo$/,    'Protocolo e orçamento',    '#22D3EE'],
+      [/^periodo$/,      'Período de ensaios',       '#FB923C'],
+      [/^documentacao$/, 'Documentação da amostra',  '#A78BFA'],
     ]
     const topicoDe = (campo: string) => {
-      for (const [re, nome] of TOPICOS) if (re.test(campo)) return nome
-      return 'Outros'
+      for (const [re, nome, cor] of TOPICOS) if (re.test(campo)) return { nome, cor }
+      return { nome: 'Outros', cor: '#6B7280' }
     }
-    const acc = new Map<string, { ocorrencias: number; relatorios: Set<string> }>()
+    const acc = new Map<string, { ocorrencias: number; relatorios: Set<string>; cor: string }>()
     const registrar = (alteracoes: any[], chaveRelatorio: string) => {
       for (const a of alteracoes ?? []) {
-        const t = topicoDe(String(a?.campo ?? ''))
-        if (!acc.has(t)) acc.set(t, { ocorrencias: 0, relatorios: new Set() })
-        const c = acc.get(t)!
+        const { nome, cor } = topicoDe(String(a?.campo ?? ''))
+        if (!acc.has(nome)) acc.set(nome, { ocorrencias: 0, relatorios: new Set(), cor })
+        const c = acc.get(nome)!
         c.ocorrencias++
         c.relatorios.add(chaveRelatorio)
       }
@@ -218,7 +220,7 @@ export default function DashboardPage() {
       for (const e of (r.emendas ?? [])) registrar(e?.alteracoes, r.id) // emenda aninhada (formato antigo)
     }
     const itens = [...acc.entries()]
-      .map(([label, c]) => ({ label, value: c.ocorrencias, relatorios: c.relatorios.size }))
+      .map(([label, c]) => ({ label, value: c.ocorrencias, relatorios: c.relatorios.size, color: c.cor }))
       .sort((a, b) => b.value - a.value)
     const total = itens.reduce((s, i) => s + i.value, 0)
     return { itens, total }
@@ -379,13 +381,17 @@ export default function DashboardPage() {
               <p className="text-white/20 text-xs py-2">Nenhuma alteração registrada em emendas neste ano.</p>
             ) : (
               <>
-                <HBarChart data={emendaTopicos.itens} color="#F87171" />
+                <DonutChart
+                  centerTop={emendaTopicos.total}
+                  centerSub="alterações"
+                  segments={emendaTopicos.itens.map(t => ({ label: t.label, value: t.value, color: t.color }))} />
                 <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap gap-x-5 gap-y-1">
                   {emendaTopicos.itens.map(t => (
                     <span key={t.label} className="text-[10px] text-white/35">
+                      <span style={{ color: t.color }}>■</span>{' '}
                       <span className="text-white/60 font-medium">{t.label}</span>
-                      {' · '}{Math.round((t.value / emendaTopicos.total) * 100)}% das alterações
-                      {' · '}{t.relatorios} relatório{t.relatorios > 1 ? 's' : ''}
+                      {' · '}{Math.round((t.value / emendaTopicos.total) * 100)}%
+                      {' · '}{t.relatorios} relatório{t.relatorios > 1 ? 's' : ''} atingido{t.relatorios > 1 ? 's' : ''}
                     </span>
                   ))}
                 </div>

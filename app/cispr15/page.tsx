@@ -168,15 +168,17 @@ export default function Cispr15ConfigPage() {
     async function detectarLoteAtivo() {
       const api = (window as any).electronAPI
       if (api?.getLotes) {
+        /* Com Electron a REDE é a fonte, e ponto. Antes, qualquer tropeço aqui
+           (API ainda não injetada no momento da montagem, leitura falhando)
+           caía no rascunho local de lote — que sobrevive a sessões antigas — e
+           o botão passava a anunciar "Continuar Lote (N)" com a rede vazia. */
         try {
           const res = await api.getLotes()
-          if (res?.ok && Array.isArray(res.lotes)) {
-            const total = res.lotes.reduce((soma: number, l: any) =>
-              soma + (Array.isArray(l.amostras) ? l.amostras.filter((a: any) => !a?.numRelatorio).length : 0), 0)
-            setLoteAtivo(total)
-            return
-          }
-        } catch {}
+          const lotes = Array.isArray(res?.lotes) ? res.lotes : []
+          setLoteAtivo(lotes.reduce((soma: number, l: any) =>
+            soma + (Array.isArray(l.amostras) ? l.amostras.filter((a: any) => !a?.numRelatorio).length : 0), 0))
+        } catch { setLoteAtivo(0) }
+        return
       }
       try {
         const raw = localStorage.getItem(LOTE_KEY)

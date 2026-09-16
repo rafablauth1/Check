@@ -1486,13 +1486,18 @@ export default function AgendaPage() {
     // Foto só interessa em item "Em andamento" — o que já foi emitido não
     // precisa mais buscar nada na Iluminação. Com itens marcados, restringe
     // ainda mais: só os selecionados.
-    const base = agenda.filter(a => !estaEmitido(a))
-    const alvo = selFotos.length ? base.filter(a => selFotos.includes(a.id)) : base
+    /* Exige seleção. Antes, sem nada marcado, varria TODOS os itens em
+       andamento — dezenas de protocolos de uma vez, sem o usuário ter pedido. */
+    if (!selFotos.length) {
+      alert('Marque os itens da agenda cujas fotos você quer importar.\n\n' +
+            'Use a caixa de seleção na linha de cada item.')
+      return
+    }
+    const alvo = agenda.filter(a => selFotos.includes(a.id) && !estaEmitido(a))
     const protocolos = [...new Set(alvo.map(a => (a.protocolo || '').trim()).filter(Boolean))]
     if (!protocolos.length) {
-      alert(selFotos.length
-        ? 'Nenhum protocolo "Em andamento" entre os itens marcados.'
-        : 'Nenhum item "Em andamento" com protocolo pra importar fotos.')
+      alert('Nenhum protocolo "Em andamento" entre os itens marcados.\n\n' +
+            'Itens já emitidos não buscam fotos.')
       return
     }
     setImportandoFotos(true)
@@ -1910,6 +1915,13 @@ export default function AgendaPage() {
     }))
   }, [agenda, numRelatoriosEmitidos])
 
+  /* Que ações fazem sentido em cada aba.
+     Concluído é consulta: sobram só os filtros. "Verificar PDFs" procura a
+     assinatura que ainda falta, então pertence a "Aguardando assinatura". O
+     resto (cadastro, lote, importar fotos) age sobre item ainda em andamento. */
+  const ehAguardando     = filter === 'aguardando'
+  const mostrarOperacoes = filter !== 'concluidos' && filter !== 'aguardando'
+
   const counts = useMemo(() => ({
     andamento: agenda.filter(a => !estaEmitido(a)).length,
     aguardando: agenda.filter(a => estaEmitido(a) && !a.assinadoEm).length,
@@ -2256,13 +2268,13 @@ export default function AgendaPage() {
 
             <div className="flex-1" />
             <span className="text-[10px] text-white/25 font-mono">{filteredItems.length} item(s)</span>
-            {selFotos.length > 0 && (
+            {mostrarOperacoes && selFotos.length > 0 && (
               <button type="button" onClick={() => setSelFotos([])}
                 className="text-[10px] text-white/35 hover:text-white/70 font-mono px-1.5 py-1 rounded transition-all">
                 {selFotos.length} selecionado(s) <X size={9} className="inline -mt-0.5" />
               </button>
             )}
-            {isElectron && (
+            {isElectron && mostrarOperacoes && (
               <button type="button" onClick={importarFotosRede} disabled={importandoFotos}
                 title={selFotos.length ? `Importa fotos só dos ${selFotos.length} protocolo(s) marcado(s)` : 'Importa fotos dos protocolos "Em andamento" (marque itens pra restringir)'}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
@@ -2270,14 +2282,14 @@ export default function AgendaPage() {
                 {importandoFotos ? 'Importando...' : selFotos.length ? `Importar Fotos (${selFotos.length})` : 'Importar Fotos'}
               </button>
             )}
-            {isElectron && (
+            {isElectron && mostrarOperacoes && (
               <button type="button" onClick={organizarResultados} disabled={organizando}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
                 {organizando ? <Loader2 size={11} className="animate-spin" /> : <FileText size={11} />}
                 {organizando ? 'Organizando...' : 'Organizar Resultados'}
               </button>
             )}
-            {isElectron && (
+            {isElectron && ehAguardando && (
               <button type="button" onClick={verificarPdfs} disabled={verificandoPdfs}
                 title="Procura, na pasta da EUT de cada item com N° de relatório mas sem assinatura registrada, o PDF do relatório — e marca como concluído automaticamente"
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-teal hover:border-teal/30 text-xs font-semibold transition-all disabled:opacity-40">
@@ -2285,24 +2297,28 @@ export default function AgendaPage() {
                 {verificandoPdfs ? 'Verificando...' : 'Verificar PDFs'}
               </button>
             )}
-            {isElectron && (
+            {isElectron && mostrarOperacoes && (
               <button type="button" onClick={() => router.push('/cispr15/lotes')}
                 className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/10 text-white/50 hover:text-gold hover:border-gold/30 text-xs font-semibold transition-all">
                 <Users size={11} /> Lotes em Andamento
               </button>
             )}
-            <button type="button" onClick={() => setShowGerarLote(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gold/30 bg-gold/8 text-gold hover:bg-gold/14 text-xs font-semibold transition-all">
-              <ArrowRight size={11} /> Emitir Lote
-            </button>
-            <button type="button" onClick={() => setShowLote(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal/30 bg-teal/8 text-teal hover:bg-teal/14 text-xs font-semibold transition-all">
-              <Layers size={11} /> Cadastrar Lote
-            </button>
-            <button type="button" onClick={() => setEditItem(newItem())}
-              className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs">
-              <Plus size={11} /> Cadastrar
-            </button>
+            {mostrarOperacoes && (
+              <>
+                <button type="button" onClick={() => setShowGerarLote(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-gold/30 bg-gold/8 text-gold hover:bg-gold/14 text-xs font-semibold transition-all">
+                  <ArrowRight size={11} /> Emitir Lote
+                </button>
+                <button type="button" onClick={() => setShowLote(true)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-teal/30 bg-teal/8 text-teal hover:bg-teal/14 text-xs font-semibold transition-all">
+                  <Layers size={11} /> Cadastrar Lote
+                </button>
+                <button type="button" onClick={() => setEditItem(newItem())}
+                  className="btn-primary flex items-center gap-1.5 px-3 py-1.5 text-xs">
+                  <Plus size={11} /> Cadastrar
+                </button>
+              </>
+            )}
           </div>
 
           {filter !== 'concluidos' && (

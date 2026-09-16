@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
 import fs from 'fs'
-import path from 'path'
+import { caminhoDados } from '@/lib/dados'
 
-// Ferramenta interna/temporária (quadro Check em /check.html).
-// Grava o markdown das demandas na RAIZ do projeto, pra ser lido e implementado.
-// Usa process.cwd() de propósito: em `next dev` é a pasta do projeto (o que queremos).
+// Ferramenta interna (quadro Check em /check.html).
+// Grava na pasta de cadastros, junto do check.json que alimenta o quadro.
+// Antes usava process.cwd(): serve no `next dev`, mas no app empacotado o cwd
+// é a pasta interna do servidor — o arquivo saía e ninguém achava depois.
 export async function POST(req: NextRequest) {
   try {
     const { markdown } = (await req.json()) as { markdown?: string }
     if (typeof markdown !== 'string') {
       return NextResponse.json({ error: 'markdown ausente' }, { status: 400 })
     }
-    const destino = path.join(process.cwd(), 'DEMANDAS.md')
+    const destino = await caminhoDados('DEMANDAS.md')
     fs.writeFileSync(destino, markdown, 'utf-8')
     return NextResponse.json({ ok: true, path: destino })
   } catch (e: unknown) {

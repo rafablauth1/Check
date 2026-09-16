@@ -51,6 +51,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getRelatorioAssets:  (id)    => ipcRenderer.invoke('data:get-relatorio-assets',    { id }),
   deleteRelatorioAssets: (id)  => ipcRenderer.invoke('data:delete-relatorio-assets', { id }),
   exportRelatorioFiles: (folderPath, numRelatorio, photos, docxHtml, docxName) => ipcRenderer.invoke('relatorio:export-files', { folderPath, numRelatorio, photos, docxHtml, docxName }),
+  // Cronometragem de trabalho — na rede, para o indicador ser do laboratório
+  // e não de cada computador. Acréscimo, nunca lista inteira.
+  getTempos:       ()          => ipcRenderer.invoke('data:get-tempos'),
+  addTempos:       (tempos)    => ipcRenderer.invoke('data:add-tempos', { tempos }),
+
   getAgenda:       ()          => ipcRenderer.invoke('data:get-agenda'),
   saveAgenda:      (agenda)    => ipcRenderer.invoke('data:save-agenda',      { agenda }),
   importarFotosRede: (protocolos) => ipcRenderer.invoke('agenda:importar-fotos-rede', { protocolos }),

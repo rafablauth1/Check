@@ -81,6 +81,10 @@ export async function readSettings(): Promise<AppSettings> {
   } catch {
     lidas = { ...DEFAULTS }
   }
+  /* Pasta vazia no arquivo salvo volta ao padrão de rede — vazio aqui manda o
+     dado para uma pasta local do PC, onde ele some para os outros. */
+  if (!String(lidas.cadastrosFolder ?? '').trim()) lidas.cadastrosFolder = DEFAULTS.cadastrosFolder
+  if (!String(lidas.mirrorFolder ?? '').trim())    lidas.mirrorFolder    = DEFAULTS.mirrorFolder
   cache = lidas
   return lidas
 }

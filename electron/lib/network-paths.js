@@ -26,6 +26,10 @@ const MIRROR_FOLDER_PADRAO = REGISTROS_ENSAIOS_BASE + '\\CISPR15'
 /** Instalador + version.json publicados pelo scripts/publish-update.js. */
 const UPDATE_FOLDER_PADRAO = MIRROR_FOLDER_PADRAO + '\\instalador'
 
+/** Backup dos dados. Na rede de propósito: backup que só existe no disco do
+ *  próprio PC não protege contra a perda desse disco. */
+const BACKUP_FOLDER_PADRAO = MIRROR_FOLDER_PADRAO + '\\backups'
+
 /** Pastas da Iluminação, por tipo de amostra — origem das fotos por protocolo. */
 const ILUMINACAO_LAMPADA_BASE   = 'T:\\Laboratórios\\Iluminação\\2 - Lâmpadas\\!Protocolos'
 const ILUMINACAO_LUMINARIA_BASE = 'T:\\Laboratórios\\Iluminação\\5 - Luminárias\\!Protocolos'
@@ -40,6 +44,7 @@ module.exports = {
   REGISTROS_ENSAIOS_BASE,
   MIRROR_FOLDER_PADRAO,
   UPDATE_FOLDER_PADRAO,
+  BACKUP_FOLDER_PADRAO,
   ILUMINACAO_LAMPADA_BASE,
   ILUMINACAO_LUMINARIA_BASE,
   RELATORIOS_COPIA_FOLDER,

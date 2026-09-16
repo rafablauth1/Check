@@ -147,7 +147,7 @@ export default function DashboardPage() {
 
     loadList('getRelatorios', 'relatorios', RELATORIOS_KEY).then(setRelatorios)
     loadList('getAgenda',     'agenda',     AGENDA_KEY).then(setAgenda)
-    setTempos(lerTempos())
+    lerTempos().then(setTempos).catch(() => {})
   }, [])
 
   // Anos disponíveis (dos relatórios) + ano atual, ordenados desc

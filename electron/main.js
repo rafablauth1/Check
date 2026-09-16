@@ -175,6 +175,7 @@ const {
   REGISTROS_ENSAIOS_BASE,
   MIRROR_FOLDER_PADRAO,
   UPDATE_FOLDER_PADRAO,
+  BACKUP_FOLDER_PADRAO,
   ILUMINACAO_LAMPADA_BASE,
   ILUMINACAO_LUMINARIA_BASE,
   RELATORIOS_COPIA_FOLDER,
@@ -182,7 +183,7 @@ const {
 
 // pfxPassword NÃO entra aqui de propósito: a senha do certificado que assina
 // juridicamente os relatórios não é gravada em disco (ver pfxPasswordSessao).
-const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: DATA_FOLDER_PADRAO, agendaFolder: AGENDA_FOLDER_PADRAO, pdfCopyFolder: '', cadastrosFolder: CADASTROS_FOLDER_PADRAO, mirrorFolder: MIRROR_FOLDER_PADRAO, pdfAutoSaveToEut: true, updateFolder: UPDATE_FOLDER_PADRAO, certThumbprint: '', pfxPath: '', backupFolder: '', autoBackup: true }
+const SETTINGS_DEFAULTS = { excelPath: '', dataFolder: DATA_FOLDER_PADRAO, agendaFolder: AGENDA_FOLDER_PADRAO, pdfCopyFolder: '', cadastrosFolder: CADASTROS_FOLDER_PADRAO, mirrorFolder: MIRROR_FOLDER_PADRAO, pdfAutoSaveToEut: true, updateFolder: UPDATE_FOLDER_PADRAO, certThumbprint: '', pfxPath: '', backupFolder: BACKUP_FOLDER_PADRAO, autoBackup: true }
 
 // Pasta de rede EMC onde as pastas por protocolo (com "fotos" dentro) são criadas.
 const FOTOS_DESTINO_BASE = REGISTROS_ENSAIOS_BASE
@@ -252,6 +253,18 @@ function migrarSenhaPfxDoDisco() {
 let settingsCache = null
 function invalidarCacheSettings() { settingsCache = null }
 
+/* Pasta vazia no settings salvo NÃO é escolha do usuário: é resquício de versão
+   antiga ou campo limpo sem querer. Deixar vazio manda o dado para uma pasta
+   local deste PC — onde ele some para todo mundo. Volta ao padrão de rede. */
+function comPastasDeRede(lidas, padroes) {
+  const PASTAS = ['dataFolder', 'agendaFolder', 'cadastrosFolder', 'mirrorFolder', 'updateFolder', 'backupFolder']
+  const out = { ...lidas }
+  for (const chave of PASTAS) {
+    if (!String(out[chave] ?? '').trim()) out[chave] = padroes[chave]
+  }
+  return out
+}
+
 function readSettings() {
   if (settingsCache) return settingsCache
   const def = { ...SETTINGS_DEFAULTS, ...getDefaultPaths() }
@@ -265,7 +278,7 @@ function readSettings() {
       const saved = JSON.parse(fs.readFileSync(caminho, 'utf-8'))
       // Arquivo legado ainda pode trazer a senha; não reintroduz em memória.
       delete saved.pfxPassword
-      settingsCache = { ...def, ...saved }
+      settingsCache = comPastasDeRede({ ...def, ...saved }, def)
       return settingsCache
     } catch {}
   }
@@ -576,8 +589,8 @@ function backupRootDir(destBase) {
   return path.join(base, 'CISPR15_Backups')
 }
 
-/* Todas as fontes de dados a serem incluídas no backup (deduplicadas por caminho).
-   'dados' já inclui a subpasta cispr15_assets (fotos+DOCX por relatório). */
+/* Fontes do backup (deduplicadas por caminho). O que sai daqui ainda passa
+   pelo filtro de arquivosDoBackup: só .json, e sem a pasta cispr15_assets. */
 function getBackupSources() {
   const s = readSettings()
   const out = []
@@ -609,13 +622,45 @@ function listBackups(destBase) {
       .map(e => {
         let manifest = null
         try { manifest = JSON.parse(fs.readFileSync(path.join(root, e.name, 'manifest.json'), 'utf-8')) } catch {}
-        return { name: e.name, path: path.join(root, e.name), date: manifest?.date ?? null, items: manifest?.items ?? [] }
+        return { name: e.name, path: path.join(root, e.name), date: manifest?.date ?? null, items: manifest?.items ?? [], impressao: manifest?.impressao ?? null }
       })
       .sort((a, b) => b.name.localeCompare(a.name))
   } catch { return [] }
 }
 
-function pruneBackups(destBase, keep = 4) {
+/* O QUE O BACKUP É: os JSON que organizam o app. Nada além disso.
+ *
+ * A regra é por EXTENSÃO (lista do que entra), não por lista do que sai. A
+ * diferença importa: com lista de exclusão, qualquer pasta nova que alguém
+ * acrescente como fonte amanhã entra junto. Com lista do que entra, um PDF
+ * nunca passa, aconteça o que acontecer no código.
+ *
+ * Entre 11/06 e 27/08/2026 a rotina copiava T:\Relatórios\Compatibilidade
+ * eletromagnética INTEIRA — cinco anos de PDF — para o disco do usuário. Deu
+ * 46 GB em backups que às vezes nem continham dados: o de 23/07 tinha a pasta
+ * "dados" VAZIA e 19,43 GB de PDF. Aqueles PDFs já estão na rede, no diretório
+ * deles e nas pastas de protocolo. Backup de backup.
+ */
+const EXTENSOES_DO_BACKUP = new Set(['.json'])
+
+/* Teto rígido: o backup mede antes de gravar e RECUSA se passar. É o que torna
+   um despejo de gigabytes impossível por construção, em vez de depender de
+   ninguém errar de novo. Backup de JSON dá ~6 MB. */
+const LIMITE_BACKUP_BYTES = 100 * 1024 * 1024
+
+/* Pastas que NÃO entram no backup.
+ *
+ * cispr15_assets são as fotos e o DOCX de cada relatório: 325 MB. Copiá-los a
+ * cada geração levava 331 MB por backup — 1,3 GB no total — para preservar os
+ * 6 MB de JSON que são o dado que de fato só existe ali. E eles não se perdem:
+ * continuam na pasta de assets da rede e nas pastas de protocolo, de onde o
+ * relatório pode ser remontado.
+ *
+ * O restore copia por cima sem apagar o que não veio no backup, então restaurar
+ * uma geração sem anexos não remove os anexos que estão lá. */
+const PASTAS_FORA_DO_BACKUP = new Set(['cispr15_assets'])
+
+function pruneBackups(destBase, keep = 7) {
   const root = backupRootDir(destBase)
   const all = listBackups(destBase)
   for (const b of all.slice(keep)) {
@@ -623,26 +668,131 @@ function pruneBackups(destBase, keep = 4) {
   }
 }
 
-async function runBackup(destBase) {
-  const root = backupRootDir(destBase)
-  const dir  = path.join(root, timestampFolder())
-  await fs.promises.mkdir(dir, { recursive: true })
-  const sources = getBackupSources()
-  const items = []
-  for (const src of sources) {
-    try {
-      if (!fs.existsSync(src.path)) continue
-      const target = path.join(dir, src.name)
-      // cópia ASSÍNCRONA (libuv threadpool) — não bloqueia o processo principal/UI
-      if (src.type === 'file') await fs.promises.copyFile(src.path, target)
-      else await fs.promises.cp(src.path, target, { recursive: true })
-      items.push(src.name)
-    } catch {}
+/* Levanta o que seria copiado, já aplicando as duas regras (só .json, fora as
+   pastas de anexo). Mantém os nomes de topo — dados, agenda, settings.json —
+   porque é por eles que o restoreBackup sabe para onde devolver cada coisa. */
+async function arquivosDoBackup(sources) {
+  const achados = []
+  const varrer = async (base, rel) => {
+    let itens = []
+    try { itens = await fs.promises.readdir(base, { withFileTypes: true }) } catch { return }
+    for (const e of itens) {
+      if (PASTAS_FORA_DO_BACKUP.has(e.name.toLowerCase())) continue
+      const p = path.join(base, e.name)
+      if (e.isDirectory()) { await varrer(p, rel + e.name + '/'); continue }
+      if (!EXTENSOES_DO_BACKUP.has(path.extname(e.name).toLowerCase())) continue
+      try { achados.push({ origem: p, rel: rel + e.name, tamanho: (await fs.promises.stat(p)).size }) } catch {}
+    }
   }
-  const manifest = { date: new Date().toISOString(), version: app.getVersion(), items }
-  try { await fs.promises.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8') } catch {}
-  pruneBackups(destBase)
-  return { ok: true, dir, items }
+  for (const src of sources) {
+    if (!fs.existsSync(src.path)) continue
+    if (src.type === 'file') {
+      try { achados.push({ origem: src.path, rel: src.name, tamanho: (await fs.promises.stat(src.path)).size }) } catch {}
+    } else {
+      await varrer(src.path, src.name + '/')
+    }
+  }
+  achados.sort((a, b) => a.rel.localeCompare(b.rel))
+  return achados
+}
+
+/* Impressão digital do conteúdo. Dois backups com a mesma impressão são o
+   mesmo backup — não há motivo para gravar o segundo. */
+async function impressaoDoBackup(arquivos) {
+  const h = crypto.createHash('sha256')
+  for (const a of arquivos) {
+    h.update(a.rel)
+    try { h.update(await fs.promises.readFile(a.origem)) } catch { h.update('ILEGIVEL') }
+  }
+  return h.digest('hex')
+}
+
+/* Os DOIS destinos, de propósito.
+ *
+ * O do PC é disco físico diferente do servidor e continua acessível com a rede
+ * fora do ar. O da rede sobrevive ao PC ser formatado, trocado ou roubado.
+ * Nenhum dos dois cobre o outro, e são 6 MB: guardar nos dois lados custa menos
+ * do que perder uma vez.
+ *
+ * Nada é apagado em nenhum deles — nem aqui, nem em lugar nenhum da rotina. */
+function destinosDeBackup() {
+  const s = readSettings()
+  const out = []
+  const add = (rotulo, base) => {
+    if (!base) return
+    const chave = path.resolve(base).toLowerCase()
+    if (out.some(d => path.resolve(d.base).toLowerCase() === chave)) return
+    out.push({ rotulo, base })
+  }
+  add('PC',   getDefaultBackupDir())
+  add('rede', s.backupFolder)
+  return out
+}
+
+async function runBackup(destBase) {
+  const arquivos = await arquivosDoBackup(getBackupSources())
+  const bytes = arquivos.reduce((s, a) => s + a.tamanho, 0)
+
+  if (bytes > LIMITE_BACKUP_BYTES) {
+    const msg = 'Backup recusado: ocuparia ' + (bytes / 1048576).toFixed(0) + ' MB, acima do teto de ' +
+                (LIMITE_BACKUP_BYTES / 1048576) + ' MB. O backup é só dos JSON do app — ' +
+                'algo grande entrou na conta e nada foi gravado.'
+    logErro('backup:acima-do-teto', new Error(msg), { bytes, arquivos: arquivos.length })
+    return { ok: false, error: msg }
+  }
+
+  const impressao = await impressaoDoBackup(arquivos)
+  const nomePasta = timestampFolder()
+  // destBase preenchido = pedido manual para um lugar específico (Configurações).
+  const destinos = destBase ? [{ rotulo: 'escolhido', base: destBase }] : destinosDeBackup()
+  const resultados = []
+
+  for (const d of destinos) {
+    try {
+      const anterior = listBackups(d.base)[0]
+      if (anterior && anterior.impressao && anterior.impressao === impressao) {
+        logInfo('backup:sem-mudanca', { destino: d.rotulo, igualA: anterior.name })
+        resultados.push({ destino: d.rotulo, ok: true, semMudanca: true, dir: anterior.path })
+        continue
+      }
+      const dir = path.join(backupRootDir(d.base), nomePasta)
+      await fs.promises.mkdir(dir, { recursive: true })
+      const items = []
+      for (const a of arquivos) {
+        const destino = path.join(dir, a.rel)
+        await fs.promises.mkdir(path.dirname(destino), { recursive: true })
+        await fs.promises.copyFile(a.origem, destino)
+        items.push(a.rel)
+      }
+      const manifest = {
+        date: new Date().toISOString(),
+        version: app.getVersion(),
+        impressao,
+        bytes,
+        items,
+      }
+      await fs.promises.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8')
+      logInfo('backup:gravado', { destino: d.rotulo, dir, arquivos: items.length, mb: +(bytes / 1048576).toFixed(1) })
+      resultados.push({ destino: d.rotulo, ok: true, dir, items: items.length })
+    } catch (err) {
+      // Um destino fora do ar (rede caída) não pode impedir o outro.
+      logErro('backup:destino-falhou', err, { destino: d.rotulo, base: d.base })
+      resultados.push({ destino: d.rotulo, ok: false, error: String(err) })
+    }
+  }
+
+  /* SEM poda automática, em nenhum dos destinos. A poda apagava backups no
+     silêncio de um catch vazio: em 11/09/2026 ela começou a remover dois
+     backups antigos, foi interrompida no meio e deixou uma pasta que PARECE
+     backup e não é — com os PDFs, sem os dados e sem manifesto. Backup só sai
+     por ação explícita de quem usa. */
+  const algumGravou = resultados.some(r => r.ok)
+  return {
+    ok: algumGravou,
+    destinos: resultados,
+    mb: +(bytes / 1048576).toFixed(1),
+    error: algumGravou ? undefined : 'Nenhum destino aceitou o backup.',
+  }
 }
 
 /* Restaura um backup (o mais recente por padrão, ou o nomeado) por cima das
@@ -1833,6 +1983,42 @@ ipcMain.handle('data:save-clientes', (_, { clientes }) => gravarColecaoProtegida
   () => readDataFile('cispr15_clientes.json'),
   lista => writeDataFile('cispr15_clientes.json', lista),
 ))
+
+/* ── cronometragem de trabalho, na rede ──────────────────────────────────────
+ *
+ * Vivia no localStorage de cada PC: o "tempo médio de emissão" do dashboard
+ * media só o que fora emitido NAQUELA máquina, e cada uma mostrava um número
+ * diferente. É indicador do laboratório, não do computador.
+ *
+ * Gravação por acréscimo, igual aos relatórios: a tela manda o que aconteceu,
+ * nunca a lista inteira — assim um PC não sobrescreve a medição dos outros com
+ * o que tem em memória. */
+ipcMain.handle('data:get-tempos', async () => {
+  try {
+    const { itens } = await readDataFile('cispr15_tempos.json')
+    return { ok: true, tempos: itens }
+  } catch (err) { return { ok: false, error: String(err), tempos: [] } }
+})
+
+ipcMain.handle('data:add-tempos', async (_, { tempos } = {}) => {
+  try {
+    const novos = Array.isArray(tempos) ? tempos.filter(t => t && t.id) : []
+    if (!novos.length) return { ok: true, total: 0, semMudanca: true }
+    const { itens, estado } = await readDataFile('cispr15_tempos.json')
+    if (estado === 'corrompido') {
+      logErro('add:tempos', new Error('arquivo ilegivel'), { estado })
+      return { ok: false, error: 'Arquivo de tempos ilegível — nada foi gravado.' }
+    }
+    // Ignora id repetido: a migração de um PC pode rodar mais de uma vez.
+    const jaTem = new Set(itens.map(t => t && t.id))
+    const lista = [...itens, ...novos.filter(t => !jaTem.has(t.id))].slice(-5000)
+    await writeDataFile('cispr15_tempos.json', lista)
+    return { ok: true, total: lista.length }
+  } catch (err) {
+    logErro('add:tempos', err)
+    return { ok: false, error: String(err) }
+  }
+})
 
 ipcMain.handle('data:get-relatorios', async () => {
   const { dataFolder } = readSettings()

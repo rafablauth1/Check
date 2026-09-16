@@ -18,6 +18,18 @@ import {
 import { salvarValor } from '@/lib/cispr15/photo-store'
 import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
 
+/* Chave "aaaa-mm" de uma data, aceitando os dois formatos que circulam aqui:
+   ISO (2026-09-16) e brasileiro (16/09/2026). */
+function chaveMes(s?: string): string {
+  if (!s) return ''
+  const iso = s.match(/^(\d{4})-(\d{2})/)
+  if (iso) return iso[1] + '-' + iso[2]
+  const br = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/)
+  if (br) return br[3] + '-' + br[2]
+  return ''
+}
+const MES_CURTO = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez']
+
 /* ─── tags predefinidas ───────────────────────────────────────────────────── */
 const PREDEFINED_TAGS = [
   { id: 'urgente',      label: 'Urgente',             cls: 'border-orange-400/40 bg-orange-400/8 text-orange-300' },
@@ -1336,6 +1348,8 @@ export default function AgendaPage() {
   const [sortDir,       setSortDir]       = useState<'asc' | 'desc'>('desc')
   const [search,        setSearch]        = useState('')
   const [filterCliente,   setFilterCliente]   = useState('')
+  // Mês de conclusão — só se aplica à aba "Concluídos" (ver filteredItems).
+  const [filterMes,       setFilterMes]       = useState('')
   const [isElectron,    setIsElectron]    = useState(false)
   const [fromNetwork,   setFromNetwork]   = useState<boolean | null>(null)
   // Arquivo da agenda existe mas não abre: a tela está vazia por falha de
@@ -1869,12 +1883,32 @@ export default function AgendaPage() {
         .some(v => v?.toLowerCase().includes(q))
     )
     if (filterCliente) items = items.filter(a => a.cliente === filterCliente)
+    /* O mês só faz sentido nos concluídos, e pela data de ASSINATURA: é ela que
+       marca quando o item foi concluído, não a entrada nem a emissão. */
+    if (filter === 'concluidos' && filterMes) {
+      items = items.filter(a => chaveMes(a.assinadoEm) === filterMes)
+    }
     items.sort((a, b) => {
       const va = a[sortKey] ?? ''; const vb = b[sortKey] ?? ''
       return sortDir === 'asc' ? va.localeCompare(vb) : vb.localeCompare(va)
     })
     return items
-  }, [agenda, filter, search, filterCliente, sortKey, sortDir, numRelatoriosEmitidos])
+  }, [agenda, filter, search, filterCliente, filterMes, sortKey, sortDir, numRelatoriosEmitidos])
+
+  /* Meses que existem de fato entre os concluídos — nada de listar 12 meses
+     vazios. Rótulo com o ano porque a agenda atravessa anos. */
+  const mesesConcluidos = useMemo(() => {
+    const chaves = new Set<string>()
+    for (const a of agenda) {
+      if (!a.assinadoEm || !estaEmitido(a)) continue
+      const k = chaveMes(a.assinadoEm)
+      if (k) chaves.add(k)
+    }
+    return [...chaves].sort().reverse().map(k => ({
+      valor: k,
+      rotulo: MES_CURTO[Number(k.slice(5, 7)) - 1] + '/' + k.slice(0, 4),
+    }))
+  }, [agenda, numRelatoriosEmitidos])
 
   const counts = useMemo(() => ({
     andamento: agenda.filter(a => !estaEmitido(a)).length,
@@ -2202,6 +2236,13 @@ export default function AgendaPage() {
               <select className="input py-1 text-xs max-w-[150px]" value={filterCliente} onChange={e => setFilterCliente(e.target.value)}>
                 <option value="">Todos clientes</option>
                 {clienteOptions.map(c => <option key={c} value={c}>{c}</option>)}
+              </select>
+            )}
+
+            {filter === 'concluidos' && mesesConcluidos.length > 0 && (
+              <select className="input py-1 text-xs max-w-[120px]" value={filterMes} onChange={e => setFilterMes(e.target.value)}>
+                <option value="">Todos os meses</option>
+                {mesesConcluidos.map(m => <option key={m.valor} value={m.valor}>{m.rotulo}</option>)}
               </select>
             )}
 

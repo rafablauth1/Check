@@ -182,6 +182,48 @@ export default function DashboardPage() {
     return { totalEmendas, comEmenda, semEmenda: relatoriosAno.length - comEmenda, pct }
   }, [relatoriosAno])
 
+  /* Análise de emendas: QUAL item do relatório motivou a emenda.
+     A emenda grava campos soltos (cliente, amostra, tecnico, protocolo,
+     periodo, documentacao, resultados_*, foto_N). Para ação corretiva o que
+     interessa é o tópico, não o campo — 3 fotos trocadas no mesmo relatório
+     são um problema de foto, não três problemas diferentes.
+     Por isso conta-se ocorrências E relatórios distintos atingidos. */
+  const emendaTopicos = useMemo(() => {
+    const TOPICOS: [RegExp, string][] = [
+      [/^foto_/,         'Fotos da amostra'],
+      [/^resultados_/,   'Resultados de ensaio'],
+      [/^cliente$/,      'Identificação do cliente'],
+      [/^amostra$/,      'Identificação da amostra'],
+      [/^tecnico$/,      'Dados técnicos'],
+      [/^protocolo$/,    'Protocolo e orçamento'],
+      [/^periodo$/,      'Período de ensaios'],
+      [/^documentacao$/, 'Documentação da amostra'],
+    ]
+    const topicoDe = (campo: string) => {
+      for (const [re, nome] of TOPICOS) if (re.test(campo)) return nome
+      return 'Outros'
+    }
+    const acc = new Map<string, { ocorrencias: number; relatorios: Set<string> }>()
+    const registrar = (alteracoes: any[], chaveRelatorio: string) => {
+      for (const a of alteracoes ?? []) {
+        const t = topicoDe(String(a?.campo ?? ''))
+        if (!acc.has(t)) acc.set(t, { ocorrencias: 0, relatorios: new Set() })
+        const c = acc.get(t)!
+        c.ocorrencias++
+        c.relatorios.add(chaveRelatorio)
+      }
+    }
+    for (const r of relatoriosAno) {
+      if (r.emendaDe) registrar(r.alteracoes, r.emendaDe)              // emenda em registro próprio
+      for (const e of (r.emendas ?? [])) registrar(e?.alteracoes, r.id) // emenda aninhada (formato antigo)
+    }
+    const itens = [...acc.entries()]
+      .map(([label, c]) => ({ label, value: c.ocorrencias, relatorios: c.relatorios.size }))
+      .sort((a, b) => b.value - a.value)
+    const total = itens.reduce((s, i) => s + i.value, 0)
+    return { itens, total }
+  }, [relatoriosAno])
+
   // Tempo de saída (fim do ensaio → emissão) e atrasos
   const tempoStats = useMemo(() => {
     const dias: number[] = []
@@ -329,6 +371,27 @@ export default function DashboardPage() {
                 ]} />
             </ChartCard>
           </div>
+
+          {/* Análise de emendas — onde o erro se concentra. Em largura inteira
+              porque o valor aqui é comparar os tópicos entre si. */}
+          <ChartCard title={`Emendas — itens mais afetados · ${ano}`}>
+            {emendaTopicos.itens.length === 0 ? (
+              <p className="text-white/20 text-xs py-2">Nenhuma alteração registrada em emendas neste ano.</p>
+            ) : (
+              <>
+                <HBarChart data={emendaTopicos.itens} color="#F87171" />
+                <div className="mt-4 pt-3 border-t border-white/5 flex flex-wrap gap-x-5 gap-y-1">
+                  {emendaTopicos.itens.map(t => (
+                    <span key={t.label} className="text-[10px] text-white/35">
+                      <span className="text-white/60 font-medium">{t.label}</span>
+                      {' · '}{Math.round((t.value / emendaTopicos.total) * 100)}% das alterações
+                      {' · '}{t.relatorios} relatório{t.relatorios > 1 ? 's' : ''}
+                    </span>
+                  ))}
+                </div>
+              </>
+            )}
+          </ChartCard>
 
           {/* Agenda de execução */}
           <div className="card p-5">

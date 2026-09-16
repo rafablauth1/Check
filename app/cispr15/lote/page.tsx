@@ -12,7 +12,7 @@ import { cn, normWatts } from '@/lib/utils'
 import { iniciarMarcadorSeAusente, finalizarMarcador, registrarTempo } from '@/lib/tempos'
 import {
   type LoteAmostra, type LoteConfig, type Cispr15Config, type RelatorioSalvo, type EquipamentoSalvo, type AgendaItem,
-  newAmostra, today, LOTE_KEY, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, EQUIPAMENTOS_KEY, AGENDA_KEY,
+  newAmostra, today, LOTE_KEY, CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, EQUIPAMENTOS_KEY, AGENDA_KEY, numeroCanonico,
   AUTH_KEY, SETTINGS_KEY, docxTemFail, docxOndeFail, extrairTensaoMaxima, TENSAO_CONFIG_MAX,
   validarSecoesRadimation, docxTensoesTestadas,
 } from '../types'
@@ -1282,7 +1282,7 @@ function LotePageInner() {
     if (!docxHtml && am.numRelatorio) {
       try {
         const lista = await carregarRelatorios()
-        const rel = lista.find(r => r.numRelatorio === am.numRelatorio && r.protocolo === am.protocolo)
+        const rel = lista.find(r => numeroCanonico(r.numRelatorio) === numeroCanonico(am.numRelatorio) && r.protocolo === am.protocolo)
         if (rel) docxHtml = (await lerAssetsLocais(rel.id)).docxHtml
       } catch {}
     }

@@ -8,7 +8,7 @@ import {
   Timer, Hourglass,
 } from 'lucide-react'
 import { fmt, diasAte } from '@/lib/utils'
-import { RELATORIOS_KEY, AGENDA_KEY } from '@/app/cispr15/types'
+import { RELATORIOS_KEY, AGENDA_KEY, numeroCanonico } from '@/app/cispr15/types'
 import { lerTempos, mediaDuracao, formatDuracao, type TempoTrabalho } from '@/lib/tempos'
 import { DonutChart, BarChart, HBarChart, ChartCard } from '@/components/Charts'
 import { FilterDropdown } from '@/components/FilterDropdown'
@@ -204,9 +204,9 @@ export default function DashboardPage() {
     const doAno = tempos.filter(t => new Date(t.data).getFullYear() === ano)
     // "emissão" só conta se o relatório ainda existir na base — um registro de
     // tempo de um relatório apagado depois não deve inflar a contagem/média.
-    const numsAtuais = new Set(relatorios.map(r => (r.numRelatorio || '').trim().toLowerCase()).filter(Boolean))
+    const numsAtuais = new Set(relatorios.map(r => numeroCanonico(r.numRelatorio)).filter(Boolean))
     const emissaoValidos = doAno.filter(t =>
-      t.tipo !== 'emissao' || (!!t.numRelatorio && numsAtuais.has(t.numRelatorio.trim().toLowerCase())),
+      t.tipo !== 'emissao' || (!!t.numRelatorio && numsAtuais.has(numeroCanonico(t.numRelatorio))),
     )
     const emissao = mediaDuracao(emissaoValidos, 'emissao')
     const agendaT = mediaDuracao(doAno, 'agenda')

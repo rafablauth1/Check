@@ -198,6 +198,21 @@ export const EMENDA_DRAFT_KEY    = 'cispr15_emenda_draft_v1'
    (lerAssetsLocais / salvarAssetsLocais). Não recrie esta constante. */
 export const LOCKED_KEY          = 'cispr15_locked_v1'
 
+/** Forma canônica de um número de relatório, para COMPARAÇÃO.
+ *
+ *  "EMC 3073/2026" e "EMC3073/2026" são o MESMO relatório — o espaço depois do
+ *  prefixo entra ou não conforme onde o número foi gerado (a planilha põe, o
+ *  comSufixo tira). Comparar com trim() só limpa as pontas e deixa os dois como
+ *  números diferentes: foi assim que relatórios já emitidos ficaram presos em
+ *  "Em andamento" na agenda, que não reconhecia o número dela como o mesmo do
+ *  relatório salvo.
+ *
+ *  Use SEMPRE isto para COMPARAR número de relatório. Para EXIBIR, use o valor
+ *  original — esta forma existe só para casar os dois lados. */
+export function numeroCanonico(num?: string): string {
+  return (num ?? '').replace(/\s+/g, '').toLowerCase()
+}
+
 /** Marca de ensaio FORA DA RBC no número do relatório. */
 const SUFIXO_FORA_RBC = 's'
 

@@ -13,7 +13,7 @@ import { cn } from '@/lib/utils'
 import {
   type AgendaItem, type RelatorioSalvo, type ClienteDB,
   type LoteAmostra, type LoteConfig, type Cispr15Config,
-  AGENDA_KEY, CLIENTES_KEY, CFG_KEY, LOTE_KEY, today,
+  AGENDA_KEY, CLIENTES_KEY, CFG_KEY, LOTE_KEY, today, numeroCanonico,
 } from '@/app/cispr15/types'
 import { salvarValor } from '@/lib/cispr15/photo-store'
 import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
@@ -1537,7 +1537,7 @@ export default function AgendaPage() {
   async function verificarPdfs() {
     const api = (window as any).electronAPI
     if (!api?.verificarPdfsAgenda) { alert('Disponível apenas no aplicativo.'); return }
-    const norm = (v?: string) => (v || '').trim().toLowerCase()
+    const norm = numeroCanonico
     const alvo = agenda.filter(a => !estaEmitido(a) && a.numRelatorio)
     if (!alvo.length) { alert('Nenhum item "Em andamento" com N° de relatório pra verificar.'); return }
     setVerificandoPdfs(true)
@@ -1700,7 +1700,7 @@ export default function AgendaPage() {
   async function abrirPastaDoRelatorio(item: AgendaItem) {
     const api = (window as any).electronAPI
     if (!api) return
-    const norm = (s?: string) => (s || '').trim().toLowerCase()
+    const norm = numeroCanonico
     const rel = relatorios.find(r =>
       (item.numRelatorio && norm(r.numRelatorio) === norm(item.numRelatorio)) ||
       (item.protocolo && norm(r.protocolo) === norm(item.protocolo)),
@@ -1849,11 +1849,11 @@ export default function AgendaPage() {
   // (relatório apagado, ou perdido por um bug antigo de sincronização) e não
   // deve inflar os contadores/estatísticas de "emitidos"/"concluídos".
   const numRelatoriosEmitidos = useMemo(() => {
-    const norm = (s?: string) => (s || '').trim().toLowerCase()
+    const norm = numeroCanonico
     return new Set(relatorios.map(r => norm(r.numRelatorio)).filter(Boolean))
   }, [relatorios])
   function estaEmitido(item: Pick<AgendaItem, 'numRelatorio'>): boolean {
-    const s = (item.numRelatorio || '').trim().toLowerCase()
+    const s = numeroCanonico(item.numRelatorio)
     return !!s && numRelatoriosEmitidos.has(s)
   }
 

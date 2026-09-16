@@ -13,7 +13,7 @@ import {
   type Cispr15Config, type LoteConfig, type ClienteDB, type RelatorioSalvo, type EmendaDraft,
   DEFAULTS,
   CFG_KEY, PHOTOS_KEY, DOCX_HTML_KEY, DOCX_NAME_KEY, LOTE_KEY, CLIENTES_KEY,
-  EMENDA_DRAFT_KEY, LOCKED_KEY, formatEmendaNumero, formatNumeroRelatorio,
+  EMENDA_DRAFT_KEY, LOCKED_KEY, formatEmendaNumero, formatNumeroRelatorio, numeroCanonico,
   emendasDoRelatorio,
   AGENDA_KEY, SETTINGS_KEY, SESSION_KEY, AUTH_KEY,
   newAmostra, docxTemFail, tensaoDeclaradaExcedeEnsaio, TENSAO_CONFIG_MAX,
@@ -891,7 +891,8 @@ export default function Cispr15ConfigPage() {
       // só — a lista não volta para o arquivo.
       const list = await carregarRelatorios()
       const existingIdx = list.findIndex(r =>
-        finalCfg.numRelatorio && r.numRelatorio === finalCfg.numRelatorio
+        !!numeroCanonico(finalCfg.numRelatorio) &&
+        numeroCanonico(r.numRelatorio) === numeroCanonico(finalCfg.numRelatorio)
       )
       const id = existingIdx >= 0 ? list[existingIdx].id : Date.now().toString()
       const entry: RelatorioSalvo = {
@@ -1202,7 +1203,11 @@ export default function Cispr15ConfigPage() {
       await salvarRelatorioLocal(finalCfg)
       localStorage.setItem(LOCKED_KEY, '1')
       setLocked(true)
-      sincronizarAgenda(finalCfg.protocolo, finalCfg.numRelatorio, finalCfg.dataEmissao)
+      /* COM await: logo abaixo o abrirRelatorio() troca o documento inteiro
+         (window.location.assign), e isso mata qualquer gravacao em voo. Sem
+         esperar, o numero do relatorio nao chegava na agenda e o item ficava
+         preso em "Em andamento". */
+      await sincronizarAgenda(finalCfg.protocolo, finalCfg.numRelatorio, finalCfg.dataEmissao)
 
       flash4(`Registrado: ${finalCfg.numRelatorio}`)
       abrirRelatorio()

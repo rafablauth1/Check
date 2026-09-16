@@ -211,7 +211,9 @@ export default function DashboardPage() {
        tópicos conta uma vez em cada; por isso a soma das fatias pode passar do
        total de emendas, e o centro da rosca mostra o total real. */
     const acc = new Map<string, { emendas: number; relatorios: Set<string>; cor: string }>()
-    const porQtdMotivos = new Map<number, number>()
+    /* Chave = os motivos daquela emenda, nomeados. "1 motivo" não dizia nada;
+       o que interessa é QUAL motivo — e, quando há mais de um, quais foram. */
+    const porCombinacao = new Map<string, { n: number; cor: string }>()
     let totalEmendas = 0
     const registrarEmenda = (alteracoes: any[], chaveRelatorio: string) => {
       const topicos = new Map<string, string>()
@@ -221,8 +223,17 @@ export default function DashboardPage() {
       }
       if (!topicos.size) return
       totalEmendas++
-      // Quantos motivos DISTINTOS esta emenda teve — é o eixo da segunda rosca.
-      porQtdMotivos.set(topicos.size, (porQtdMotivos.get(topicos.size) ?? 0) + 1)
+      /* Combinação de motivos desta emenda. Motivo único mantém a cor do
+         próprio tópico; combinação ganha cor de alerta — âmbar para duas,
+         vermelho para três ou mais — porque emenda composta significa revisão
+         que falhou em vários pontos de uma vez. */
+      const nomes = [...topicos.keys()].sort()
+      const chaveCombo = nomes.join(' + ')
+      const corCombo = nomes.length === 1 ? (topicos.get(nomes[0]) as string)
+        : nomes.length === 2 ? '#F59E0B' : '#F87171'
+      const atual = porCombinacao.get(chaveCombo) ?? { n: 0, cor: corCombo }
+      atual.n++
+      porCombinacao.set(chaveCombo, atual)
       for (const [nome, cor] of topicos) {
         if (!acc.has(nome)) acc.set(nome, { emendas: 0, relatorios: new Set(), cor })
         const c = acc.get(nome)!
@@ -239,20 +250,11 @@ export default function DashboardPage() {
       .sort((a, b) => b.value - a.value)
     const totalMotivos = itens.reduce((s, i) => s + i.value, 0)
 
-    /* Emenda simples (um motivo) x composta (vários). Verde -> âmbar -> vermelho:
-       quanto mais motivos numa emenda só, pior foi a revisão que a antecedeu. */
-    const CORES_QTD = ['#34D399', '#F59E0B', '#F87171']
-    const complexidade = [1, 2, 3]
-      .map(q => ({
-        label: q < 3 ? `${q} motivo${q > 1 ? 's' : ''}` : '3+ motivos',
-        value: q < 3
-          ? (porQtdMotivos.get(q) ?? 0)
-          : [...porQtdMotivos.entries()].filter(([k]) => k >= 3).reduce((s, [, v]) => s + v, 0),
-        color: CORES_QTD[q - 1],
-      }))
-      .filter(c => c.value > 0)
+    const combinacoes = [...porCombinacao.entries()]
+      .map(([label, c]) => ({ label, value: c.n, color: c.cor }))
+      .sort((a, b) => b.value - a.value)
 
-    return { itens, totalEmendas, totalMotivos, complexidade }
+    return { itens, totalEmendas, totalMotivos, combinacoes }
   }, [relatoriosAno])
 
   // Tempo de saída (fim do ensaio → emissão) e atrasos
@@ -430,20 +432,20 @@ export default function DashboardPage() {
               )}
             </ChartCard>
 
-            <ChartCard title={`Emendas — motivos por emenda · ${ano}`}>
-              {emendaTopicos.complexidade.length === 0 ? (
+            <ChartCard title={`Emendas — motivo de cada emenda · ${ano}`}>
+              {emendaTopicos.combinacoes.length === 0 ? (
                 <p className="text-white/20 text-xs py-2">Nenhuma emenda registrada neste ano.</p>
               ) : (
                 <>
                   <DonutChart
                     centerTop={emendaTopicos.totalEmendas}
                     centerSub={emendaTopicos.totalEmendas === 1 ? 'emenda' : 'emendas'}
-                    segments={emendaTopicos.complexidade} />
+                    segments={emendaTopicos.combinacoes} />
                   <p className="mt-4 pt-3 border-t border-white/5 text-[10px] text-white/35">
-                    {emendaTopicos.totalEmendas} emenda{emendaTopicos.totalEmendas > 1 ? 's' : ''}
-                    {' '}gerou{emendaTopicos.totalEmendas > 1 ? '/geraram' : ''}{' '}
-                    {emendaTopicos.totalMotivos} motivo{emendaTopicos.totalMotivos > 1 ? 's' : ''}.
-                    {' '}Emenda com mais de um motivo indica revisão que falhou em vários pontos de uma vez.
+                    Cada fatia é o motivo da emenda. Fatia com <span className="text-white/60">+</span> é
+                    emenda que teve mais de um motivo — revisão que falhou em vários pontos de uma vez.
+                    {' '}No ano: {emendaTopicos.totalEmendas} emenda{emendaTopicos.totalEmendas > 1 ? 's' : ''},
+                    {' '}{emendaTopicos.totalMotivos} motivo{emendaTopicos.totalMotivos > 1 ? 's' : ''}.
                   </p>
                 </>
               )}

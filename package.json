@@ -1,6 +1,6 @@
 {
   "name": "cispr15-labelo",
-  "version": "2.1.32",
+  "version": "2.1.33",
   "description": "Gerador de Relatórios CISPR 15 — LABELO/PUCRS",
   "main": "electron/main.js",
   "scripts": {

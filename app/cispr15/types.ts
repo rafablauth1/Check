@@ -624,6 +624,11 @@ export interface AgendaItem {
   setorDestinoAntecipado?: string      // setor/área de destino (opcional)
   recebimentoAntecipadoOk?: boolean    // confirmação do recebimento pelo colega do outro setor
   assinadoEm?: string        // data (ISO) em que o relatório foi assinado → status "Concluído"
+  /* Nº de relatório informado à mão no card, para um relatório que não está na
+     aba Relatórios (emitido fora do app, ou antes dele). Guarda a data ISO da
+     confirmação. É o que separa "alguém informou este número" de "número órfão
+     que sobrou de um relatório apagado" — só o primeiro conta como emitido. */
+  emissaoManual?: string
 }
 
 export const AGENDA_KEY       = 'cispr15_agenda_v1'

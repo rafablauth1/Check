@@ -1651,9 +1651,22 @@ export default function AgendaPage() {
     try { localStorage.setItem(CUSTOM_TAGS_KEY, JSON.stringify(tags)) } catch {}
   }
 
+  /* Nº de relatório informado à mão no card → o item sai de "Em andamento" e vai
+     para "Aguardando assinatura". Só marca quando o número NÃO corresponde a um
+     relatório da aba Relatórios: quando corresponde, quem responde pelo estado é
+     o próprio relatório, e a marca atrapalharia — o item tem que voltar para "Em
+     andamento" se aquele relatório for apagado. Apagar o número desmarca. */
+  function comEmissaoManual(item: AgendaItem): AgendaItem {
+    const s = numeroCanonico(item.numRelatorio)
+    if (!s) return item.emissaoManual ? { ...item, emissaoManual: undefined } : item
+    if (numRelatoriosEmitidos.has(s) || item.emissaoManual) return item
+    return { ...item, emissaoManual: new Date().toISOString() }
+  }
+
   function handleSave(item: AgendaItem) {
-    const exists = agenda.some(a => a.id === item.id)
-    saveAgenda(exists ? agenda.map(a => a.id === item.id ? item : a) : [...agenda, item])
+    const salvo = comEmissaoManual(item)
+    const exists = agenda.some(a => a.id === salvo.id)
+    saveAgenda(exists ? agenda.map(a => a.id === salvo.id ? salvo : a) : [...agenda, salvo])
     setEditItem(null)
   }
 
@@ -1673,7 +1686,7 @@ export default function AgendaPage() {
   }
 
   function retornarParaAndamento(id: string) {
-    saveAgenda(agenda.map(a => a.id !== id ? a : { ...a, numRelatorio: '', dataEmissao: '' }))
+    saveAgenda(agenda.map(a => a.id !== id ? a : { ...a, numRelatorio: '', dataEmissao: '', emissaoManual: undefined }))
   }
 
   async function handleUpdate() {
@@ -1863,17 +1876,19 @@ export default function AgendaPage() {
     [agenda],
   )
 
-  // Nº de relatório só conta como "emitido" se o relatório ainda existir de
-  // fato na aba Relatórios — o campo numRelatorio da agenda pode ficar órfão
-  // (relatório apagado, ou perdido por um bug antigo de sincronização) e não
-  // deve inflar os contadores/estatísticas de "emitidos"/"concluídos".
+  // Nº de relatório conta como "emitido" quando o relatório existe de fato na
+  // aba Relatórios OU quando o número foi digitado à mão no card. O campo
+  // numRelatorio sozinho não basta: ele pode ficar órfão (relatório apagado, ou
+  // perdido por um bug antigo de sincronização) e inflaria os contadores de
+  // "emitidos"/"concluídos" sem que ninguém tivesse emitido nada.
   const numRelatoriosEmitidos = useMemo(() => {
     const norm = numeroCanonico
     return new Set(relatorios.map(r => norm(r.numRelatorio)).filter(Boolean))
   }, [relatorios])
-  function estaEmitido(item: Pick<AgendaItem, 'numRelatorio'>): boolean {
+  function estaEmitido(item: Pick<AgendaItem, 'numRelatorio' | 'emissaoManual'>): boolean {
     const s = numeroCanonico(item.numRelatorio)
-    return !!s && numRelatoriosEmitidos.has(s)
+    if (!s) return false
+    return numRelatoriosEmitidos.has(s) || !!item.emissaoManual
   }
 
   const filteredItems = useMemo(() => {

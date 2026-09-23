@@ -1540,6 +1540,7 @@ export default function AgendaPage() {
         `Movidos com sucesso: ${res.movidos}`,
       ]
       if (res.semPasta?.length) linhas.push(`\nSem pasta correspondente (${res.semPasta.length}): ${res.semPasta.join(', ')}`)
+      if (res.ambiguos?.length) linhas.push(`\nMais de uma pasta possível — não movi (${res.ambiguos.length}):\n${res.ambiguos.join('\n')}`)
       if (res.erros?.length) linhas.push(`\nErros (${res.erros.length}): ${res.erros.join('; ')}`)
       alert(linhas.join('\n'))
     } catch (e: any) {

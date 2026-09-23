@@ -2354,13 +2354,62 @@ function listarArquivosRecursivo(dir) {
   return out
 }
 
+// Os números que identificam um protocolo dentro de um nome: as sequências de
+// 4+ dígitos, ignorando traço, underline, espaço e o que vier junto. Assim
+// "26090153-11.docx" e a pasta "26090153-11_EMC" dão o mesmo número (26090153)
+// e casam — antes exigia que um nome fosse pedaço do outro, e o "_EMC" da pasta
+// (ou qualquer coisa que venha depois do separador) derrubava o casamento.
+function numerosDoNome(nome) {
+  return [...new Set(String(nome).match(/\d{4,}/g) || [])]
+}
+
+// Nome sem nada que não seja letra ou dígito — serve pra comparar nomes
+// inteiros sem tropeçar em traço, underline ou espaço.
+function chaveDoNome(nome) {
+  return String(nome).toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+// Escolhe a pasta do protocolo pro arquivo: vale a pasta que compartilha algum
+// número com ele. Empatando, ganha nesta ordem quem compartilha mais números,
+// quem tem o nome inteiro dentro do nome do arquivo — e, entre essas, a mais
+// específica (nome mais longo), que é o que separa pastas irmãs como
+// "..._OW243" e "..._OW243_IC" — e por fim quem começa pelo mesmo número. Se
+// ainda assim sobrar mais de uma candidata, não chuta: devolve ambíguo pro
+// usuário resolver na mão.
+function casarPastaPorNumero(nomeArquivo, pastas) {
+  const semExt  = path.basename(nomeArquivo, path.extname(nomeArquivo))
+  const numeros = numerosDoNome(semExt)
+  if (!numeros.length) return { pasta: null, ambiguas: [] }
+  const chaveArq = chaveDoNome(semExt)
+
+  const criterios = c => [c.comuns, c.encaixe, c.mesmoInicio].join()
+  const candidatas = pastas
+    .map(p => {
+      const chave = chaveDoNome(p.nome)
+      return {
+        nome: p.nome,
+        comuns: p.numeros.filter(n => numeros.includes(n)).length,
+        // 0 = nome da pasta não aparece inteiro no arquivo; senão, o tamanho
+        // dele, pra pasta mais específica ganhar da mais genérica.
+        encaixe: chaveArq.includes(chave) ? chave.length : 0,
+        mesmoInicio: p.numeros[0] === numeros[0] ? 1 : 0,
+      }
+    })
+    .filter(c => c.comuns > 0)
+    .sort((a, b) => b.comuns - a.comuns || b.encaixe - a.encaixe || b.mesmoInicio - a.mesmoInicio)
+
+  if (!candidatas.length) return { pasta: null, ambiguas: [] }
+  const melhor = criterios(candidatas[0])
+  const topo = candidatas.filter(c => criterios(c) === melhor)
+  if (topo.length > 1) return { pasta: null, ambiguas: topo.map(c => c.nome) }
+  return { pasta: candidatas[0].nome, ambiguas: [] }
+}
+
 // Pede pro usuário escolher a pasta-mãe com os resultados (pode ter subpastas
 // em qualquer organização) e move cada .docx achado (em qualquer profundidade)
 // pra pasta do protocolo correspondente (já criada em FOTOS_DESTINO_BASE —
-// mesma pasta usada pelo "Importar Fotos"). Casa pelo nome do ARQUIVO conter
-// o número do protocolo (não pelo nome da subpasta); entre protocolos
-// candidatos, prefere o mais específico (nome mais longo), pra "88" não
-// roubar um arquivo que é do protocolo "0887".
+// mesma pasta usada pelo "Importar Fotos"). Casa pelo NÚMERO do arquivo com o
+// NÚMERO da pasta (não pelo nome da subpasta de origem).
 ipcMain.handle('agenda:organizar-resultados', async () => {
   const win = BrowserWindow.getFocusedWindow()
   const escolha = await dialog.showOpenDialog(win, {
@@ -2376,8 +2425,8 @@ ipcMain.handle('agenda:organizar-resultados', async () => {
   try {
     protocolos = fs.readdirSync(destBaseAno, { withFileTypes: true })
       .filter(e => e.isDirectory())
-      .map(e => e.name)
-      .sort((a, b) => b.length - a.length)
+      .map(e => ({ nome: e.name, numeros: numerosDoNome(e.name) }))
+      .filter(p => p.numeros.length)
   } catch (err) {
     return { ok: false, error: 'Não consegui ler a pasta de destino (' + destBaseAno + '): ' + err.message }
   }
@@ -2385,11 +2434,11 @@ ipcMain.handle('agenda:organizar-resultados', async () => {
   const arquivos = listarArquivosRecursivo(origemDir)
     .filter(f => f.toLowerCase().endsWith('.docx') && !path.basename(f).startsWith('~'))
 
-  const resultado = { total: arquivos.length, movidos: 0, semPasta: [], erros: [] }
+  const resultado = { total: arquivos.length, movidos: 0, semPasta: [], ambiguos: [], erros: [] }
   for (const caminho of arquivos) {
     const nome = path.basename(caminho)
-    const alvo = nome.toLowerCase()
-    const protocolo = protocolos.find(p => alvo.includes(p.toLowerCase()))
+    const { pasta: protocolo, ambiguas } = casarPastaPorNumero(nome, protocolos)
+    if (ambiguas.length) { resultado.ambiguos.push(`${nome} → ${ambiguas.join(' / ')}`); continue }
     if (!protocolo) { resultado.semPasta.push(nome); continue }
     try {
       const destDir = path.join(destBaseAno, protocolo)

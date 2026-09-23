@@ -2237,6 +2237,67 @@ ipcMain.handle('diag:travou-tela', (_, dados = {}) => {
 function normProtocolo(v) {
   return v.trim().toLowerCase().replace(/^o(?=\d)/, '')
 }
+
+// Os números que identificam um protocolo dentro de um nome: as sequências de
+// 4+ dígitos, ignorando traço, underline, espaço e o que vier grudado. É o que
+// deixa o protocolo "26090153-11_EMC" da agenda casar com a pasta
+// "26090153_Philips_Inmetro_262682" da Iluminação — os sufixos de cada lado
+// param de atrapalhar. O "O" da frente ("O26062252") também sai de graça, por
+// não ser dígito.
+function numerosDoNome(nome) {
+  return [...new Set(String(nome).match(/\d{4,}/g) || [])]
+}
+
+// Lê a pasta-base da Iluminação uma única vez por execução, guardando o número
+// de cada subpasta. Antes era um readdir da mesma pasta de rede por item da
+// agenda — com a agenda inteira isso é a diferença entre segundos e minutos.
+function indexarPastasPorNumero(baseDir, cache) {
+  let index = cache.get(baseDir)
+  if (!index) {
+    try {
+      index = fs.readdirSync(baseDir, { withFileTypes: true })
+        .filter(e => e.isDirectory())
+        .map(e => ({ caminho: path.join(baseDir, e.name), numeros: numerosDoNome(e.name) }))
+        .filter(p => p.numeros.length)
+    } catch { index = [] }
+    cache.set(baseDir, index)
+  }
+  return index
+}
+
+// O número que identifica o protocolo: o de 8 dígitos (formato AAMMxxxx, como
+// "26090153"), que é como protocolo é escrito. Sem nenhum de 8, vale o primeiro
+// que aparecer. Fica só nesse número — e não em todos os do nome — pra um
+// "7196" ou "2026" solto no meio do protocolo não puxar pasta de outro ensaio.
+function numeroDoProtocolo(protocolo) {
+  const numeros = numerosDoNome(protocolo)
+  return numeros.find(n => n.length === 8) || numeros[0] || null
+}
+
+// O protocolo começa pelo ano ("26090153" = 2026, "25096558" = 2025) e a pasta
+// da Iluminação vive na pasta daquele ano. Procura no ano do próprio protocolo
+// e no ano corrente: sem isso, protocolo do ano passado que ainda está na
+// agenda nunca acha pasta nenhuma.
+function anosDoProtocolo(protocolo, anoAtual) {
+  const anos = new Set([anoAtual])
+  const numero = numeroDoProtocolo(protocolo)
+  if (numero && numero.length >= 8) {
+    const ano = 2000 + Number(numero.slice(0, 2))
+    if (ano >= 2000 && ano <= Number(anoAtual) + 1) anos.add(String(ano))
+  }
+  return [...anos]
+}
+
+// TODAS as pastas do índice que contêm o número do protocolo — não só a
+// primeira. Um mesmo protocolo pode estar espalhado em mais de uma pasta da
+// Iluminação ("26010765-1_ESB_7985" e "26010765-2_ESB_7985", ou o mesmo número
+// em pastas de clientes diferentes), e o "Importar Fotos" espelha todas.
+function acharPastasDoProtocolo(index, protocolo) {
+  const numero = numeroDoProtocolo(protocolo)
+  if (!numero) return []
+  return index.filter(p => p.numeros.includes(numero)).map(p => p.caminho)
+}
+
 function acharPastaProtocolo(baseDir, protocolo) {
   try {
     const alvo = normProtocolo(protocolo)
@@ -2258,34 +2319,57 @@ function acharSubpastaFotos(protocoloDir) {
   } catch { return null }
 }
 
+// Caminho de destino que não atropela nada que já esteja lá: devolve null se o
+// arquivo já existe com o mesmo tamanho (é a mesma foto, nada a fazer), o
+// próprio nome se estiver livre, ou "nome (2).ext" se for um homônimo de
+// tamanho diferente — foto diferente vinda de outra pasta do mesmo protocolo,
+// que entra ao lado em vez de substituir a primeira.
+async function destinoSemSobrescrever(destinoDir, nome, tamanho) {
+  const ext  = path.extname(nome)
+  const base = path.basename(nome, ext)
+  for (let i = 1; i <= 50; i++) {
+    const tentativa = path.join(destinoDir, i === 1 ? nome : `${base} (${i})${ext}`)
+    let st
+    try { st = await fs.promises.stat(tentativa) } catch { return tentativa }
+    if (st.isFile() && st.size === tamanho) return null
+  }
+  return null
+}
+
+// Copia as imagens de origemDir pra destinoDir sem sobrescrever nem apagar
+// nada: só acrescenta o que falta. Devolve quantas entraram e quantas já
+// estavam lá, pra diferenciar "a pasta não tem foto" de "já tinha tudo".
 async function copiarFotosDir(origemDir, destinoDir, apenasImagens) {
   await fs.promises.mkdir(destinoDir, { recursive: true })
   const entradas = await fs.promises.readdir(origemDir, { withFileTypes: true })
-  let copiados = 0
+  let copiados = 0, jaEstavam = 0
   for (const e of entradas) {
     if (!e.isFile()) continue
     if (apenasImagens && !IMG_EXTENSOES.has(path.extname(e.name).toLowerCase())) continue
-    await fs.promises.copyFile(path.join(origemDir, e.name), path.join(destinoDir, e.name))
+    const origem  = path.join(origemDir, e.name)
+    const destino = await destinoSemSobrescrever(destinoDir, e.name, (await fs.promises.stat(origem)).size)
+    if (!destino) { jaEstavam++; continue }
+    await fs.promises.copyFile(origem, destino)
     copiados++
   }
-  return copiados
+  return { copiados, jaEstavam }
 }
 
-// Varre a agenda, casa cada protocolo com a pasta correspondente na rede da
-// Iluminação (por tipo lâmpada/luminária, na pasta do ano atual) e copia as
-// fotos pra nossa rede (Alta Tecnologia), criando <protocolo>\fotos. Best-
-// effort por item — um protocolo sem pasta/foto não impede os demais.
-const FOTOS_MINIMO_JA_TEM = 4   // pasta com esse tanto de fotos ou mais não precisa importar de novo
-
+// Varre a agenda, casa cada protocolo com as pastas correspondentes na rede da
+// Iluminação (por tipo lâmpada/luminária, na pasta do ano atual) e espelha as
+// fotos pra nossa rede (Alta Tecnologia), criando <protocolo>\fotos. Só copia:
+// nada é apagado ou sobrescrito, nem na origem nem no destino. Best-effort por
+// item — um protocolo sem pasta/foto não impede os demais.
 ipcMain.handle('agenda:importar-fotos-rede', async (_, { protocolos } = {}) => {
   try {
     const { itens: agenda } = await readAgendaFile()
     const ano = String(new Date().getFullYear())
-    const resultado = { processados: 0, copiados: 0, jaTinha: [], semPasta: [], semFotos: [], erros: [] }
+    const resultado = { processados: 0, copiados: 0, jaTinha: [], semPasta: [], semFotos: [], varias: [], erros: [] }
     const filtro = Array.isArray(protocolos) && protocolos.length
       ? new Set(protocolos.map(p => normProtocolo(String(p || ''))))
       : null
     const vistos = new Set()
+    const indices = new Map()
     for (const item of agenda) {
       const protocolo = String(item.protocolo || '').trim()
       if (!protocolo || vistos.has(protocolo)) continue
@@ -2294,30 +2378,33 @@ ipcMain.handle('agenda:importar-fotos-rede', async (_, { protocolos } = {}) => {
       resultado.processados++
 
       const destino = path.join(FOTOS_DESTINO_BASE, ano, protocolo, 'fotos')
-      try {
-        const existentes = await fs.promises.readdir(destino)
-        const jaTem = existentes.filter(f => IMG_EXTENSOES.has(path.extname(f).toLowerCase())).length
-        if (jaTem >= FOTOS_MINIMO_JA_TEM) { resultado.jaTinha.push(protocolo); continue }
-      } catch {}
-
-      const baseOrigem = path.join(
-        item.tipo === 'luminaria' ? ILUMINACAO_LUMINARIA_BASE : ILUMINACAO_LAMPADA_BASE,
-        ano,
-      )
-      const pastaProtocolo = acharPastaProtocolo(baseOrigem, protocolo)
-      if (!pastaProtocolo) { resultado.semPasta.push(protocolo); continue }
-
-      const pastaFotos    = acharSubpastaFotos(pastaProtocolo)
-      const origemFotos   = pastaFotos || pastaProtocolo
-      const apenasImagens = !pastaFotos
-
-      try {
-        const n = await copiarFotosDir(origemFotos, destino, apenasImagens)
-        if (n > 0) resultado.copiados++
-        else resultado.semFotos.push(protocolo)
-      } catch (err) {
-        resultado.erros.push(`${protocolo}: ${err.message}`)
+      const baseTipo = item.tipo === 'luminaria' ? ILUMINACAO_LUMINARIA_BASE : ILUMINACAO_LAMPADA_BASE
+      const pastas = anosDoProtocolo(protocolo, ano).flatMap(a =>
+        acharPastasDoProtocolo(indexarPastasPorNumero(path.join(baseTipo, a), indices), protocolo))
+      if (!pastas.length) { resultado.semPasta.push(protocolo); continue }
+      if (pastas.length > 1) {
+        resultado.varias.push(`${protocolo}: ${pastas.map(p => path.basename(p)).join(', ')}`)
       }
+
+      // Espelha TODAS as pastas do protocolo no mesmo <protocolo>\fotos. Quem
+      // já está lá é pulado; homônimo de conteúdo diferente entra ao lado.
+      let copiados = 0, jaEstavam = 0
+      const falhas = []
+      for (const pastaProtocolo of pastas) {
+        const pastaFotos = acharSubpastaFotos(pastaProtocolo)
+        try {
+          const r = await copiarFotosDir(pastaFotos || pastaProtocolo, destino, !pastaFotos)
+          copiados  += r.copiados
+          jaEstavam += r.jaEstavam
+        } catch (err) {
+          falhas.push(`${path.basename(pastaProtocolo)}: ${err.message}`)
+        }
+      }
+
+      if (falhas.length) resultado.erros.push(`${protocolo}: ${falhas.join('; ')}`)
+      if (copiados > 0) resultado.copiados++
+      else if (jaEstavam > 0) resultado.jaTinha.push(protocolo)
+      else if (!falhas.length) resultado.semFotos.push(protocolo)
     }
     return { ok: true, ...resultado }
   } catch (err) {
@@ -2352,15 +2439,6 @@ function listarArquivosRecursivo(dir) {
     else if (e.isFile()) out.push(full)
   }
   return out
-}
-
-// Os números que identificam um protocolo dentro de um nome: as sequências de
-// 4+ dígitos, ignorando traço, underline, espaço e o que vier junto. Assim
-// "26090153-11.docx" e a pasta "26090153-11_EMC" dão o mesmo número (26090153)
-// e casam — antes exigia que um nome fosse pedaço do outro, e o "_EMC" da pasta
-// (ou qualquer coisa que venha depois do separador) derrubava o casamento.
-function numerosDoNome(nome) {
-  return [...new Set(String(nome).match(/\d{4,}/g) || [])]
 }
 
 // Nome sem nada que não seja letra ou dígito — serve pra comparar nomes

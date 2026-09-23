@@ -1511,9 +1511,10 @@ export default function AgendaPage() {
         `Protocolos verificados: ${res.processados}`,
         `Fotos importadas: ${res.copiados}`,
       ]
-      if (res.jaTinha?.length)   linhas.push(`\nJá tinham fotos suficientes (${res.jaTinha.length}): ${res.jaTinha.join(', ')}`)
+      if (res.jaTinha?.length)   linhas.push(`\nJá estavam todas lá (${res.jaTinha.length}): ${res.jaTinha.join(', ')}`)
       if (res.semPasta?.length) linhas.push(`\nSem pasta na Iluminação (${res.semPasta.length}): ${res.semPasta.join(', ')}`)
       if (res.semFotos?.length) linhas.push(`\nPasta achada mas sem fotos (${res.semFotos.length}): ${res.semFotos.join(', ')}`)
+      if (res.varias?.length) linhas.push(`\nProtocolos com mais de uma pasta na Iluminação — espelhei todas (${res.varias.length}):\n${res.varias.join('\n')}`)
       if (res.erros?.length) linhas.push(`\nErros (${res.erros.length}): ${res.erros.join('; ')}`)
       alert(linhas.join('\n'))
       setSelFotos([])

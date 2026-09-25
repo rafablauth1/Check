@@ -85,9 +85,13 @@ export default function LabSidebar({ checagensVencidas = 0 }: Props) {
 
   // Href ativo = o match mais específico (mais longo) para a rota atual,
   // evitando destacar /equipamentos junto de /equipamentos/grupos.
+  // `usePathname` pode devolver null no meio de uma navegação (voltar pelo
+  // histórico, por exemplo) — sem a guarda, o .startsWith estoura e derruba a
+  // barra inteira pro ErrorBoundary, que é a barra "bugando" ao voltar.
+  const rota = pathname ?? ''
   const activeHref = NAV
     .flatMap(g => g.items.map(i => i.href))
-    .filter(h => pathname === h || pathname.startsWith(h + '/'))
+    .filter(h => rota === h || rota.startsWith(h + '/'))
     .sort((a, b) => b.length - a.length)[0]
 
   // Inicializa do data-sidebar attribute (já setado pelo script do <head>)

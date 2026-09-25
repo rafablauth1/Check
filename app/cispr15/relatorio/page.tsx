@@ -11,7 +11,7 @@ import {
   EMENDA_DRAFT_KEY, formatEmendaNumero, formatNumeroRelatorio,
 } from '../types'
 import { filterDocxForResult, type ResultKey } from '../docx-filter'
-import { loadPhotos } from '@/lib/cispr15/photo-store'
+import { loadPhotos, savePhotos } from '@/lib/cispr15/photo-store'
 import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
 import { textos, fmtDataI18n, juntarE, rotuloIdentificador, traduzirTextoDocx, type Idioma } from '../i18n'
 
@@ -219,6 +219,7 @@ export default function Cispr15RelatorioPage() {
   const [signState,    setSignState]   = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
   const [signMsg,      setSignMsg]     = useState('')
   const [savingFiles,  setSavingFiles] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle')
+  const [savingDraft,  setSavingDraft] = useState<'idle' | 'loading' | 'ok'>('idle')
   // Carimbo visual de assinatura, no local do "Signatário Autorizado" (última
   // página) — só o visual, no estilo padrão do Adobe. A assinatura criptográfica
   // de verdade continua sendo aplicada via signPdf/pfx por baixo, no PDF já gerado.
@@ -763,6 +764,37 @@ export default function Cispr15RelatorioPage() {
      de copiar pra pasta da EUT (que duplicava arquivos já existentes). Ao reabrir o
      protocolo, resolverAssets() puxa esses arquivos de volta pra dentro do PDF.
      Sem id de relatório (relatório ainda não salvo), cai no export pra pasta. */
+  /* Devolve o que está nesta tela pro rascunho da emissão — as mesmas chaves
+     que /cispr15 lê ao montar (cfg, fotos no IndexedDB, HTML do docx).
+
+     Esta tela sempre LEU dessas chaves e nunca escreveu de volta: carregar uma
+     pasta aqui, ou mexer em qualquer campo, e voltar pra aba de emissão fazia
+     o trabalho sumir, porque lá o estado era relido do que estava gravado
+     antes. Roda no "Voltar" (o caminho normal) e no botão "Salvar" (pra quem
+     quer garantir antes de sair por outro caminho). */
+  async function salvarNoRascunho(): Promise<void> {
+    if (!cfg) return
+    try {
+      localStorage.setItem(CFG_KEY, JSON.stringify(cfg))
+      if (docx.html) {
+        sessionStorage.setItem(DOCX_HTML_KEY, docx.html)
+        if (docx.filename) sessionStorage.setItem(DOCX_NAME_KEY, docx.filename)
+      }
+      if (eutFolder) sessionStorage.setItem('eutFolderPath', eutFolder)
+      // Aguardado de propósito: o IndexedDB é assíncrono e a próxima tela lê
+      // essa chave no mount — sem o await, ela chega antes da gravação.
+      await savePhotos(PHOTOS_KEY, photos.map(p => ({
+        name: p.name, base64: p.url.split(',')[1] ?? '',
+      })))
+    } catch {}
+  }
+
+  async function voltar() {
+    await salvarNoRascunho()
+    if (fromLote) router.push('/cispr15/lote')
+    else router.back()
+  }
+
   async function salvarArquivos() {
     if (!cfg) return
     const api = (window as any).electronAPI
@@ -936,9 +968,28 @@ export default function Cispr15RelatorioPage() {
 
       {/* ── barra de controles (não imprime) ── */}
       <div className="no-print flex flex-wrap items-center gap-2 mb-6">
-        <button onClick={() => fromLote ? router.push('/cispr15/lote') : router.back()}
+        <button onClick={() => { void voltar() }}
           className="flex items-center gap-1.5 text-white/40 hover:text-white transition-colors text-sm mr-1">
           <ArrowLeft size={14} /> {fromLote ? 'Voltar ao Lote' : 'Voltar'}
+        </button>
+
+        {/* Guarda o estado desta tela no rascunho da emissão sem sair dela. O
+            "Voltar" já faz isso sozinho; este botão é pra sair por outro
+            caminho (atalho do navegador, menu) sem perder nada. */}
+        <button
+          onClick={async () => {
+            setSavingDraft('loading')
+            await salvarNoRascunho()
+            setSavingDraft('ok')
+            setTimeout(() => setSavingDraft('idle'), 3000)
+          }}
+          disabled={savingDraft === 'loading'}
+          title="Guardar fotos, DOCX e dados desta tela no rascunho — ao voltar pra aba de emissão eles continuam lá"
+          className="flex items-center gap-1.5 text-white/40 hover:text-white transition-colors text-sm mr-1 disabled:opacity-60">
+          {savingDraft === 'loading' ? <Loader2 size={13} className="animate-spin" /> :
+           savingDraft === 'ok'      ? <CheckCircle2 size={13} className="text-green-400" /> :
+           <Save size={13} />}
+          {savingDraft === 'ok' ? 'Salvo' : 'Salvar'}
         </button>
 
         {emendaDraft && (

@@ -761,6 +761,108 @@ function LotePageInner() {
      Lido pelo processo principal (Node), não pelo <input webkitdirectory> do
      navegador — que precisa enumerar a árvore inteira antes de disparar o
      onChange, e trava sem nenhum indicador em pastas de rede grandes. */
+  /* Aplica ao lote o que veio do processo principal — { resultados: { <proto>:
+     { photos, docx } } }. Serve aos dois caminhos: a escolha manual da pasta-mãe
+     e o carregamento automático pelo protocolo.
+
+     `somenteVazias` protege o trabalho já feito: no automático, amostra que já
+     tem docx ou foto passa batido, porque substituir o que alguém carregou na
+     mão seria pior do que não carregar nada. */
+  async function aplicarResultadosPastas(
+    loteAtual: LoteConfig,
+    res: any,
+    somenteVazias: boolean,
+  ): Promise<{ casados: number; naoCasados: string[]; problemasDocx: string[] }> {
+    const naoCasados: string[] = [...(res.naoEncontrados || []), ...(res.semConteudo || [])]
+    const problemasDocx: string[] = []
+    let casados = 0
+
+    const novas = await Promise.all(loteAtual.amostras.map(async (am) => {
+      const proto = am.protocolo || ''
+      if (!proto) { if (!somenteVazias) naoCasados.push('amostra sem protocolo'); return am }
+      if (somenteVazias && (am.docxHtml || am.photos.length > 0)) return am
+      const dados = res.resultados[proto]
+      if (!dados) return am // já está em naoEncontrados
+
+      let updated = { ...am }
+      if (dados.docx && !(somenteVazias && am.docxHtml)) {
+        try {
+          const file = base64ToFile(
+            dados.docx.name, dados.docx.base64,
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          )
+          const fd = new FormData(); fd.append('file', file)
+          const data = await fetch('/api/parse-docx', { method: 'POST', body: fd }).then(r => r.json())
+          if (!data.error) {
+            const erros = validarSecoesRadimation(data.html, tensoesAmostra(loteAtual.tipo, am))
+            if (erros.length > 0) problemasDocx.push(`${am.protocolo}: ${erros.join('; ')}`)
+            else updated = { ...updated, docxHtml: data.html, docxFilename: dados.docx.name }
+          }
+        } catch {}
+      }
+      if (dados.photos.length > 0 && !(somenteVazias && am.photos.length > 0)) {
+        const ordenadas = [...dados.photos].sort((a: any, b: any) => getNum(a.name) - getNum(b.name))
+        const photos: { name: string; base64: string }[] = []
+        for (const f of ordenadas) { try { photos.push(await resizeBase64Image(f.name, f.base64)) } catch {} }
+        updated = { ...updated, photos }
+      }
+      if (updated !== am) casados++
+      return updated
+    }))
+
+    saveLote({ ...loteAtual, amostras: novas })
+    return { casados, naoCasados, problemasDocx }
+  }
+
+  /* Ao abrir o lote, puxa sozinho a pasta de cada protocolo em "3.2 - Registros
+     de ensaios" — a mesma que o "Importar Fotos" e o "Importar resultados"
+     enchem — e preenche docx + fotos das amostras que ainda estão vazias.
+     O botão da pasta-mãe continua ali pro caso de o material estar fora do
+     lugar de sempre; isto só evita ter que clicar nele no caso normal.
+
+     Uma tentativa por lote (autoPastasTentadas): amostra sem pasta não fica
+     sendo reprocurada na rede a cada mudança de estado do lote. */
+  const autoPastasTentadas = useRef<Set<string>>(new Set())
+  useEffect(() => {
+    if (!lote || importMae?.loading) return
+    const api = (window as any).electronAPI
+    if (!api?.carregarPastaProtocolo) return
+    if (autoPastasTentadas.current.has(lote.id)) return
+
+    const pendentes = lote.amostras
+      .filter(a => a.protocolo && !a.docxHtml && a.photos.length === 0)
+      .map(a => a.protocolo as string)
+    if (!pendentes.length) return
+
+    autoPastasTentadas.current.add(lote.id)
+    const loteAtual = lote
+    let cancelado = false
+    ;(async () => {
+      setImportMae({ loading: true, msg: 'Procurando as pastas dos protocolos…' })
+      try {
+        const res = await api.carregarPastaProtocolo(pendentes)
+        if (cancelado) return
+        if (!res?.ok) { setImportMae({ loading: false, msg: 'Erro: ' + (res?.error ?? 'desconhecido') }); return }
+        const { casados, naoCasados, problemasDocx } = await aplicarResultadosPastas(loteAtual, res, true)
+        if (cancelado) return
+        setImportMae({
+          loading: false,
+          msg: casados
+            ? `${casados} amostra(s) preenchida(s) automaticamente` +
+              (naoCasados.length ? ` · ${naoCasados.length} sem pasta na rede` : '') +
+              (problemasDocx.length ? ` · ${problemasDocx.length} com DOCX rejeitado` : '')
+            : 'Nenhuma pasta encontrada na rede para os protocolos deste lote',
+        })
+        if (problemasDocx.length > 0)
+          alert(`DOCX com problema nas medições — corrija no Radimation e reenvie:\n\n• ${problemasDocx.join('\n• ')}`)
+      } catch (e: any) {
+        if (!cancelado) setImportMae({ loading: false, msg: 'Erro: ' + (e?.message || String(e)) })
+      }
+    })()
+    return () => { cancelado = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lote?.id])
+
   async function handlePastaMae() {
     if (!lote) return
     const api = (window as any).electronAPI
@@ -772,42 +874,7 @@ function LotePageInner() {
       if (res?.canceled) { setImportMae(null); return }
       if (!res?.ok) { setImportMae({ loading: false, msg: 'Erro: ' + (res?.error ?? 'desconhecido') }); return }
 
-      let casados = 0
-      const naoCasados: string[] = [...(res.naoEncontrados || [])]
-      const problemasDocx: string[] = []
-      const novas = await Promise.all(lote.amostras.map(async (am) => {
-        const proto = am.protocolo || ''
-        if (!proto) { naoCasados.push('amostra sem protocolo'); return am }
-        const dados = res.resultados[proto]
-        if (!dados) return am // já está em naoEncontrados
-
-        let updated = { ...am }
-        if (dados.docx) {
-          try {
-            const file = base64ToFile(
-              dados.docx.name, dados.docx.base64,
-              'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            )
-            const fd = new FormData(); fd.append('file', file)
-            const data = await fetch('/api/parse-docx', { method: 'POST', body: fd }).then(r => r.json())
-            if (!data.error) {
-              const erros = validarSecoesRadimation(data.html, tensoesAmostra(lote.tipo, am))
-              if (erros.length > 0) problemasDocx.push(`${am.protocolo}: ${erros.join('; ')}`)
-              else updated = { ...updated, docxHtml: data.html, docxFilename: dados.docx.name }
-            }
-          } catch {}
-        }
-        if (dados.photos.length > 0) {
-          const ordenadas = [...dados.photos].sort((a: any, b: any) => getNum(a.name) - getNum(b.name))
-          const photos: { name: string; base64: string }[] = []
-          for (const f of ordenadas) { try { photos.push(await resizeBase64Image(f.name, f.base64)) } catch {} }
-          updated = { ...updated, photos }
-        }
-        if (dados.docx || dados.photos.length > 0) casados++
-        return updated
-      }))
-
-      saveLote({ ...lote, amostras: novas })
+      const { casados, naoCasados, problemasDocx } = await aplicarResultadosPastas(lote, res, false)
       const msg = `${casados} amostra(s) preenchida(s)` +
         (naoCasados.length ? ` · ${naoCasados.length} sem pasta correspondente` : '') +
         (problemasDocx.length ? ` · ${problemasDocx.length} com DOCX rejeitado` : '')

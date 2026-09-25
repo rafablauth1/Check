@@ -65,6 +65,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
   getLotes:        ()          => ipcRenderer.invoke('data:get-lotes'),
   saveLotes:       (lotes)     => ipcRenderer.invoke('data:save-lotes', { lotes }),
 
+  // Acha sozinho a pasta de cada protocolo em "3.2 - Registros de ensaios" e
+  // devolve as fotos + o .docx de lá. Sem diálogo — é o que preenche a emissão
+  // automaticamente ao abrir um protocolo.
+  carregarPastaProtocolo: (protocolos) => ipcRenderer.invoke('protocolo:carregar-pasta', { protocolos }),
+
   // Lote em andamento (arquivo local) + baixar PDFs do lote
   importarPastaMae: (protocolos) => ipcRenderer.invoke('lote:importar-pasta-mae', { protocolos }),
   getLote:         ()          => ipcRenderer.invoke('lote:get'),

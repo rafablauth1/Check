@@ -2530,12 +2530,43 @@ ipcMain.handle('agenda:organizar-resultados', async () => {
   return { ok: true, ...resultado }
 })
 
+// Lê o conteúdo de uma pasta de protocolo: as fotos (de "fotos/" ou, se não
+// houver, das imagens da raiz) e o .docx da raiz, tudo já em base64. Lido aqui
+// no processo principal (Node puro), bem mais rápido/confiável em pasta de rede
+// grande do que o <input type="file" webkitdirectory> do navegador, que precisa
+// enumerar a árvore inteira antes de disparar o onChange.
+async function lerPastaDoProtocolo(pastaProtocolo) {
+  const origemFotos = acharSubpastaFotos(pastaProtocolo) || pastaProtocolo
+
+  const photos = []
+  try {
+    const entradas = await fs.promises.readdir(origemFotos, { withFileTypes: true })
+    for (const e of entradas) {
+      if (!e.isFile() || !IMG_EXTENSOES.has(path.extname(e.name).toLowerCase())) continue
+      try {
+        const buf = await fs.promises.readFile(path.join(origemFotos, e.name))
+        photos.push({ name: e.name, base64: buf.toString('base64') })
+      } catch {}
+    }
+  } catch {}
+
+  let docx = null
+  try {
+    const entradas = await fs.promises.readdir(pastaProtocolo, { withFileTypes: true })
+    const arquivoDocx = entradas.find(e => e.isFile() && e.name.toLowerCase().endsWith('.docx') && !e.name.startsWith('~'))
+    if (arquivoDocx) {
+      const buf = await fs.promises.readFile(path.join(pastaProtocolo, arquivoDocx.name))
+      docx = { name: arquivoDocx.name, base64: buf.toString('base64') }
+    }
+  } catch {}
+
+  return { photos, docx }
+}
+
 // Pede uma pasta-mãe (ex.: a pasta do ano em "3.2 - Registros de ensaios") e,
-// pra cada protocolo informado, acha a subpasta correspondente, lê as fotos
-// (de "fotos/" ou da raiz) e o .docx (da raiz) e devolve tudo já em base64 —
-// tudo lido aqui no processo principal (Node puro), bem mais rápido/confiável
-// em pasta de rede grande do que o <input type="file" webkitdirectory> do
-// navegador, que precisa enumerar a árvore inteira antes de disparar o onChange.
+// pra cada protocolo informado, acha a subpasta correspondente e lê o que tem
+// dentro. É o caminho MANUAL — pra quando os arquivos estão numa pasta fora do
+// lugar de sempre. O automático é 'protocolo:carregar-pasta', abaixo.
 ipcMain.handle('lote:importar-pasta-mae', async (_, { protocolos }) => {
   const win = BrowserWindow.getFocusedWindow()
   const escolha = await dialog.showOpenDialog(win, {
@@ -2547,42 +2578,46 @@ ipcMain.handle('lote:importar-pasta-mae', async (_, { protocolos }) => {
 
   const resultados = {}
   const naoEncontrados = []
+  const index = indexarPastasPorNumero(baseDir, new Map())
   for (const protocolo of protocolos || []) {
     const proto = String(protocolo || '').trim()
     if (!proto) continue
-    const pastaProtocolo = acharPastaProtocolo(baseDir, proto)
+    const pastaProtocolo = acharPastasDoProtocolo(index, proto)[0] || acharPastaProtocolo(baseDir, proto)
     if (!pastaProtocolo) { naoEncontrados.push(proto); continue }
-
-    const pastaFotos  = acharSubpastaFotos(pastaProtocolo)
-    const origemFotos = pastaFotos || pastaProtocolo
-
-    let photos = []
-    try {
-      const entradas = await fs.promises.readdir(origemFotos, { withFileTypes: true })
-      for (const e of entradas) {
-        if (!e.isFile() || !IMG_EXTENSOES.has(path.extname(e.name).toLowerCase())) continue
-        try {
-          const buf = await fs.promises.readFile(path.join(origemFotos, e.name))
-          photos.push({ name: e.name, base64: buf.toString('base64') })
-        } catch {}
-      }
-    } catch {}
-
-    let docx = null
-    try {
-      const entradas = await fs.promises.readdir(pastaProtocolo, { withFileTypes: true })
-      const arquivoDocx = entradas.find(e => e.isFile() && e.name.toLowerCase().endsWith('.docx') && !e.name.startsWith('~'))
-      if (arquivoDocx) {
-        const buf = await fs.promises.readFile(path.join(pastaProtocolo, arquivoDocx.name))
-        docx = { name: arquivoDocx.name, base64: buf.toString('base64') }
-      }
-    } catch {}
-
+    const { photos, docx } = await lerPastaDoProtocolo(pastaProtocolo)
     if (photos.length === 0 && !docx) { naoEncontrados.push(proto); continue }
-    resultados[proto] = { photos, docx }
+    resultados[proto] = { photos, docx, pasta: pastaProtocolo }
   }
 
   return { ok: true, resultados, naoEncontrados }
+})
+
+// Automático: pra cada protocolo, acha sozinho a pasta dele em "3.2 - Registros
+// de ensaios" (a mesma que o "Importar Fotos" e o "Importar resultados" enchem)
+// e devolve as fotos e o .docx. Sem diálogo e sem o usuário caçar pasta: ao
+// abrir o protocolo pra emitir, o material já vem junto.
+//
+// Procura em todos os anos porque a pasta pode ter sido criada num ano e o
+// relatório sair no seguinte. Só lê — não cria, não move, não apaga nada.
+ipcMain.handle('protocolo:carregar-pasta', async (_, { protocolos } = {}) => {
+  try {
+    const resultados = {}
+    const naoEncontrados = []
+    const semConteudo = []
+    const cache = new Map()   // as pastas de cada ano lidas uma vez só, não por protocolo
+    for (const protocolo of protocolos || []) {
+      const proto = String(protocolo || '').trim()
+      if (!proto || resultados[proto]) continue
+      const achado = await acharPastaProtocoloQualquerAno(proto, cache)
+      if (!achado) { naoEncontrados.push(proto); continue }
+      const { photos, docx } = await lerPastaDoProtocolo(achado.folderPath)
+      if (photos.length === 0 && !docx) { semConteudo.push(proto); continue }
+      resultados[proto] = { photos, docx, pasta: achado.folderPath }
+    }
+    return { ok: true, resultados, naoEncontrados, semConteudo }
+  } catch (err) {
+    return { ok: false, error: String(err) }
+  }
 })
 
 /* ─── lote em andamento (arquivo local — não depende da cota do localStorage,
@@ -2965,14 +3000,29 @@ async function existeAsync(p) { try { await fs.promises.access(p); return true }
 // Acha a pasta do protocolo em qualquer ano dentro da pasta-mãe (varre as
 // subpastas de ano, mais recente primeiro) — usado quando o item não tem
 // data de emissão pra saber em qual ano procurar.
-async function acharPastaProtocoloQualquerAno(protocolo) {
+// Uma pasta só, pro protocolo, dentro de baseDir — mesmo casamento por número
+// do "Importar resultados", que é o que faz o protocolo "26010268_EMC" achar a
+// pasta "26010268". Ambíguo aqui não trava nada (é leitura, não movimentação):
+// fica com a primeira candidata, como o find() de antes fazia.
+function acharPastaDoProtocoloNoAno(baseDir, protocolo, cache) {
+  const pastas = indexarPastasPorNumero(baseDir, cache)
+    .map(p => ({ nome: path.basename(p.caminho), numeros: p.numeros }))
+  if (!pastas.length) return null
+  const { pasta, ambiguas } = casarPastaPorNumero(protocolo, pastas)
+  const escolhida = pasta || ambiguas[0]
+  return escolhida ? path.join(baseDir, escolhida) : null
+}
+
+// `cache` é opcional: passe uma Map compartilhada quando for consultar vários
+// protocolos seguidos, senão cada um relê as pastas de todos os anos na rede.
+async function acharPastaProtocoloQualquerAno(protocolo, cache = new Map()) {
   try {
     const anos = (await fs.promises.readdir(FOTOS_DESTINO_BASE, { withFileTypes: true }))
       .filter(e => e.isDirectory() && /^\d{4}$/.test(e.name))
       .map(e => e.name)
       .sort((a, b) => b.localeCompare(a))
     for (const ano of anos) {
-      const achou = acharPastaProtocolo(path.join(FOTOS_DESTINO_BASE, ano), protocolo)
+      const achou = acharPastaDoProtocoloNoAno(path.join(FOTOS_DESTINO_BASE, ano), protocolo, cache)
       if (achou) return { folderPath: achou, ano }
     }
   } catch {}
@@ -3234,14 +3284,25 @@ ipcMain.handle('eut:open-folder', async () => {
 // em toda a rede: T:\...\3.2 - Registros de ensaios\<ano>\<pasta com o nome
 // do protocolo>. Usado ao carregar um relatório salvo, pra não depender de
 // abrir a pasta manualmente toda vez (ver FOTOS_DESTINO_BASE).
+// O ano é uma DICA, não um requisito: com ele a busca começa pela pasta certa,
+// sem ele (ou não achando lá) varre todos os anos. Quem abre o protocolo pela
+// agenda pra emitir ainda não tem data de emissão, e a pasta pode ter sido
+// criada num ano com o relatório saindo no seguinte — exigir o ano era o que
+// fazia esse caminho não servir pra emissão.
 ipcMain.handle('eut:find-by-protocolo', async (_, { protocolo, ano }) => {
   const proto = String(protocolo || '').trim()
+  if (!proto) return { ok: false, error: 'Protocolo ausente.' }
   const anoStr = String(ano || '').replace(/\D/g, '').slice(0, 4)
-  if (!proto || !anoStr) return { ok: false, error: 'Protocolo ou ano ausente.' }
-  const baseDir = path.join(FOTOS_DESTINO_BASE, anoStr)
-  if (!fs.existsSync(baseDir)) return { ok: false, error: `Pasta do ano não encontrada:\n${baseDir}` }
-  const folderPath = acharPastaProtocolo(baseDir, proto)
-  if (!folderPath) return { ok: false, error: `Nenhuma pasta com o protocolo "${proto}" em:\n${baseDir}` }
+  const cache = new Map()
+
+  let folderPath = null
+  if (/^\d{4}$/.test(anoStr)) {
+    const baseDir = path.join(FOTOS_DESTINO_BASE, anoStr)
+    if (fs.existsSync(baseDir)) folderPath = acharPastaDoProtocoloNoAno(baseDir, proto, cache)
+  }
+  if (!folderPath) folderPath = (await acharPastaProtocoloQualquerAno(proto, cache))?.folderPath ?? null
+  if (!folderPath) return { ok: false, error: `Nenhuma pasta com o protocolo "${proto}" em:\n${FOTOS_DESTINO_BASE}` }
+
   try {
     eutFolderPath = folderPath
     return { ok: true, ...lerConteudoPastaEut(folderPath) }

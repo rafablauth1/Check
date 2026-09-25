@@ -345,6 +345,46 @@ export default function Cispr15ConfigPage() {
     setTimeout(() => setFlash(null), 4000)
   }
 
+  /* Abriu um protocolo pra emitir (veio da agenda, ou digitou o protocolo)?
+     Puxa sozinho a pasta dele em "3.2 - Registros de ensaios" — a mesma que o
+     "Importar Fotos" e o "Importar resultados" enchem — e traz o .docx e as
+     fotos pra dentro da emissão. Antes isso só acontecia ao reabrir relatório
+     já salvo; emitir do zero exigia caçar a pasta na mão toda vez.
+
+     Só preenche o que está VAZIO: com docx ou foto já carregada, não mexe —
+     senão pisaria em cima de quem escolheu a pasta na mão. Uma tentativa por
+     protocolo (autoPastaTentada), pra não ficar batendo na rede a cada render. */
+  const autoPastaTentada = useRef<string | null>(null)
+  useEffect(() => {
+    const protocolo = (cfg.protocolo || '').trim()
+    if (!protocolo || locked) return
+    if (docx.html || photos.length > 0) return
+    if (autoPastaTentada.current === protocolo) return
+    const api = (window as any).electronAPI
+    if (!api?.buscarPastaEutPorProtocolo) return
+
+    autoPastaTentada.current = protocolo
+    let cancelado = false
+    ;(async () => {
+      setPastaLoading(true)
+      try {
+        // Sem ano: o main varre as pastas de todos os anos. Quem abre o
+        // protocolo pra emitir ainda não tem data de emissão.
+        const res = await api.buscarPastaEutPorProtocolo(protocolo, '')
+        if (cancelado || !res?.ok) return
+        setEutFolder(res.folderPath)
+        sessionStorage.setItem('eutFolderPath', res.folderPath)
+        await aplicarConteudoPastaEut(res)
+        if (cancelado) return
+        const qtd = res.images?.length ?? 0
+        flash4(`Pasta do protocolo carregada: ${res.folderName}` +
+               ` — ${res.docxName ? 'DOCX' : 'sem DOCX'}, ${qtd} foto(s)`)
+      } catch {}
+      finally { if (!cancelado) setPastaLoading(false) }
+    })()
+    return () => { cancelado = true }
+  }, [cfg.protocolo, locked, docx.html, photos.length])
+
   /* ── handlers cfg ── */
   // Cache de handlers por campo: identidade estável entre renders (não recria
   // 40+ closures a cada tecla, evita churn de re-render no formulário grande).

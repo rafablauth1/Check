@@ -7,7 +7,7 @@ import {
   ArrowLeft, ArrowRight, Plus, Search, X, CheckCircle2, XCircle, Clock, Edit2,
   Trash2, ChevronDown, ChevronUp, FileText, Loader2, Download,
   Lightbulb, Lamp, Settings, Layers, RotateCcw, FolderOpen,
-  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users, RefreshCw, Check,
+  AlertTriangle, Wifi, BarChart2, Tag, TrendingUp, Printer, ScanText, Lock, Users, RefreshCw, Check, Zap,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import {
@@ -17,6 +17,8 @@ import {
 } from '@/app/cispr15/types'
 import { salvarValor } from '@/lib/cispr15/photo-store'
 import { carregarRelatorios, salvarRelatorio } from '@/lib/cispr15/relatorios-store'
+import { ClientePicker } from '@/app/agenda/ClientePicker'
+import { AgendaEmc } from '@/app/agenda/emc/AgendaEmc'
 
 /* Chave "aaaa-mm" de uma data, aceitando os dois formatos que circulam aqui:
    ISO (2026-09-16) e brasileiro (16/09/2026). */
@@ -43,6 +45,8 @@ type TagId = typeof PREDEFINED_TAGS[number]['id']
 
 /* ─── tags personalizadas ─────────────────────────────────────────────────── */
 const CUSTOM_TAGS_KEY = 'cispr15_custom_tags_v1'
+// lado da agenda aberto por último neste PC (LUM ou EMC)
+const SETOR_KEY = 'cispr15_agenda_setor_v1'
 
 interface CustomTag { id: string; label: string; color: string }
 
@@ -183,52 +187,6 @@ function newItem(): AgendaItem {
 
 function Label({ children }: { children: React.ReactNode }) {
   return <label className="text-[10px] text-white/35 uppercase tracking-widest font-mono">{children}</label>
-}
-
-/* ─── seletor de cliente ──────────────────────────────────────────────────── */
-function ClientePicker({ clientes, onSelect }: {
-  clientes: ClienteDB[]
-  onSelect: (c: ClienteDB) => void
-}) {
-  const [q, setQ] = useState('')
-  const [open, setOpen] = useState(false)
-  const filtrados = clientes.filter(c =>
-    !q || c.nome?.toLowerCase().includes(q.toLowerCase()) || c.cnpj?.includes(q)
-  )
-  if (clientes.length === 0) return null
-  return (
-    <div className="relative">
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-white/25 pointer-events-none" />
-          <input
-            className="input pl-7 text-xs"
-            placeholder="Buscar cliente cadastrado…"
-            value={q}
-            onChange={e => { setQ(e.target.value); setOpen(true) }}
-            onFocus={() => setOpen(true)}
-            onBlur={() => setTimeout(() => setOpen(false), 150)}
-          />
-        </div>
-      </div>
-      {open && (
-        <div className="absolute z-50 top-full mt-1 left-0 right-0 rounded-xl border border-white/10 bg-[#0d1017] shadow-xl max-h-[180px] overflow-y-auto">
-          {filtrados.length === 0
-            ? <p className="text-[11px] text-white/25 px-3 py-2">Nenhum cliente encontrado.</p>
-            : filtrados.slice(0, 20).map(c => (
-                <button key={c.id} type="button" onMouseDown={() => { onSelect(c); setQ(''); setOpen(false) }}
-                  className="w-full text-left px-3 py-2 hover:bg-white/5 transition-colors border-b border-white/4 last:border-0">
-                  <p className="text-xs text-white/80 font-semibold">{c.nome}</p>
-                  {(c.cidade || c.cep) && (
-                    <p className="text-[10px] text-white/35">{[c.cidade, c.cep].filter(Boolean).join(' · ')}</p>
-                  )}
-                </button>
-              ))
-          }
-        </div>
-      )}
-    </div>
-  )
 }
 
 /* ─── modal item único ────────────────────────────────────────────────────── */
@@ -1335,6 +1293,8 @@ function GerarLoteModal({ agenda, onConfirm, onClose }: {
 export default function AgendaPage() {
   const router = useRouter()
   const [tab,           setTab]           = useState<'agenda' | 'busca' | 'analise' | 'followup'>('agenda')
+  // LUM = agenda CISPR 15 (lâmpada/luminária); EMC = ensaios de imunidade (app/agenda/emc)
+  const [setor,         setSetor]         = useState<'lum' | 'emc'>('lum')
   const [agenda,        setAgenda]        = useState<AgendaItem[]>([])
   const [busca,         setBusca]         = useState('')
   const [editItem,      setEditItem]      = useState<AgendaItem | null>(null)
@@ -1380,6 +1340,7 @@ export default function AgendaPage() {
         updateCustomTagsStore(tags)
       }
     } catch {}
+    try { if (localStorage.getItem(SETOR_KEY) === 'emc') setSetor('emc') } catch {}
     // check for updates silently (2s delay para não travar o load inicial)
     const api = (window as any).electronAPI
     if (api?.checkUpdate) {
@@ -1651,6 +1612,11 @@ export default function AgendaPage() {
     setCustomTags(tags)
     updateCustomTagsStore(tags)
     try { localStorage.setItem(CUSTOM_TAGS_KEY, JSON.stringify(tags)) } catch {}
+  }
+
+  function trocarSetor(s: 'lum' | 'emc') {
+    setSetor(s)
+    try { localStorage.setItem(SETOR_KEY, s) } catch {}
   }
 
   /* Nº de relatório informado à mão no card → o item sai de "Em andamento" e vai
@@ -2165,10 +2131,27 @@ export default function AgendaPage() {
         </button>
       </div>
 
-      <div className="mb-5">
-        <p className="text-[11px] text-white/30 font-mono uppercase tracking-widest mb-0.5">LABELO · PUCRS</p>
-        <h1 className="text-xl font-bold text-white">Agenda de Execução</h1>
-        <p className="text-white/35 text-xs mt-0.5">Acompanhamento de protocolos e ensaios</p>
+      <div className="mb-5 flex items-end gap-4 flex-wrap">
+        <div>
+          <p className="text-[11px] text-white/30 font-mono uppercase tracking-widest mb-0.5">LABELO · PUCRS</p>
+          <h1 className="text-xl font-bold text-white">Agenda de Execução</h1>
+          <p className="text-white/35 text-xs mt-0.5">Acompanhamento de protocolos e ensaios</p>
+        </div>
+        <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8 ml-auto">
+          {([
+            ['lum', 'LUM · CISPR 15', <Lightbulb key="l" size={12} />],
+            ['emc', 'EMC · Imunidade', <Zap key="e" size={12} />],
+          ] as const).map(([s, label, icon]) => (
+            <button key={s} type="button" onClick={() => trocarSetor(s)}
+              className={cn(
+                'flex items-center gap-1.5 px-4 py-1.5 rounded text-xs font-semibold transition-all',
+                setor === s ? 'bg-teal/15 border border-teal/30 text-teal' : 'text-white/40 hover:text-white/70',
+              )}>
+              {icon}
+              {label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Aviso rede */}
@@ -2189,6 +2172,9 @@ export default function AgendaPage() {
         </div>
       )}
 
+      {setor === 'emc' && <AgendaEmc />}
+
+      {setor === 'lum' && (<>
       {/* Tabs */}
       <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8 mb-4 w-fit">
         {([
@@ -3426,6 +3412,7 @@ ${tableHtml}
           </div>
         )
       })()}
+      </>)}
 
       {editItem && <ItemModal item={editItem} isNew={!agenda.some(a => a.id === editItem.id)} onSave={handleSave} onClose={() => setEditItem(null)} clientes={clientes} customTags={customTags} onCustomTagsChange={handleCustomTagsChange} />}
       {showLote && <LoteModal onSave={handleSaveLote} onClose={() => setShowLote(false)} clientes={clientes} agenda={agenda} />}

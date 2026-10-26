@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Plus, Search, X, Edit2, Trash2, Clock, CheckCircle2, RotateCcw, AlertTriangle, Loader2, Settings2, ChevronDown, ChevronUp,
+  BarChart2, TrendingUp,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { today, CLIENTES_KEY, type ClienteDB } from '@/app/cispr15/types'
@@ -16,12 +17,15 @@ import {
 } from '@/lib/emc/cliente'
 import { ItemModalEmc, novoItemEmc } from '@/app/agenda/emc/ItemModalEmc'
 import { fmtDate, daysUntil, corPrazo, BadgeEnsaio, ChipEtiqueta } from '@/app/agenda/emc/comum'
+import { AnaliseEmc } from '@/app/agenda/emc/AnaliseEmc'
+import { FollowupEmc } from '@/app/agenda/emc/FollowupEmc'
 
 type Filtro = 'andamento' | 'aguardando' | 'concluidos' | 'todos'
 type Ordem = 'dataEntrada' | 'previsaoSaida' | 'protocolo'
 
 export function AgendaEmc() {
   const router = useRouter()
+  const [aba,        setAba]        = useState<'agenda' | 'analise' | 'followup'>('agenda')
   const [itens,      setItens]      = useState<AgendaItemEmc[]>([])
   const [config,     setConfig]     = useState<ConfigEnsaiosEmc>(CONFIG_EMC_PADRAO)
   const [clientes,   setClientes]   = useState<ClienteDB[]>([])
@@ -146,6 +150,25 @@ export function AgendaEmc() {
         </div>
       )}
 
+      {/* Abas */}
+      <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8 w-fit">
+        {([
+          ['agenda',   'Agenda',    null],
+          ['analise',  'Análise',   <BarChart2 key="a" size={11} />],
+          ['followup', 'Follow-up', <TrendingUp key="f" size={11} />],
+        ] as const).map(([t, label, icon]) => (
+          <button key={t} type="button" onClick={() => setAba(t)}
+            className={cn('flex items-center gap-1.5 px-4 py-1.5 rounded text-xs font-semibold transition-all',
+              aba === t ? 'bg-gold/15 border border-gold/25 text-gold' : 'text-white/40 hover:text-white/70')}>
+            {icon}{label}
+          </button>
+        ))}
+      </div>
+
+      {aba === 'analise' && <AnaliseEmc itens={itens} catalogo={config.catalogo} />}
+      {aba === 'followup' && <FollowupEmc itens={itens} catalogo={config.catalogo} />}
+
+      {aba === 'agenda' && (<>
       {/* Toolbar */}
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8">
@@ -306,6 +329,8 @@ export function AgendaEmc() {
           })}
         </div>
       )}
+
+      </>)}
 
       {editItem && (
         <ItemModalEmc

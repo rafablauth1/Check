@@ -19,6 +19,17 @@ export function daysUntil(dateStr: string): number {
   return Math.floor((target.getTime() - now.getTime()) / 86400000)
 }
 
+export function diasNoLab(dataEntrada: string): number {
+  if (!dataEntrada) return 0
+  const now = new Date(today() + 'T00:00:00')
+  const entrada = new Date(dataEntrada + 'T00:00:00')
+  return Math.max(0, Math.floor((now.getTime() - entrada.getTime()) / 86400000))
+}
+
+export function diasEntre(a: string, b: string): number {
+  return Math.max(0, Math.floor((new Date(b + 'T12:00:00').getTime() - new Date(a + 'T12:00:00').getTime()) / 86400000))
+}
+
 /** Prazo EMC é manual: N semanas a partir da entrada. */
 export function somarSemanas(dateStr: string, semanas: number): string {
   const d = new Date((dateStr || today()) + 'T12:00:00')

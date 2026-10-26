@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   LayoutDashboard, FileText, Cpu, BookOpen, Calendar,
   ClipboardCheck, Network, Ruler, Settings, Award, FlaskConical, Layers, Target, Tags, BadgeCheck, KanbanSquare, BookText,
+  Library,
 } from 'lucide-react'
 import { LOTE_KEY } from '@/app/cispr15/types'
 
@@ -34,6 +35,7 @@ const NAV: NavGroup[] = [
       { href: '/equipamentos',        icon: Cpu,            label: 'Equipamentos' },
       { href: '/equipamentos/grupos', icon: Network,        label: 'Grupos' },
       { href: '/normas',              icon: BookOpen,       label: 'Normas' },
+      { href: '/conhecimento',        icon: Library,        label: 'Base de Conhecimento' },
       { href: '/procedimentos',       icon: FlaskConical,   label: 'Procedimentos' },
     ],
   },

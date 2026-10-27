@@ -52,8 +52,10 @@ export function slug(titulo: string): string {
 
 // Início de trecho: título markdown, item numerado ("2.5.2.4 ..."), artigo, anexo.
 const RE_TITULO = /^(#{1,6})\s+(.+)$/
-const RE_ITEM = /^(\d+(?:\.\d+)+)\.?\s+\S/
-const RE_ARTIGO = /^(Art\.?\s*\d+[ºo°]?|ANEXO\s+[A-Z]\b)/i
+// "2.5.2.4 …" e também cláusula de número simples das IEC ("9 Evaluation of test results")
+// … e itens de anexo ("A.1.2 Calibration …", "B.3 …")
+const RE_ITEM = /^(\d+(?:\.\d+)+\.?\s+\S|\d{1,2}\s+[A-Z][a-z]{2,}|[A-J]\.\d+(?:\.\d+)*\s+\S)/
+const RE_ARTIGO = /^(Art\.?\s*\d+[ºo°]?|ANEXO\s+[A-Z]\b|Annex\s+[A-Z]\b)/i
 const MAX_TRECHO = 1400
 
 const ehTabela = (par: string) => par.split('\n').every(l => l.trim().startsWith('|'))

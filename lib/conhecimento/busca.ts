@@ -1,4 +1,5 @@
 import type { ResultadoBusca, Trecho } from '@/lib/conhecimento/tipos'
+import { semCabecalhoIEC } from '@/lib/conhecimento/markdown'
 
 /* Busca local da Base de Conhecimento — sem IA e sem internet.
    - normaliza (minúsculas, sem acento) e reduz a palavra ao radical (plural,
@@ -75,6 +76,13 @@ export function termos(texto: string): string[] {
   return tokenizar(texto).flatMap(t => termosDe(t.termo))
 }
 
+/** Pergunta/sinônimo em radicais, para comparar "distâncias" com "distância".
+    Sinônimo só de palavras vazias vira uma chave que nunca casa. */
+const chave = (texto: string) => {
+  const t = termos(texto)
+  return t.length ? ' ' + t.join(' ') + ' ' : '\0'
+}
+
 /* Sinônimos da área (EMC/metrologia legal). Cada grupo: se a pergunta tiver um
    deles, os outros também são procurados (com peso menor). */
 export const SINONIMOS_PADRAO: string[][] = [
@@ -93,9 +101,14 @@ export const SINONIMOS_PADRAO: string[][] = [
   ['medidor de energia', 'medidores de energia', 'medidor eletronico', 'mee'],
   ['modo relogio', 'multipla tarifacao', 'relogio'],
   ['reativa', 'energia reativa'],
-  // ponte português → inglês: as normas IEC da base estão em inglês, as perguntas em português
+]
+
+/* Ponte português → inglês: as normas IEC da base estão em inglês, as perguntas
+   em português. É a mesma palavra em outra língua, então pesa quase como o
+   termo da pergunta (e não meio peso, como um sinônimo de assunto). */
+const TRADUCOES: string[][] = [
   ['nivel de ensaio', 'nivel de severidade', 'niveis de ensaio', 'test level', 'test levels', 'severity level'],
-  ['montagem', 'arranjo de ensaio', 'configuracao de ensaio', 'test setup', 'test set-up', 'test arrangement'],
+  ['montagem', 'arranjo de ensaio', 'configuracao de ensaio', 'setup', 'set-up', 'test setup', 'test set-up', 'test arrangement'],
   ['criterio de desempenho', 'criterios de desempenho', 'performance criteria', 'performance criterion', 'evaluation of test results'],
   ['descarga por contato', 'contact discharge'],
   ['descarga pelo ar', 'descarga no ar', 'air discharge'],
@@ -133,7 +146,50 @@ export const SINONIMOS_PADRAO: string[][] = [
   ['polaridade', 'polarity'],
   ['distancia', 'distance', 'separation'],
   ['impedancia', 'impedance'],
+  ['acoplamento', 'coupling'],
+  ['desacoplamento', 'decoupling'],
+  ['mesa', 'equipamento de mesa', 'table-top', 'table top', 'tabletop'],
+  ['piso', 'equipamento de piso', 'floor standing', 'floor-standing'],
+  ['suporte isolante', 'isolante', 'insulating support', 'insulation support'],
+  ['altura', 'height', 'above the ground'],
+  ['comprimento', 'length', 'tamanho do cabo', 'cable length'],
+  ['espessura', 'thickness'],
+  ['tamanho', 'dimensoes', 'size', 'dimensions'],
+  ['tensao de ensaio', 'test voltage'],
+  ['duracao', 'duration'],
+  ['numero de descargas', 'number of discharges'],
+  ['intervalo', 'interval', 'time between'],
 ]
+const EH_TRADUCAO = new Set(TRADUCOES)
+SINONIMOS_PADRAO.push(...TRADUCOES)
+
+/** Partes da IEC 61000-4-x e números de portaria citados na pergunta ("4-4", "61000-4-6", "portaria 221"). */
+export function normasCitadas(pergunta: string): { iec: string[]; portarias: string[] } {
+  const q = normalizar(pergunta)
+  const iec = [...q.matchAll(/(?:^|[^\d-])(?:61000-)?4-(\d{1,2})(?!\d)/g)].map(m => m[1])
+  const portarias = [...q.matchAll(/(?:^|\D)(\d{3})(?!\d)/g)].map(m => m[1])
+  return { iec: [...new Set(iec)], portarias: [...new Set(portarias)] }
+}
+
+/** O documento é uma das normas citadas? (pelo id: iec-61000-4-4-2012, portaria-inmetro-221-2022) */
+export function ehNormaCitada(docId: string, citadas: { iec: string[]; portarias: string[] }): boolean {
+  const iec = docId.match(/^iec-61000-4-(\d+)-/)
+  if (iec) return citadas.iec.includes(iec[1])
+  const port = docId.match(/^portaria-[a-z]+-(\d+)-/)
+  return !!port && citadas.portarias.includes(port[1])
+}
+
+/** Termos dos grupos de sinônimos que a pergunta aciona, fora os que ela já tem —
+    em geral a versão em inglês ("distância" → distance, separation). */
+export function termosAcionados(pergunta: string, sinonimos: string[][]): string[] {
+  const q = chave(pergunta)
+  const out = new Set<string>()
+  for (const grupo of sinonimos) {
+    if (!grupo.some(s => q.includes(chave(s)))) continue
+    for (const s of grupo) if (!q.includes(chave(s))) out.add(s)
+  }
+  return [...out]
+}
 
 interface Doc { trecho: Trecho; tf: Map<string, number>; len: number; norm: string }
 
@@ -158,15 +214,16 @@ export function construirIndice(trechos: Trecho[], sinonimosExtras: string[][] =
   return { docs, df, mediaLen, sinonimos: [...SINONIMOS_PADRAO, ...sinonimosExtras] }
 }
 
-/** Termos da pergunta com peso (1 = da pergunta, 0,5 = vindo de sinônimo). */
+/** Termos da pergunta com peso (1 = da pergunta, 0,9 = tradução, 0,5 = sinônimo de assunto). */
 export function expandir(pergunta: string, sinonimos: string[][]): Map<string, number> {
   const pesos = new Map<string, number>()
   termos(pergunta).forEach(t => pesos.set(t, 1))
-  const q = ' ' + tokenizar(pergunta).map(t => t.termo).join(' ') + ' '
+  const q = chave(pergunta)
   for (const grupo of sinonimos) {
-    const temGrupo = grupo.some(s => q.includes(' ' + normalizar(s) + ' '))
+    const temGrupo = grupo.some(s => q.includes(chave(s)))
     if (!temGrupo) continue
-    for (const s of grupo) for (const t of termos(s)) if (!pesos.has(t)) pesos.set(t, 0.5)
+    const peso = EH_TRADUCAO.has(grupo) ? 0.9 : 0.5
+    for (const s of grupo) for (const t of termos(s)) if ((pesos.get(t) ?? 0) < peso) pesos.set(t, peso)
   }
   return pesos
 }
@@ -209,6 +266,43 @@ function recorte(texto: string, alvo: Set<string>, max = 320): { trecho: string;
     .filter(t => termosDe(t.termo).some(x => alvo.has(x)))
     .map(t => [t.inicio, t.fim] as [number, number])
   return { trecho, destaques }
+}
+
+/** Ranking por palavras (BM25): índice do trecho em indice.docs + pontuação. */
+export function pontuarBM25(indice: Indice, pergunta: string, limite = 50): { i: number; score: number }[] {
+  const pesos = expandir(pergunta, indice.sinonimos)
+  if (!pesos.size) return []
+  const N = indice.docs.length
+  const k1 = 1.2, b = 0.5
+  const frase = normalizar(pergunta).replace(/[^a-z0-9 -]/g, ' ').replace(/\s+/g, ' ').trim()
+  const out: { i: number; score: number }[] = []
+  indice.docs.forEach((d, i) => {
+    let score = 0, distintos = 0
+    pesos.forEach((peso, t) => {
+      const f = d.tf.get(t)
+      if (!f) return
+      distintos += peso
+      const df = indice.df.get(t) ?? 0
+      const idf = Math.log(1 + (N - df + 0.5) / (df + 0.5))
+      score += peso * idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.len / indice.mediaLen))
+    })
+    if (score <= 0) return
+    score *= 1 + 0.15 * distintos
+    if (frase.length > 6 && d.norm.includes(frase)) score *= 1.5
+    out.push({ i, score })
+  })
+  return out.sort((x, y) => y.score - x.score).slice(0, limite)
+}
+
+/** Monta o resultado exibível de um trecho (recorte com as palavras da pergunta destacadas). */
+export function resultadoDe(indice: Indice, i: number, score: number, pergunta: string): ResultadoBusca {
+  const d = indice.docs[i]
+  const alvo = new Set(expandir(pergunta, indice.sinonimos).keys())
+  const { trecho, destaques } = recorte(semCabecalhoIEC(textoExibicao(d.trecho.texto)), alvo)
+  return {
+    docId: d.trecho.docId, titulo: d.trecho.titulo, tipo: d.trecho.tipo, ancora: d.trecho.ancora,
+    trecho, destaques, score: Math.round(score * 1000) / 1000,
+  }
 }
 
 export function buscar(indice: Indice, pergunta: string, limite = 12): ResultadoBusca[] {

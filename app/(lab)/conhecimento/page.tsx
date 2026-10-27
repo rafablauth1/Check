@@ -13,7 +13,7 @@ import { dividirEmTrechos } from '@/lib/conhecimento/markdown'
 import type { Documento, MetaDoc, PerguntaPendente, ResultadoBusca, TipoDoc } from '@/lib/conhecimento/tipos'
 import {
   listarDocs, lerDoc, criarDoc, salvarDoc, removerDoc, buscarNaBase, listarPendentes, registrarPendente,
-  removerPendente, converterDocx,
+  removerPendente, converterDocx, aquecerBusca,
 } from '@/lib/conhecimento/cliente'
 
 /* Base de Conhecimento: normas e notas do laboratório em .md, com busca local
@@ -249,7 +249,7 @@ export default function ConhecimentoPage() {
     try { setDocs(await listarDocs()); setPendentes(await listarPendentes()) }
     catch (e) { setAviso({ ok: false, msg: e instanceof Error ? e.message : String(e) }) }
   }
-  useEffect(() => { recarregar() }, [])
+  useEffect(() => { recarregar(); aquecerBusca() }, [])
   useEffect(() => { if (aviso?.ok) { const t = setTimeout(() => setAviso(null), 3500); return () => clearTimeout(t) } }, [aviso])
 
   async function perguntar(texto = q) {

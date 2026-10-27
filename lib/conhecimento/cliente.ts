@@ -24,9 +24,16 @@ export async function salvarDoc(doc: Documento, senha: string): Promise<Document
 export async function removerDoc(id: string, senha: string): Promise<void> {
   await json(await fetch(`/api/conhecimento/${encodeURIComponent(id)}`, { method: 'DELETE', headers: comSenha(senha) }))
 }
-export async function buscarNaBase(q: string): Promise<{ resultados: ResultadoBusca[]; documentos: number; trechos: number }> {
+export async function buscarNaBase(q: string): Promise<{
+  resultados: ResultadoBusca[]; semantica: boolean; documentos: number; trechos: number
+}> {
   return json(await fetch(`/api/conhecimento/buscar?q=${encodeURIComponent(q)}`, { cache: 'no-store' }))
 }
+/** Carrega o modelo de busca e os vetores em segundo plano (tela abrindo). */
+export function aquecerBusca(): void {
+  fetch('/api/conhecimento/buscar?aquecer=1', { cache: 'no-store' }).catch(() => {})
+}
+
 export async function listarPendentes(): Promise<PerguntaPendente[]> {
   return json(await fetch('/api/conhecimento/pendentes', { cache: 'no-store' }))
 }

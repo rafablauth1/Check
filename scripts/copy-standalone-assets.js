@@ -46,6 +46,29 @@ const serverDst = path.join(standalone, '.next', 'server')
 const faltavam = copiarFaltantes(serverSrc, serverDst)
 console.log(`[copy-standalone-assets] .next/server: ${faltavam} arquivo(s) que faltavam no standalone`)
 
+/* Busca por significado da Base de Conhecimento: o @huggingface/transformers é
+   carregado com import() dinâmico e o onnxruntime-node acha o binário por um
+   caminho montado em tempo de execução — o rastreador do Next não vê nenhum
+   dos dois. Sem eles o app empacotado volta, calado, à busca só por palavras.
+   Leva só o necessário no Windows x64 (~40 MB em vez de ~350 MB). */
+const DEPS_BUSCA = [
+  ['@huggingface/transformers', ['package.json', 'dist/transformers.node.mjs', 'dist/transformers.node.cjs']],
+  ['onnxruntime-node', ['package.json', 'dist', 'bin/napi-v3/win32/x64']],
+  ['onnxruntime-common', ['package.json', 'dist']],
+]
+for (const [pacote, partes] of DEPS_BUSCA) {
+  const de = path.join(root, 'node_modules', pacote)
+  const para = path.join(standalone, 'node_modules', pacote)
+  if (!fs.existsSync(de)) { console.log(`[copy-standalone-assets] ${pacote} ausente em node_modules`); continue }
+  for (const p of partes) {
+    const s = path.join(de, p), d = path.join(para, p)
+    if (!fs.existsSync(s)) throw new Error(`[copy-standalone-assets] falta ${pacote}/${p}`)
+    if (fs.statSync(s).isDirectory()) copyDir(s, d)
+    else { fs.mkdirSync(path.dirname(d), { recursive: true }); fs.copyFileSync(s, d) }
+  }
+}
+console.log('[copy-standalone-assets] busca por significado (transformers + onnxruntime) -> standalone OK')
+
 const staticSrc = path.join(root, '.next', 'static')
 if (fs.existsSync(staticSrc)) {
   copyDir(staticSrc, path.join(standalone, '.next', 'static'))

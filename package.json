@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.95.2",
+    "@huggingface/transformers": "3.8.1",
     "@signpdf/placeholder-plain": "^3.3.0",
     "@signpdf/signpdf": "^3.3.0",
     "hunspell-asm": "^4.0.2",

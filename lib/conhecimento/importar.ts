@@ -50,12 +50,21 @@ export function limparTextoNorma(bruto: string): string {
   return blocos.join('\n\n').replace(/\n{3,}/g, '\n\n') + '\n'
 }
 
-function ehTitulo(l: string): boolean {
+export function ehTitulo(l: string): boolean {
   if (/^ANEXO\s+[A-Z]\b/.test(l) && l.length < 20) return true
+  // cabeçalho de página das IEC ("– 6 – IEC 61000-4-19:2014 © IEC 2014") e
+  // fonte de definição ("[SOURCE: IEC 60050-161…]") não são títulos
+  if (/©|^\[|^[–-]\s*\d+\s*[–-]|[–-]\s*\d+\s*[–-]$/.test(l)) return false
   // "1. TERMOS E DEFINIÇÕES", "1.12 ENSAIO DE IMUNIDADE A ..." (texto em caixa alta)
   const semNumero = l.replace(/^\d+(\.\d+)*\.?\s+/, '')
   const letras = semNumero.replace(/[^A-Za-zÀ-ÿ]/g, '')
-  return letras.length >= 6 && letras === letras.toUpperCase() && l.length < 160
+  if (!(letras.length >= 6 && letras === letras.toUpperCase() && l.length < 160)) return false
+  // rótulo de figura ("EUT EUT", "EUT CDN AE", "GSM DCS 1800 DECT"): só siglas
+  // curtas ou palavra repetida
+  const palavras = semNumero.split(/\s+/)
+    .map(p => p.replace(/^[(["']+|[)\]"',.;:–\-/]+$/g, ''))
+    .filter(p => /^[A-Za-zÀ-ÿ]+$/.test(p))
+  return palavras.some(p => p.length >= 5) && new Set(palavras).size > palavras.length / 2
 }
 
 function titulo(l: string): string {

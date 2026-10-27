@@ -60,6 +60,11 @@ const MAX_TRECHO = 1400
 
 const ehTabela = (par: string) => par.split('\n').every(l => l.trim().startsWith('|'))
 
+/** Sem o cabeçalho de página das IEC ("– 30 – 61000-4-4 © IEC:2012") e o código de figura ("IEC 2605/13"). */
+export const semCabecalhoIEC = (t: string) => t
+  .replace(/(?:[–-]\s*\d+\s*[–-]\s*)?\d{5}-\d+-\d+(?::\d{4})?\s*©\s*IEC:?\s*\d{4}(?:\s*[–-]\s*\d+\s*[–-])?/g, ' ')
+  .replace(/\bIEC\s+\d{3,4}\/\d{2}\b/g, ' ')
+
 /* Divide o documento em trechos. Nota = um trecho só (pergunta + resposta).
    Norma = um trecho por item/seção; título solto se junta ao item seguinte;
    item longo é quebrado por parágrafo, mantendo a mesma âncora; tabela grande
@@ -75,11 +80,17 @@ export function dividirEmTrechos(doc: Documento): Trecho[] {
   let ancora = doc.titulo
   let secao = ''
   let buf: string[] = []
-  const add = (texto: string, a = ancora) => trechos.push({ ...base, ancora: a, texto, ...(secao ? { contexto: secao } : {}) })
+  const add = (texto: string, a = ancora) => {
+    // pedaço de item longo que é só cabeçalho de página / código de figura: fora
+    if (semCabecalhoIEC(texto).replace(/[^A-Za-zÀ-ÿ]/g, '').length < 10) return
+    trechos.push({ ...base, ancora: a, texto, ...(secao ? { contexto: secao } : {}) })
+  }
   const fechar = () => {
     const texto = buf.join('\n').trim()
+    const conteudo = buf.some(l => l.trim() && !RE_TITULO.test(l.trim()) && !l.trim().startsWith('>'))
     buf = []
-    if (!texto) return
+    // só título e aviso ("> Uso interno…"): não é trecho, só atrapalharia a busca
+    if (!texto || !conteudo) return
     if (texto.length <= MAX_TRECHO) { add(texto); return }
     let atual = ''
     let tituloTabela = ''
@@ -110,7 +121,11 @@ export function dividirEmTrechos(doc: Documento): Trecho[] {
     if (tit || item || art) {
       // título sozinho (sem texto ainda) não vira trecho: vira o rótulo do próximo
       const soTitulo = buf.every(l => !l.trim() || RE_TITULO.test(l.trim()))
-      if (!soTitulo) fechar()
+      // item que é só cabeçalho ("7.3 Test setup for type tests", logo seguido
+      // de "7.3.1 …") entra no começo do item seguinte em vez de virar trecho
+      const cheias = buf.filter(l => l.trim() && !RE_TITULO.test(l.trim()))
+      const soCabecalho = !!item && cheias.length === 1 && RE_ITEM.test(cheias[0].trim()) && cheias[0].trim().length <= 100
+      if (!soTitulo && !soCabecalho) fechar()
       if (tit) { secao = tit[2].replace(/[*_`]/g, '').trim(); ancora = secao }
       else ancora = (secao && !item ? secao + ' — ' : '') + (t.length > 90 ? t.slice(0, 90).replace(/\s+\S*$/, '') + '…' : t)
       if (tit && soTitulo) { buf = []; continue }

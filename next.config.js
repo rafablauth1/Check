@@ -2,7 +2,8 @@
 const nextConfig = {
   output: 'standalone',
   experimental: {
-    serverComponentsExternalPackages: ['mammoth', 'puppeteer-core'],
+    // bibliotecas com binário nativo (busca por significado da Base de Conhecimento) ficam fora do webpack
+    serverComponentsExternalPackages: ['mammoth', 'puppeteer-core', '@huggingface/transformers', 'onnxruntime-node'],
   },
 }
 

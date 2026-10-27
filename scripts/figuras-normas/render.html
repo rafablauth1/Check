@@ -1,0 +1,160 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<script src="../pdftools/node_modules/pdfjs-dist/build/pdf.min.js"></script>
+</head><body>
+<script>
+// Acha "Figure N – …" e "Table N – …" nas páginas em inglês de um PDF IEC
+// bilíngue, recorta a região do desenho/tabela e devolve PNG + linhas de texto.
+pdfjsLib.GlobalWorkerOptions.workerSrc = '../pdftools/node_modules/pdfjs-dist/build/pdf.worker.min.js'
+
+const MOVEL = [/licen[cs]e agreement/i, /^\s*Customer:/i, /Order No\.?:/i, /copyright of IEC/i, /Copyright International Electrotechnical/i,
+  /Provided by IHS/i, /No reproduction or networking/i, /Not for Resale/i, /Licensee=/i, /sales@iec\.ch/i,
+  /©\s*IEC/i, /^[–-]\s*\d+\s*[–-]$/]
+const CODIGO_FIG = /^IEC\s+\d{3,4}\/\d{2}$/          // fica dentro da figura: não é cabeçalho
+const SUMARIO = /\.{4,}|…/                          // linha da lista de figuras/tabelas
+// "Figure 11 – …", "Table A.1 – …", e na 4-11 "Figure 1a) ñ …" (o travessão vem como ñ no PDF)
+const LEGENDA = /^(Figure|Table)\s+([A-Z]\.\d+[a-z]?|\d+[a-z]?\)?)\s+[–\-ñ]\s+(.+)$/
+
+function idioma(t) {
+  t = ' ' + t.toLowerCase().replace(/\s+/g, ' ') + ' '
+  const c = re => (t.match(re) || []).length
+  return { en: c(/ (the|and|of|shall|is|are|with|for|test|be|this|which) /g), fr: c(/ (le|la|les|des|et|du|est|une|doit|pour|essai|dans|sont|être) /g) }
+}
+
+function linhasDe(items) {
+  const its = items.filter(i => i.str.trim()).map(i => ({
+    str: i.str, x: i.transform[4], y: i.transform[5], w: i.width, h: Math.abs(i.transform[3]) || i.height || 8, fonte: i.fontName,
+  })).sort((a, b) => b.y - a.y || a.x - b.x)
+  const linhas = []
+  for (const it of its) {
+    const l = linhas.find(l => Math.abs(l.y - it.y) < 2)
+    if (l) l.itens.push(it); else linhas.push({ y: it.y, itens: [it] })
+  }
+  for (const l of linhas) {
+    l.itens.sort((a, b) => a.x - b.x)
+    l.x0 = l.itens[0].x
+    l.x1 = Math.max(...l.itens.map(i => i.x + i.w))
+    l.h = Math.max(...l.itens.map(i => i.h))
+    let maxGap = 0, txt = ''
+    l.itens.forEach((i, k) => {
+      if (k) { const g = i.x - (l.itens[k - 1].x + l.itens[k - 1].w); maxGap = Math.max(maxGap, g); txt += g > 1 ? ' ' : '' }
+      txt += i.str
+    })
+    l.texto = txt.replace(/\s+/g, ' ').trim()
+    l.maxGap = maxGap
+    l.movel = MOVEL.some(re => re.test(l.texto))
+    l.codigo = CODIGO_FIG.test(l.texto)
+  }
+  return linhas.sort((a, b) => b.y - a.y)
+}
+
+// página inteira (para conferir / usar como reserva)
+async function renderPagina(url, n, escala) {
+  const pdf = await pdfjsLib.getDocument(url).promise
+  const pg = await pdf.getPage(n)
+  const vp = pg.getViewport({ scale: escala })
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height)
+  await pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise
+  return canvas.toDataURL('image/png').split(',')[1]
+}
+
+async function processar(url, escala) {
+  const pdf = await pdfjsLib.getDocument(url).promise
+  const out = []
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const pg = await pdf.getPage(n)
+    const tc = await pg.getTextContent()
+    const linhas = linhasDe(tc.items)
+    const texto = linhas.map(l => l.texto).join('\n')
+    const { en, fr } = idioma(texto)
+    if (fr > en) continue
+    if (/REDLINE VERSION/.test(texto)) break           // 4-4: daqui pra frente é a versão com marcas de revisão
+    if (linhas.filter(l => SUMARIO.test(l.texto)).length >= 4) continue   // página de sumário / lista de figuras
+    const legendas = linhas.filter(l => !l.movel && LEGENDA.test(l.texto) && !SUMARIO.test(l.texto))
+    if (!legendas.length) continue
+    // página só de desenho (quase sem texto): a língua sai da legenda ("Dessin mécanique d’une cible…")
+    if (en < 5 && legendas.some(l => /\b(de|du|des|la|le|les|sur|une)\b|d’/i.test(l.texto.replace(LEGENDA, '$3')))) continue
+
+    const uteis = linhas.filter(l => !l.movel && !l.codigo)
+    const largas = uteis.filter(l => l.texto.length > 40)
+    const colX0 = Math.min(...(largas.length ? largas : uteis).map(l => l.x0))
+    const colX1 = Math.max(...(largas.length ? largas : uteis).map(l => l.x1))
+    const larg = colX1 - colX0
+    // tamanho de letra do corpo: o mais comum nas linhas longas. Nota em letra menor
+    // dentro da figura/tabela ("NOTE …", "Equipment without cables …") não é corpo.
+    const alturas = largas.map(l => Math.round(l.h * 2) / 2).sort((a, b) => a - b)
+    const hCorpo = alturas.length ? alturas[Math.floor(alturas.length * 0.75)] : 10
+    const corpo = l => !LEGENDA.test(l.texto) && (l.x1 - l.x0) > 0.62 * larg && l.maxGap < 8 && l.h >= hCorpo * 0.92
+      && !/^(NOTE|[a-z]\s|\*)/.test(l.texto)
+    const cab = linhas.filter(l => l.movel)
+    const vp = pg.getViewport({ scale: escala })
+    let canvas = null
+
+    for (const c of legendas) {
+      const [, tipo, numero, titulo] = c.texto.match(LEGENDA)
+      const idx = uteis.indexOf(c)
+      let topo, base                                   // em y do PDF (cresce para cima)
+      let pequena = false
+      if (tipo === 'Figure') {
+        // legenda embaixo do desenho: sobe até uma linha de corpo/legenda/cabeçalho
+        base = c.y - c.h * 0.45
+        const acima = cab.filter(h => h.y > c.y)          // cabeçalho de página mais próximo acima
+        const limite = acima.length ? Math.min(...acima.map(h => h.y - h.h * 0.5)) : pg.view[3] - 20
+        topo = limite
+        for (let k = idx - 1; k >= 0; k--) {
+          const l = uteis[k]
+          if (corpo(l) || LEGENDA.test(l.texto)) { topo = l.y - l.h * 0.45; break }
+        }
+        // sobrou só texto entre a legenda e o parágrafo (desenho em sub-figuras
+        // "B.1a"/"B.1b", ou chave longa): pega a página de cima até a legenda
+        if (topo - base < 150) { pequena = true; topo = limite }
+      } else {
+        // legenda em cima da tabela: desce até duas linhas de corpo seguidas, outra legenda ou o rodapé
+        topo = c.y + c.h * 1.1
+        const abaixo = cab.filter(h => h.y < c.y)         // rodapé mais próximo abaixo
+        base = abaixo.length ? Math.max(...abaixo.map(h => h.y + h.h * 1.2)) : pg.view[1] + 20
+        // também acaba num título de cláusula ("6 Test generator") ou num vão grande
+        // entre linhas (fim da tabela e das notas dela, antes do texto seguinte)
+        const titulo = l => /^(\d+(\.\d+)*|[A-Z]\.\d+(\.\d+)*)\s+[A-Z][a-z]/.test(l.texto) && l.h >= hCorpo * 0.92 && l.maxGap < 30
+        for (let k = idx + 1; k < uteis.length; k++) {
+          const l = uteis[k], prox = uteis[k + 1], ant = uteis[k - 1]
+          if (k > idx + 2 && ant.y - l.y > 26) { base = ant.y - ant.h * 0.7; break }
+          if (LEGENDA.test(l.texto) || titulo(l) || (corpo(l) && (!prox || corpo(prox)))) { base = l.y + l.h * 1.1; break }
+        }
+      }
+      if (topo - base < 25) continue
+      const linhasReg = uteis.filter(l => l !== c && l.y < topo && l.y > base)
+      if (!canvas) {
+        canvas = document.createElement('canvas')
+        canvas.width = Math.ceil(vp.width); canvas.height = Math.ceil(vp.height)
+        await pg.render({ canvasContext: canvas.getContext('2d'), viewport: vp }).promise
+      }
+      // largura: a coluna de texto, alargada pelos rótulos do desenho que passam dela
+      const xs = linhasReg.flatMap(l => [l.x0, l.x1])
+      const esq = Math.max(pg.view[0] + 4, Math.min(colX0, ...xs) - 14)
+      const dir = Math.min(pg.view[2] - 4, Math.max(colX1, ...xs) + 8)
+      const [ax, ay] = vp.convertToViewportPoint(esq, topo)
+      const [bx, by] = vp.convertToViewportPoint(dir, base)
+      const x = Math.max(0, Math.floor(Math.min(ax, bx))), y = Math.max(0, Math.floor(Math.min(ay, by)))
+      const w = Math.min(canvas.width - x, Math.ceil(Math.abs(bx - ax))), h = Math.min(canvas.height - y, Math.ceil(Math.abs(by - ay)))
+      const corte = document.createElement('canvas')
+      corte.width = w; corte.height = h
+      corte.getContext('2d').drawImage(canvas, x, y, w, h, 0, 0, w, h)
+      out.push({
+        tipo, numero, titulo, legenda: c.texto, pagina: n, pequena,
+        png: corte.toDataURL('image/png').split(',')[1],
+        altura: h, largura: w,
+        // negrito (cabeçalho das tabelas IEC): o nome da fonte só existe depois de renderizar a página
+        linhas: tipo === 'Table' ? linhasReg.map(l => ({ y: l.y, itens: l.itens.map(i => {
+          let nome = ''
+          try { nome = pg.commonObjs.get(i.fonte)?.name || '' } catch {}
+          return { s: i.str, x: i.x, w: i.w, b: /bold|black|heavy/i.test(nome) }
+        }) })) : undefined,
+      })
+    }
+  }
+  return out
+}
+</script>
+</body></html>

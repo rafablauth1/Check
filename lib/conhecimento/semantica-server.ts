@@ -142,11 +142,20 @@ export async function buscaHibrida(indice: Indice, pergunta: string, limite = 15
   const citadas = normasCitadas(pergunta)
   if (citadas.iec.length || citadas.portarias.length) {
     const daNorma = (r: { i: number }) => ehNormaCitada(indice.docs[r.i].trecho.docId, citadas)
-    somar(todasSentido.filter(daNorma).slice(0, 30), 1.2)
-    somar(todasPalavra.filter(daNorma).slice(0, 30), 1.5)   // palavras + tradução acertam mais dentro da norma
+    // quem escreve "da 4-6" quer a norma em si: pesa mais que o trecho de portaria que só a cita
+    somar(todasSentido.filter(daNorma).slice(0, 30), 1.6)
+    somar(todasPalavra.filter(daNorma).slice(0, 30), 2.0)   // palavras + tradução acertam mais dentro da norma
+  }
+  // tabelas de orçamento de incerteza (anexos das IEC) viram um trecho por linha e
+  // repetem a legenda ("Level setting…"): só pesam quando a pergunta é sobre incerteza
+  const querIncerteza = /incerteza|uncertaint/i.test(pergunta)
+  const deIncerteza = (i: number) => {
+    const t = indice.docs[i].trecho
+    return /uncertaint/i.test(t.ancora + ' ' + t.texto.slice(0, 300))
   }
   const ordem = [...fundido.entries()]
     .map(([i, s]) => [i, indice.docs[i].trecho.tipo === 'nota' ? s * 1.25 : s] as [number, number])
+    .map(([i, s]) => [i, !querIncerteza && deIncerteza(i) ? s * 0.5 : s] as [number, number])
     .sort((a, b) => b[1] - a[1])
     .slice(0, limite)
   const resultados = ordem.map(([i, s]) => resultadoDe(indice, i, s, pergunta))

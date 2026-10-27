@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Documento } from '@/lib/conhecimento/tipos'
@@ -18,21 +18,51 @@ function inline(s: string): React.ReactNode[] {
       : p)
 }
 
+/** "img/<doc>/<arquivo>.png" (relativo à pasta da Base) → rota que entrega a imagem. */
+const srcImagem = (s: string) => s.startsWith('img/') ? `/api/conhecimento/imagem/${s.slice(4)}` : s
+
 export function MdView({ md, alvo }: { md: string; alvo?: string }) {
   const ref = useRef<HTMLDivElement>(null)
+  const [ampliada, setAmpliada] = useState<{ src: string; legenda: string } | null>(null)
   const blocos = useMemo(() => md.replace(/\r\n/g, '\n').split(/\n{2,}/), [md])
+  // figuras acima do ponto carregam depois do pulo e empurram o texto: nos primeiros
+  // segundos, cada imagem que termina de carregar recentraliza no alvo
+  const pulo = useRef<{ el: HTMLElement; quando: number } | null>(null)
+  const aoCarregarImagem = () => {
+    if (pulo.current && Date.now() - pulo.current.quando < 3000) pulo.current.el.scrollIntoView({ block: 'center' })
+  }
   useEffect(() => {
     if (!alvo || !ref.current) return
     const chave = alvo.replace(/[…*]/g, '').replace(/^Tabela \d+ \(item ([\d.]+)\)$/, '$1').slice(0, 40).trim()
     ref.current.querySelectorAll('.ring-gold\\/50').forEach(e => e.classList.remove('ring-1', 'ring-gold/50', 'bg-gold/5'))
-    const el = [...ref.current.querySelectorAll<HTMLElement>('[data-bloco]')].find(e => (e.dataset.bloco || '').includes(chave))
-    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('ring-1', 'ring-gold/50', 'bg-gold/5') }
+    // o bloco que COMEÇA com a âncora (a legenda "Table 1 – …") vence o que só a cita ("see Table 1")
+    const blocosEl = [...ref.current.querySelectorAll<HTMLElement>('[data-bloco]')]
+    const el = blocosEl.find(e => (e.dataset.bloco || '').replace(/^\*\*/, '').startsWith(chave))
+      ?? blocosEl.find(e => (e.dataset.bloco || '').includes(chave))
+    if (el) {
+      el.scrollIntoView({ block: 'center' }); el.classList.add('ring-1', 'ring-gold/50', 'bg-gold/5')
+      pulo.current = { el, quando: Date.now() }
+    }
   }, [alvo, blocos])
   return (
     <div ref={ref} className="space-y-3 text-[13px] leading-relaxed text-white/70">
       {blocos.map((b, i) => {
         const t = b.trim()
         if (!t) return null
+        // figura/tabela recortada da norma: ![legenda](img/<doc>/<arquivo>.png)
+        const img = t.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/)
+        if (img) {
+          const src = srcImagem(img[2])
+          return (
+            <figure key={i} data-bloco={img[1]} className="rounded py-1">
+              <button type="button" onClick={() => setAmpliada({ src, legenda: img[1] })} title="Ampliar"
+                className="block w-full bg-white rounded-lg overflow-hidden border border-white/10 hover:border-gold/40 cursor-zoom-in">
+                <img src={src} alt={img[1]} loading="lazy" onLoad={aoCarregarImagem} className="w-full h-auto max-h-[70vh] object-contain" />
+              </button>
+              <figcaption className="text-[10px] text-white/35 mt-1 text-center">{img[1]}</figcaption>
+            </figure>
+          )
+        }
         const h = t.match(/^(#{1,6})\s+(.+)$/)
         if (h) {
           const cls = h[1].length <= 1 ? 'text-lg' : h[1].length === 2 ? 'text-base' : 'text-sm'
@@ -61,6 +91,13 @@ export function MdView({ md, alvo }: { md: string; alvo?: string }) {
         }
         return <p key={i} data-bloco={t.slice(0, 200)} className="whitespace-pre-wrap rounded">{inline(t)}</p>
       })}
+      {ampliada && (
+        <div className="fixed inset-0 z-[70] bg-black/85 backdrop-blur-sm flex flex-col items-center justify-center p-6 cursor-zoom-out"
+          onClick={e => { e.stopPropagation(); setAmpliada(null) }}>
+          <img src={ampliada.src} alt={ampliada.legenda} className="max-w-full max-h-[88vh] object-contain bg-white rounded-lg" />
+          <p className="text-xs text-white/60 mt-3">{ampliada.legenda}</p>
+        </div>
+      )}
     </div>
   )
 }

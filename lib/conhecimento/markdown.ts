@@ -107,7 +107,7 @@ export function dividirEmTrechos(doc: Documento): Trecho[] {
         }
         continue
       }
-      if (/^\*\*Tabela/.test(par)) tituloTabela = par.split('\n')[0]
+      if (/^\*\*(Tabela|Table)\b/.test(par)) tituloTabela = par.split('\n')[0]   // "**Tabela 9 – …**" (portarias), "**Table 1 – …**" (IEC)
       if (atual && (atual + '\n\n' + par).length > MAX_TRECHO) { add(atual); atual = '' }
       atual = atual ? atual + '\n\n' + par : par
     }

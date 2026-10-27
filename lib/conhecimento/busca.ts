@@ -159,6 +159,22 @@ const TRADUCOES: string[][] = [
   ['duracao', 'duration'],
   ['numero de descargas', 'number of discharges'],
   ['intervalo', 'interval', 'time between'],
+  ['figura', 'desenho', 'diagrama', 'figure'],
+  ['tabela', 'table'],
+  // nome do ensaio: nas IEC aparece em inglês
+  ['surto', 'surge'],
+  ['descarga eletrostatica', 'descargas eletrostaticas', 'electrostatic discharge'],
+  ['transientes eletricos rapidos', 'transiente rapido', 'electrical fast transient', 'fast transient'],
+  ['imunidade conduzida', 'rf conduzida', 'conducted disturbances', 'conducted immunity'],
+  ['imunidade radiada', 'rf irradiada', 'campo irradiado', 'radiated field', 'radiated immunity'],
+  // palavras soltas (as expressões acima não pegam "tensão de contato nível 3")
+  ['nivel', 'niveis', 'level', 'levels'],
+  ['tensao', 'voltage'],
+  ['contato', 'contact'],
+  ['corrente', 'current'],
+  ['frequencia', 'frequency'],
+  ['repeticao', 'repetition'],
+  ['pico', 'peak'],
 ]
 const EH_TRADUCAO = new Set(TRADUCOES)
 SINONIMOS_PADRAO.push(...TRADUCOES)
@@ -234,6 +250,7 @@ export function textoExibicao(md: string): string {
     .filter(l => !/^\s*\|?\s*:?-{3,}/.test(l))                       // separador de tabela
     .map(l => l.trim().startsWith('|') ? l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim()).filter(Boolean).join(' · ') : l)
     .join('\n')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')                        // figura: fica a legenda
     .replace(/\*\*([^*]+)\*\*/g, '$1').replace(/(^|\s)\*([^*\n]+)\*/g, '$1$2')
     .replace(/^#{1,6}\s+/gm, '').replace(/`([^`]+)`/g, '$1')
 }
@@ -275,6 +292,12 @@ export function pontuarBM25(indice: Indice, pergunta: string, limite = 50): { i:
   const N = indice.docs.length
   const k1 = 1.2, b = 0.5
   const frase = normalizar(pergunta).replace(/[^a-z0-9 -]/g, ' ').replace(/\s+/g, ' ').trim()
+  // expressões de mais de uma palavra acionadas pela pergunta ("test levels", "contact
+  // discharge"): o trecho que tem a expressão inteira vale mais do que o que só tem as palavras
+  const expressoes = termosAcionados(pergunta, indice.sinonimos).concat(
+    indice.sinonimos.filter(g => g.some(s => chave(pergunta).includes(chave(s)))).flat())
+    .map(s => normalizar(s)).filter(s => s.includes(' ') && s.length > 6)
+  const unicas = [...new Set(expressoes)]
   const out: { i: number; score: number }[] = []
   indice.docs.forEach((d, i) => {
     let score = 0, distintos = 0
@@ -289,6 +312,8 @@ export function pontuarBM25(indice: Indice, pergunta: string, limite = 50): { i:
     if (score <= 0) return
     score *= 1 + 0.15 * distintos
     if (frase.length > 6 && d.norm.includes(frase)) score *= 1.5
+    const comExpressao = unicas.filter(e => d.norm.includes(e)).length
+    if (comExpressao) score *= 1 + 0.3 * Math.min(comExpressao, 3)
     out.push({ i, score })
   })
   return out.sort((x, y) => y.score - x.score).slice(0, limite)

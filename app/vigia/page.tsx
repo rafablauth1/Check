@@ -2,12 +2,14 @@
 // VIGIA-7S — verificação de displays de 7 segmentos em tempo real (porte de vigia7s/app.py).
 import { useEffect, useState } from 'react'
 import './vigia.css'
-import { App } from '@/lib/vigia/app'
-import { useVar, messagebox } from '@/lib/vigia/tk'
+import { VigiaApp } from '@/lib/vigia/ensaio'
+import { useVar, messagebox, dialogo } from '@/lib/vigia/tk'
 import { Notebook, Dialogos } from './widgets'
 import AbaCalibracao from './AbaCalibracao'
 import AbaConfig from './AbaConfig'
 import AbaEmc from './AbaEmc'
+import AbaEnsaio from './AbaEnsaio'
+import JanelasEnsaio from './JanelasEnsaio'
 
 const ABAS = [
   '  Ensaio  ',
@@ -18,8 +20,8 @@ const ABAS = [
 ]
 
 export default function VigiaPage() {
-  const [app] = useState(() => new App())
-  if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') (window as unknown as { __vigia: App }).__vigia = app
+  const [app] = useState(() => new VigiaApp())
+  if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') Object.assign(window, { __vigia: app, __vigiaDialogo: dialogo })   // testes automáticos
   const carregado = useVar(app.carregado)
   const versaoCv = useVar(app.cvPronto)
   useEffect(() => {
@@ -44,7 +46,7 @@ export default function VigiaPage() {
         <div style={{ padding: 20 }}>Carregando…</div>
       ) : (
         <Notebook abas={ABAS} v={app.nb} style={{ flex: 1, minHeight: 0 }}>
-          <EmBreve texto="Ensaio" />
+          <AbaEnsaio app={app} />
           <AbaCalibracao app={app} />
           <AbaConfig app={app} />
           <AbaEmc app={app} />
@@ -52,6 +54,7 @@ export default function VigiaPage() {
         </Notebook>
       )}
       {carregado && !versaoCv && <div style={{ position: 'absolute', bottom: 10, left: 16, color: '#5f6368' }}>Carregando OpenCV…</div>}
+      {carregado && <JanelasEnsaio app={app} />}
       <Dialogos />
     </div>
   )

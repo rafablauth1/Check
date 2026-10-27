@@ -214,7 +214,7 @@ export function Dialogos() {
 export interface ColunaTabela { id: string; largura: number; anchor?: 'w' | 'center' | 'e' }
 
 /** ttk.Treeview (show="headings") + colunas_ajustaveis: larguras guardadas em layout[chave]. */
-export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoArrastar, aoDuploClique, aoMenu, cores, altura }: {
+export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoArrastar, aoDuploClique, aoMenu, cores, estilos, altura, verUltimo }: {
   colunas: ColunaTabela[]; linhas: { id: string; valores: ReactNode[]; tag?: string }[]
   layout: Record<string, unknown>; chave: string; sel: string[]; aoSelecionar: (ids: string[]) => void
   /** arrastar uma linha para outra posição (de, para) */
@@ -222,8 +222,14 @@ export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoAr
   aoDuploClique?: (id: string) => void
   aoMenu?: (id: string, x: number, y: number) => void
   cores?: Record<string, string>; altura?: number
+  /** tag_configure: estilo de cada tag (fundo, cor, negrito) */
+  estilos?: Record<string, CSSProperties>
+  /** muda a cada linha inserida: rola até a última (tree.see) */
+  verUltimo?: number
 }) {
   const [, forcar] = useState(0)
+  const caixa = useRef<HTMLDivElement>(null)
+  useEffect(() => { if (verUltimo !== undefined && caixa.current) caixa.current.scrollTop = caixa.current.scrollHeight }, [verUltimo])
   const salvas = (layout[chave] && typeof layout[chave] === 'object' ? layout[chave] : {}) as Record<string, number>
   const larg = (c: ColunaTabela) => Math.max(30, Number(salvas[c.id] ?? c.largura))
   const arrasto = useRef<{ de: string; para: string | null } | null>(null)
@@ -240,7 +246,7 @@ export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoAr
   }
   const total = colunas.reduce((a, c) => a + larg(c), 0)
   return (
-    <div className="vg-tree" style={{ height: altura }} onPointerUp={() => {
+    <div ref={caixa} className="vg-tree" style={{ height: altura }} onPointerUp={() => {
       const a = arrasto.current
       arrasto.current = null
       if (a && a.para && a.para !== a.de) aoArrastar?.(a.de, a.para)
@@ -258,6 +264,10 @@ export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoAr
               onPointerDown={e => {
                 if (e.button !== 0) return
                 if (e.ctrlKey) aoSelecionar(sel.includes(l.id) ? sel.filter(x => x !== l.id) : [...sel, l.id])
+                else if (e.shiftKey && sel.length) {
+                  const ids = linhas.map(x => x.id), a = ids.indexOf(sel[0]), b = ids.indexOf(l.id)
+                  aoSelecionar(ids.slice(Math.min(a, b), Math.max(a, b) + 1))
+                }
                 else aoSelecionar([l.id])
                 arrasto.current = aoArrastar ? { de: l.id, para: null } : null
               }}
@@ -265,7 +275,7 @@ export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoAr
               onDoubleClick={() => aoDuploClique?.(l.id)}
               onContextMenu={e => { if (aoMenu) { e.preventDefault(); if (!sel.includes(l.id)) aoSelecionar([l.id]); aoMenu(l.id, e.clientX, e.clientY) } }}>
               {l.valores.map((v, i) => (
-                <td key={i} style={{ textAlign: colunas[i].anchor === 'w' ? 'left' : colunas[i].anchor === 'e' ? 'right' : 'center', background: l.tag ? cores?.[l.tag] : undefined }}>{v}</td>
+                <td key={i} style={{ textAlign: colunas[i]?.anchor === 'w' ? 'left' : colunas[i]?.anchor === 'e' ? 'right' : 'center', background: l.tag ? cores?.[l.tag] : undefined, ...(l.tag ? estilos?.[l.tag] : undefined) }}>{v}</td>
               ))}
             </tr>
           ))}

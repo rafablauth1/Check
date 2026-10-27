@@ -55,3 +55,60 @@ export async function lerVigiaOriginal(pasta = ORIGEM_VIGIA_PADRAO) {
   ])
   return { pasta, config, perfis }
 }
+
+// ----------------------------------------------------------------------------- pasta do ensaio (resultados/)
+/** Caminho absoluto de um caminho relativo a resultados/ (recusa sair da pasta). */
+export function caminhoRel(rel: string): string {
+  const base = path.resolve(resultDir())
+  const p = path.resolve(base, rel || '.')
+  if (p !== base && !p.startsWith(base + path.sep)) throw new Error('Caminho fora de resultados')
+  return p
+}
+
+/** Grava (ou acrescenta) um arquivo. cabecalho: escrito antes quando o arquivo ainda não existe (CSV).
+ *  atomico: grava num .tmp e troca (nunca deixa o arquivo pela metade). */
+export async function escreverRel(rel: string, dados: Buffer, op: { acrescentar?: boolean; cabecalho?: Buffer; atomico?: boolean } = {}) {
+  const p = caminhoRel(rel)
+  await fs.mkdir(path.dirname(p), { recursive: true })
+  if (op.acrescentar) {
+    const existe = await fs.stat(p).then(() => true, () => false)
+    await fs.appendFile(p, existe || !op.cabecalho ? dados : Buffer.concat([op.cabecalho, dados]))
+  } else if (op.atomico) {
+    await fs.writeFile(p + '.tmp', dados)
+    await fs.rename(p + '.tmp', p)
+  } else {
+    await fs.writeFile(p, dados)
+  }
+  return p
+}
+
+export async function lerRel(rel: string): Promise<Buffer | null> {
+  try { return await fs.readFile(caminhoRel(rel)) } catch { return null }
+}
+
+export async function existeRel(rel: string) {
+  return fs.stat(caminhoRel(rel)).then(() => true, () => false)
+}
+
+/** _ensaios_incompletos(): pastas ensaio_* com estado_ensaio.json não concluído, mais recentes primeiro. */
+export async function ensaiosIncompletos(): Promise<{ pasta: string; rel: string; est: Record<string, unknown> }[]> {
+  const base = resultDir()
+  const nomes = await fs.readdir(base).catch(() => [] as string[])
+  const saida: { pasta: string; rel: string; est: Record<string, unknown> }[] = []
+  for (const nome of nomes.sort().reverse()) {
+    if (!nome.startsWith('ensaio_')) continue
+    const p = path.join(base, nome)
+    const est = await lerJson<Record<string, unknown>>(path.join(p, 'estado_ensaio.json'))
+    if (est && !est.concluido) saida.push({ pasta: p, rel: nome, est })
+  }
+  return saida
+}
+
+/** os.startfile(pasta) */
+export async function abrirPasta(rel: string) {
+  const p = caminhoRel(rel)
+  await fs.mkdir(p, { recursive: true })
+  const { spawn } = await import('child_process')
+  spawn('explorer.exe', [p], { detached: true, stdio: 'ignore' }).unref()
+  return p
+}

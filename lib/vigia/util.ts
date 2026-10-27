@@ -69,3 +69,29 @@ export function falaFreq(mhz: number | null | undefined): string {
   if (!mhz) return ''
   return mhz >= 1000 ? `${falaNum(mhz / 1000, 3)} gigahertz` : `${falaNum(mhz, 1)} megahertz`
 }
+
+/** datetime.strftime com %d %m %Y %H %M %S */
+export function strftime(d: Date, fmt: string): string {
+  const p2 = (x: number) => String(x).padStart(2, '0')
+  return fmt.replace(/%([dmYHMS])/g, (_, k: string) => ({
+    d: p2(d.getDate()), m: p2(d.getMonth() + 1), Y: String(d.getFullYear()), H: p2(d.getHours()), M: p2(d.getMinutes()), S: p2(d.getSeconds()),
+  } as Record<string, string>)[k])
+}
+
+/** f"{v:+.{casas}f}" com vírgula (ex.: "+0,12") */
+export const sinalBr = (v: number, casas = 2) => { const s = fixo(v, casas); return (s.startsWith('-') ? s : '+' + s).replace('.', ',') }
+
+/** str() do Python para um valor de célula do CSV */
+function strPy(v: unknown): string {
+  if (v === null || v === undefined) return ''
+  if (typeof v === 'boolean') return v ? 'True' : 'False'
+  return String(v)
+}
+
+/** uma linha do csv.writer(delimiter=";") do Python (QUOTE_MINIMAL, fim de linha \r\n) */
+export function csvLinha(vals: unknown[]): string {
+  return vals.map(v => {
+    const s = strPy(v)
+    return /[;"\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s
+  }).join(';') + '\r\n'
+}

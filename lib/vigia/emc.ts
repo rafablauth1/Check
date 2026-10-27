@@ -110,7 +110,7 @@ export class Cronograma {
   segmentos: Segmento[]
   idx = 0
   estado: EstadoCron = 'parado'
-  private t0: number | null = null
+  t0: number | null = null   // o _status_emc do VIGIA lê cron._t0
   private pausaIni: number | null = null
   private tRetomar = 0.0
 

@@ -119,3 +119,16 @@
 .vg-tree td { height: 22px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: default; }
 .vg-tree tr.sel td { background: #0078d7 !important; color: #fff; }
 .vg-text { font-family: Consolas, monospace; font-size: 12px; background: #fff; border: 1px solid #828790; white-space: pre; overflow: auto; padding: 1px 2px; user-select: text; }
+
+/* tk.Menu (menu de contexto) */
+.vg-menu { position: fixed; z-index: 900; background: #f2f2f2; border: 1px solid #ccc; box-shadow: 2px 2px 4px rgba(0,0,0,.25); padding: 2px 0; min-width: 240px; }
+.vg-menu-item { padding: 3px 24px 3px 28px; white-space: nowrap; cursor: default; }
+.vg-menu-item:hover { background: #91c9f7; }
+.vg-menu-sep { height: 1px; background: #d7d7d7; margin: 3px 2px; }
+
+/* janelas (Toplevel) */
+.vg-jan { background: var(--vg-fundo); border: 1px solid #888; box-shadow: 0 6px 24px rgba(0,0,0,.35); max-height: calc(100vh - 40px); display: flex; flex-direction: column; }
+.vg-jan > .tit { height: 30px; display: flex; align-items: center; padding: 0 10px; background: #fff; border-bottom: 1px solid #e5e5e5; flex: none; }
+.vg-jan > .corpo { padding: 12px; overflow: auto; }
+.vg-textarea { border: 1px solid var(--vg-borda-campo); background: #fff; font: 12px 'Segoe UI'; padding: 2px 3px; resize: vertical; outline: none; }
+.vg-textarea:focus { border-color: var(--vg-azul); }

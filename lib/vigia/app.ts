@@ -68,8 +68,11 @@ class Processador {
         return
       }
       if (m.tipo === 'resultado') {
+        const pedido = this.pedidos.get(m.id)
+        if (pedido) { this.pedidos.delete(m.id); pedido(m); return }
         if (m.id < 0) this.emVoo--
         else { this.ocupado = false; this.aoResultado?.(m) }
+        this.ultimoT = performance.now() / 1000
         if (m.bgr) this.aoBgr?.(m.bgr, m.t)
       }
     }
@@ -83,6 +86,20 @@ class Processador {
     const dados = img.data.buffer as ArrayBuffer
     this.enviar({ tipo: 'quadro', id: ++this.id, t, largura: img.width, altura: img.height, dados, campos, recortesDe, devolverQuadro: true, devolverBgr: bgr }, [dados])
   }
+  private pedidos = new Map<number, (r: Extract<RespostaWorker, { tipo: 'resultado' }>) => void>()
+  /** instante (relógio local) do último quadro tratado */
+  ultimoT = -Infinity
+
+  /** camera.obter() + ler_campo: lê os campos no último quadro tratado; null se não há quadro (ou é velho, > 2 s) */
+  lerUltimo(campos: CampoDisplay[], devolverQuadro = true): Promise<Extract<RespostaWorker, { tipo: 'resultado' }> | null> {
+    if (performance.now() / 1000 - this.ultimoT > 2.0) return Promise.resolve(null)   // MAX_IDADE_QUADRO
+    const id = ++this.id
+    return new Promise(r => {
+      this.pedidos.set(id, m => r(m.t < 0 ? null : m))
+      this.enviar({ tipo: 'ler_ultimo', id, campos, devolverQuadro })
+    })
+  }
+
   /** só trata o quadro e devolve em BGR (amostrador) */
   tratar(img: ImageData, t: number) {
     this.emVoo++
@@ -253,9 +270,9 @@ export class App {
   canvasCal: HTMLCanvasElement | null = null
   canvasEnsaio: HTMLCanvasElement | null = null
   ult_res_live: Record<string, ResultadoCampo> = {}
-  ult_quadro: ImageData | null = null
-  private quadroCanvas: OffscreenCanvas | null = null
-  private _tick_n = 0
+  ult_img: ImageData | null = null
+  protected quadroCanvas: OffscreenCanvas | null = null
+  protected _tick_n = 0
   private _timer: ReturnType<typeof setInterval> | null = null
   private _ultLeitura = 0
   private _salvarCfgTimer: ReturnType<typeof setTimeout> | null = null
@@ -514,7 +531,7 @@ export class App {
   }
 
   async _salvar_foto() {
-    const f = this.ult_quadro
+    const f = this.ult_img
     if (!f) return
     const c = document.createElement('canvas')
     c.width = f.width; c.height = f.height
@@ -1226,7 +1243,7 @@ export class App {
   // ------------------------------------------------------------------ quadros
   /** Cada quadro novo da câmera: entra na média temporal; a cada 40 ms um deles é lido e mostrado;
    *  com o amostrador ligado, todos vão (tratados) para o pool de leitura. */
-  private _quadro_camera(t: number) {
+  protected _quadro_camera(t: number) {
     const p = this.proc
     if (!p?.pronto.get()) return
     const aba = this.nb.get()
@@ -1246,11 +1263,11 @@ export class App {
     }
   }
 
-  private _resultado(m: Extract<RespostaWorker, { tipo: 'resultado' }>) {
+  protected _resultado(m: Extract<RespostaWorker, { tipo: 'resultado' }>) {
     this.ult_res_live = m.resultados
     if (!m.quadro) return
     const img = new ImageData(new Uint8ClampedArray(m.quadro.dados), m.quadro.largura, m.quadro.altura)
-    this.ult_quadro = img
+    this.ult_img = img
     const aba = this.nb.get()
     if (aba !== 0 && aba !== 1) return
     if (!this.quadroCanvas || this.quadroCanvas.width !== img.width || this.quadroCanvas.height !== img.height) {
@@ -1275,13 +1292,23 @@ export class App {
   }
 
   // ------------------------------------------------------------------ tick (a cada 40 ms)
+  /** etapas do _tick que dependem do ensaio (aba Ensaio, ver lib/vigia/ensaio.ts) */
+  protected _tick_ensaio_inicio() { /* cronograma EMC */ }
+  protected _tick_ensaio_meio() { /* leitura programada / resultados */ }
+  protected _tick_ensaio_fim() { /* parada automática, estado salvo, painel */ }
+  protected _amostra(t: number, valor: number | null) {
+    if (this.medicao !== null) this._medicao_passo(t, valor)
+  }
+
   tick() {
     this._tick_n++
     const aba = this.nb.get()
-    // medição do ciclo (o amostrador entrega o valor do campo de litros em cada quadro + instante de captura)
+    this._tick_ensaio_inicio()   // cronograma EMC
+    // medição do ciclo / ressincronização pela saída do valor congelado
+    // (o amostrador entrega o valor do campo de litros em cada quadro + instante de captura)
     while (this._amostras.length) {
       const [t, valor] = this._amostras.shift()!
-      if (this.medicao !== null) this._medicao_passo(t, valor)
+      this._amostra(t, valor)
     }
     if (this.medicao !== null && this._tick_n % 5 === 0) this._atualizar_lbl_medicao()
     if (this._tick_n % 25 === 0) {
@@ -1294,13 +1321,10 @@ export class App {
         foreground: COR_NEUTRO,
       })
     }
-    // imagem parada (arquivo): não há quadros novos, lê no tick
-    const p = this.proc
-    if (this.camera.imagem && p?.pronto.get() && (aba === 0 || aba === 1) && !p.ocupado) {
-      const img = this.camera.capturar()
-      if (img) p.ler(img, performance.now() / 1000, this.campos, aba === 1 ? this.campo_sel : null)
-    }
-    const temQuadro = this.camera.ativa && !!this.ult_quadro
+    this._tick_ensaio_meio()    // leitura programada e resultados das leituras
+    // imagem parada (arquivo): não há quadros novos, trata no tick
+    if (this.camera.imagem) this._quadro_camera(performance.now() / 1000)
+    const temQuadro = this.camera.ativa && !!this.ult_img
     if (temQuadro && aba === 1 && this._tick_n % 5 === 0) {
       this.lbl_persp.set({ text: this.persp_pts.length ? 'perspectiva: ativa' : '', foreground: COR_NEUTRO })
       const modo_dig = this.v_modo.get() === 'digitos'
@@ -1331,6 +1355,7 @@ export class App {
     if (!this.camera.ativa && this._tick_n % 25 === 0) {
       this.lbl_cam.set({ text: this.camera.erro || 'Sem imagem da câmera', foreground: COR_FALHA })
     }
+    this._tick_ensaio_fim()
   }
 }
 

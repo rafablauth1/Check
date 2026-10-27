@@ -136,11 +136,12 @@ export class CameraWeb {
   private observarQuadros() {
     const v = this.video
     if (!v) return
-    const passo: VideoFrameRequestCallback = (agora) => {
+    const passo: VideoFrameRequestCallback = (agora, meta) => {
       if (this.video !== v) return
       // taxa real de quadros (o driver pode entregar menos que o pedido, ex.: pouca luz)
       this.nFps++
-      const t = agora / 1000
+      // instante de captura do quadro (câmera) ou de exibição (vídeo), no relógio do performance.now()
+      const t = (meta.captureTime ?? meta.expectedDisplayTime ?? agora) / 1000
       if (t - this.tFps >= 2.0) {
         if (this.tFps) this.fpsReal = this.nFps / (t - this.tFps)
         this.tFps = t; this.nFps = 0

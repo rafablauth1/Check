@@ -6,11 +6,13 @@ import {
   type CampoDisplay, type ResultadoCampo,
 } from '@/lib/vigia/seg7'
 import { CFG_PADRAO, FILTROS_PADRAO, carregarConfig, type ConfigVigia, type ConfigCamera } from '@/lib/vigia/config'
-import type { Segmento } from '@/lib/vigia/emc'
+import { frequencias, fmtTempo, type Segmento } from '@/lib/vigia/emc'
+import { DetectorCiclo, resumirCiclos, desvioPadrao, type Ciclo } from '@/lib/vigia/ciclo'
+import { Alarme, Voz } from '@/lib/vigia/alarme'
 import { CameraWeb, listarCameras, resolverFonte } from '@/lib/vigia/camera-web'
 import { ordenarCantos } from '@/lib/vigia/camera-proc'
 import { desenharCampos, desenharPerspectiva, imagemDebug, Visor } from '@/lib/vigia/desenho'
-import { br, num, pyRoundN } from '@/lib/vigia/util'
+import { br, num, pyRoundN, fixo, offsetInteiro, cicloComOffset } from '@/lib/vigia/util'
 import { Var, rotulo, messagebox, simpledialog, fmtG } from '@/lib/vigia/tk'
 import type { PedidoWorker, RespostaWorker } from '@/lib/vigia/vigia.worker'
 
@@ -39,14 +41,18 @@ const FLOATS = new Set(['largura_digito', 'inclinacao', 'espessura', 'limiar_seg
 
 export type ChaveFiltro = 'media_n' | 'mediana' | 'desfoque' | 'contraste' | 'brilho' | 'nitidez'
 
-/** Fala com o worker do OpenCV (um pedido de leitura por vez; quadros só p/ a média vão no meio). */
+type QuadroBgr = { largura: number; altura: number; dados: ArrayBuffer }
+
+/** Fala com o worker do OpenCV que trata os quadros (média temporal, perspectiva, zoom, filtros) e lê para a tela. */
 class Processador {
   worker: Worker
+  ocupado = false     // leitura para a tela em andamento (uma por vez)
+  emVoo = 0           // quadros do amostrador em processamento
   erro = new Var('')
-  ocupado = false
-  pendentes = 0
   private id = 0
   aoResultado: ((r: Extract<RespostaWorker, { tipo: 'resultado' }>) => void) | null = null
+  /** quadro tratado (BGR) para o amostrador */
+  aoBgr: ((bgr: QuadroBgr, t: number) => void) | null = null
 
   /** pronto: versão do OpenCV quando carregado */
   constructor(public pronto: Var<string | null>) {
@@ -54,21 +60,85 @@ class Processador {
     this.worker.onmessage = (ev: MessageEvent<RespostaWorker>) => {
       const m = ev.data
       if (m.tipo === 'pronto') { this.pronto.set(m.versao); return }
-      if (m.tipo === 'erro') { this.erro.set(m.msg); if (m.id !== undefined) { this.ocupado = false; this.pendentes-- } return }
-      if (m.tipo === 'resultado') { this.ocupado = false; this.pendentes--; this.aoResultado?.(m) }
+      if (m.tipo === 'erro') {
+        this.erro.set(m.msg)
+        if (m.id !== undefined) { if (m.id < 0) this.emVoo--; else this.ocupado = false }
+        return
+      }
+      if (m.tipo === 'resultado') {
+        if (m.id < 0) this.emVoo--
+        else { this.ocupado = false; this.aoResultado?.(m) }
+        if (m.bgr) this.aoBgr?.(m.bgr, m.t)
+      }
     }
     this.worker.onerror = e => this.erro.set(e.message || 'Falha ao carregar o OpenCV')
     this.enviar({ tipo: 'iniciar' })
   }
   enviar(m: PedidoWorker, transf: Transferable[] = []) { this.worker.postMessage(m, transf) }
-  ler(img: ImageData, t: number, campos: CampoDisplay[], recortesDe: number | null) {
-    this.ocupado = true; this.pendentes++
-    this.enviar({ tipo: 'quadro', id: ++this.id, t, largura: img.width, altura: img.height, dados: img.data.buffer as ArrayBuffer, campos, recortesDe, devolverQuadro: true }, [img.data.buffer as ArrayBuffer])
+  /** leitura para a tela (com o quadro de volta); bgr: devolve também o quadro tratado ao amostrador */
+  ler(img: ImageData, t: number, campos: CampoDisplay[], recortesDe: number | null, bgr = false) {
+    this.ocupado = true
+    const dados = img.data.buffer as ArrayBuffer
+    this.enviar({ tipo: 'quadro', id: ++this.id, t, largura: img.width, altura: img.height, dados, campos, recortesDe, devolverQuadro: true, devolverBgr: bgr }, [dados])
+  }
+  /** só trata o quadro e devolve em BGR (amostrador) */
+  tratar(img: ImageData, t: number) {
+    this.emVoo++
+    const dados = img.data.buffer as ArrayBuffer
+    this.enviar({ tipo: 'quadro', id: -1, t, largura: img.width, altura: img.height, dados, campos: [], devolverBgr: true }, [dados])
   }
   acumular(img: ImageData, t: number) {
-    this.enviar({ tipo: 'quadro', id: -1, t, largura: img.width, altura: img.height, dados: img.data.buffer as ArrayBuffer, campos: [], soAcumular: true }, [img.data.buffer as ArrayBuffer])
+    const dados = img.data.buffer as ArrayBuffer
+    this.enviar({ tipo: 'quadro', id: -1, t, largura: img.width, altura: img.height, dados, campos: [], soAcumular: true }, [dados])
   }
   fechar() { this.worker.terminate() }
+}
+
+/** _iniciar_amostrador(): lê o campo de volume em CADA quadro novo, com o instante de captura do quadro.
+ *  O opencv.js é ~4× mais lento que o OpenCV nativo, então a leitura é repartida entre vários workers;
+ *  as amostras saem na ordem dos quadros. Sem worker livre, o quadro é pulado (o Python também pula
+ *  quadros quando a leitura demora mais que o intervalo entre eles). */
+class Amostrador {
+  private pool: { w: Worker; livre: boolean }[] = []
+  private seq = 0
+  private prox = 0
+  private prontos = new Map<number, [number, number | null]>()
+  aoAmostra: ((t: number, valor: number | null) => void) | null = null
+
+  constructor(n: number) {
+    for (let i = 0; i < n; i++) {
+      const w = new Worker(new URL('./vigia.worker.ts', import.meta.url))
+      const item = { w, livre: false }
+      w.onmessage = (ev: MessageEvent<RespostaWorker>) => {
+        const m = ev.data
+        if (m.tipo === 'pronto') { item.livre = true; return }
+        if (m.tipo === 'lido') { item.livre = true; this.chegou(m.seq, m.t, Object.values(m.valores)[0] ?? null); return }
+        if (m.tipo === 'erro' && m.id !== undefined) { item.livre = true; this.chegou(m.id, NaN, null) }
+      }
+      w.postMessage({ tipo: 'iniciar' } satisfies PedidoWorker)
+      this.pool.push(item)
+    }
+  }
+
+  /** false = nenhum worker livre (quadro pulado) */
+  ler(bgr: QuadroBgr, t: number, campo: CampoDisplay): boolean {
+    const item = this.pool.find(p => p.livre)
+    if (!item) return false
+    item.livre = false
+    item.w.postMessage({ tipo: 'ler', seq: this.seq++, t, largura: bgr.largura, altura: bgr.altura, dados: bgr.dados, campos: [campo] } satisfies PedidoWorker, [bgr.dados])
+    return true
+  }
+
+  private chegou(seq: number, t: number, valor: number | null) {
+    this.prontos.set(seq, [t, valor])
+    while (this.prontos.has(this.prox)) {
+      const [tt, v] = this.prontos.get(this.prox)!
+      this.prontos.delete(this.prox++)
+      if (!Number.isNaN(tt)) this.aoAmostra?.(tt, v)
+    }
+  }
+
+  fechar() { this.pool.forEach(p => p.w.terminate()); this.pool = [] }
 }
 
 export class App {
@@ -83,6 +153,52 @@ export class App {
 
   camera = new CameraWeb()
   proc: Processador | null = null
+  amostrador: Amostrador | null = null
+  _amostras: [number, number | null][] = []
+  alarme = new Alarme()
+  voz = new Voz()   // frases faladas (avisos por voz)
+  campos_ensaio: CampoDisplay[] = []
+  medicao: Medicao | null = null       // medição do ciclo da bomba em andamento
+  ciclo_medido: CicloMedido | null = null
+  /** nomes dos campos (combos de consistência e totalizador) */
+  nomesCampos = new Var<string[]>([])
+  versaoLayout = new Var(0)
+
+  // --- aba Tempo, validação e alarme
+  v_ens: Record<string, Var<string>> = {}
+  v_modo_leit = new Var<'congelado' | 'tempo'>('congelado')
+  v_med_n = new Var('10')
+  v_med_ref = new Var('auto')
+  bt_medir = new Var('▶ Medir ciclo')
+  bt_med_aplicar = new Var(false)   // habilitado?
+  bt_dwell = new Var(false)
+  lbl_med_media = rotulo('Tempo médio do ciclo: —', '#1a73e8')
+  lbl_ciclo_off = rotulo('', '#1a73e8')
+  lbl_med = rotulo("Com a bomba ciclando e o campo Litros calibrado, digite o valor congelado (ex.: 4) e clique em 'Medir ciclo'. O 1º ciclo é sempre descartado.")
+  v_disparo = new Var(true)
+  v_parar_n = new Var(true)
+  v_pausa_aguard = new Var(false)
+  v_confirmar = new Var(true)
+  v_confirmar_s = new Var('3')
+  v_cons_on = new Var(false)
+  v_cons_vol = new Var('')
+  v_cons_pre = new Var('')
+  v_cons_tot = new Var('')
+  v_cons_tol = new Var('')
+  v_al_on = new Var(true)
+  v_al_freq = new Var('2500')
+  v_al_dur = new Var('400')
+  v_al_cont = new Var(true)
+  v_al_seg = new Var(true)
+  v_al_modo = new Var('bipe e voz')
+  v_al_falta = new Var('3')
+  v_al_trav = new Var('30')
+  v_tot_campo = new Var('')
+  v_tot_tol = new Var('')
+  v_tot_ini = new Var(true)
+  v_tot_fim = new Var(true)
+  v_img_falha = new Var(true)
+  v_img_todas = new Var(false)
   cvPronto = new Var<string | null>(null)
   estado: 'parado' | 'rodando' | 'pausado' = 'parado'
 
@@ -165,8 +281,10 @@ export class App {
     this.campos = this.cfg.campos.map(c => campoDe(c))
     if (!(this.cfg.perfil in this.perfis) && Object.keys(this.perfis).length) this.cfg.perfil = Object.keys(this.perfis)[0]
     this._montar_calibracao()
+    this._montar_config()
     this.proc = new Processador(this.cvPronto)
     this.proc.aoResultado = m => this._resultado(m)
+    this.proc.aoBgr = (bgr, t) => this._amostrar(bgr, t)
     this.camera.aoQuadro = t => this._quadro_camera(t)
     this.carregado.set(true)
     void this.conectar_camera()
@@ -179,6 +297,10 @@ export class App {
     this.camera.fechar()
     this.proc?.fechar()
     this.proc = null
+    this.amostrador?.fechar()
+    this.amostrador = null
+    this.alarme.parar()
+    this.voz.fechar()
     // só grava o que foi carregado (nunca a config padrão por cima da salva)
     if (this.carregado.get()) void this.salvar_cfg()
     this.carregado.set(false)
@@ -190,7 +312,42 @@ export class App {
   }
 
   // ------------------------------------------------------------------ config
-  _ler_form_ensaio() { /* aba "Tempo, validação e alarme" (próxima etapa) */ }
+  _ler_form_ensaio() {
+    if (!Object.keys(this.v_ens).length) return
+    const e = this.cfg.ensaio as unknown as Record<string, unknown>
+    for (const [k, v] of Object.entries(this.v_ens)) {
+      const x = num(v.get(), e[k] as number)!
+      e[k] = ['n_abastecimentos', 'quadros', 'parar_erros_n'].includes(k) ? Math.trunc(x) : x
+    }
+    const en = this.cfg.ensaio
+    en.modo_leitura = this.v_modo_leit.get()
+    en.ciclo_ref = this.v_med_ref.get().trim() || 'auto'
+    en.disparo_saida = this.v_disparo.get()
+    en.congelado_s = Math.max(0.3, en.congelado_s)
+    en.intervalo_s = Math.max(2.0, en.intervalo_s)
+    en.quadros = Math.max(1, en.quadros)
+    en.n_abastecimentos = Math.max(1, en.n_abastecimentos)
+    en.parar_ao_atingir = this.v_parar_n.get()
+    en.pausar_leituras_aguardando = this.v_pausa_aguard.get()
+    en.confirmar_falha = this.v_confirmar.get()
+    en.confirmar_apos_s = Math.max(0.0, num(this.v_confirmar_s.get(), 3.0)!)
+    Object.assign(this.cfg.consistencia, {
+      ativo: this.v_cons_on.get(), volume: this.v_cons_vol.get(), preco: this.v_cons_pre.get(), total: this.v_cons_tot.get(),
+      tol: num(this.v_cons_tol.get(), 0.01),
+    })
+    Object.assign(this.cfg.alarme, {
+      ativo: this.v_al_on.get(), freq_hz: Math.trunc(num(this.v_al_freq.get(), 2500)!), dur_ms: Math.trunc(num(this.v_al_dur.get(), 400)!),
+      continuo: this.v_al_cont.get(), aviso_segmento: this.v_al_seg.get(),
+      modo_aviso: this.v_al_modo.get() || 'bipe e voz', avisar_faltando: Math.max(0, Math.trunc(num(this.v_al_falta.get(), 3)!)),
+      travado_aviso_s: Math.max(0.0, num(this.v_al_trav.get(), 30.0)!),
+    })
+    Object.assign(this.cfg.imagens, { salvar_falhas: this.v_img_falha.get(), salvar_todas: this.v_img_todas.get() })
+    Object.assign(this.cfg.totalizador, {
+      campo: this.v_tot_campo.get(), tol: Math.max(0.0, num(this.v_tot_tol.get(), 0.05)!),
+      pedir_inicial: this.v_tot_ini.get(), pedir_final: this.v_tot_fim.get(),
+    })
+    this._cfg_cam_form()
+  }
 
   async salvar_cfg() {
     this._ler_form_ensaio()
@@ -432,7 +589,7 @@ export class App {
   }
 
   _configurar_colunas() { /* tabela da aba Ensaio (próxima etapa) */ }
-  _atualizar_combos_consistencia() { /* aba Tempo, validação e alarme (próxima etapa) */ }
+  _atualizar_combos_consistencia() { this.nomesCampos.set(this.campos.map(c => c.nome)) }
 
   async _add_campo() {
     if (this.estado !== 'parado') { await messagebox.showwarning('Campos', 'Pare o ensaio para alterar os campos.'); return }
@@ -600,18 +757,283 @@ export class App {
     }
   }
 
+  // ================================================================== ABA CONFIG
+  _montar_config() {
+    const e = this.cfg.ensaio as unknown as Record<string, number | string | boolean>
+    this.v_ens = {}
+    this.v_modo_leit.set(this.cfg.ensaio.modo_leitura)
+    for (const k of ['congelado_s', 'intervalo_min_s', 'travado_s']) this.v_ens[k] = new Var(fmtG(Number(e[k])))
+    this.v_med_n.set('10')
+    this.v_med_ref.set(String(e.ciclo_ref ?? 'auto'))
+    this.v_ens.ciclo_offset_s = new Var(br(Number(e.ciclo_offset_s ?? 0.0), 3))
+    this.v_ens.ciclo_offset_s.trace(() => this._mostrar_offset())
+    for (const k of ['intervalo_s', 'n_abastecimentos', 'quadros', 'janela_s', 'concordancia', 'limite_erro_pct', 'erro_grave_pct', 'parar_erros_n', 'parar_erro_pct']) {
+      this.v_ens[k] = new Var(fmtG(Number(e[k])))
+    }
+    this.v_disparo.set(e.disparo_saida !== false)
+    this.v_parar_n.set(!!e.parar_ao_atingir)
+    this.v_pausa_aguard.set(!!e.pausar_leituras_aguardando)
+    this.v_confirmar.set(!!e.confirmar_falha)
+    this.v_confirmar_s.set(fmtG(Number(e.confirmar_apos_s)))
+    const cs = this.cfg.consistencia
+    this.v_cons_on.set(!!cs.ativo)
+    this.v_cons_vol.set(cs.volume); this.v_cons_pre.set(cs.preco); this.v_cons_tot.set(cs.total)
+    this.v_cons_tol.set(fmtG(Number(cs.tol)))
+    const a = this.cfg.alarme
+    this.v_al_on.set(!!a.ativo)
+    this.v_al_freq.set(String(a.freq_hz)); this.v_al_dur.set(String(a.dur_ms))
+    this.v_al_cont.set(!!a.continuo); this.v_al_seg.set(!!a.aviso_segmento)
+    this.v_al_modo.set(a.modo_aviso ?? 'bipe e voz')
+    this.v_al_falta.set(String(a.avisar_faltando ?? 3))
+    this.v_al_trav.set(fmtG(Number(a.travado_aviso_s ?? 30.0)))
+    const tz = this.cfg.totalizador
+    this.v_tot_campo.set(tz.campo); this.v_tot_tol.set(fmtG(Number(tz.tol)))
+    this.v_tot_ini.set(!!tz.pedir_inicial); this.v_tot_fim.set(!!tz.pedir_final)
+    const im = this.cfg.imagens
+    this.v_img_falha.set(!!im.salvar_falhas); this.v_img_todas.set(!!im.salvar_todas)
+    this._atualizar_combos_consistencia()
+    this._mostrar_offset()
+  }
+
+  _testar_alarme() {
+    this._ler_form_ensaio()
+    const a = this.cfg.alarme
+    this.alarme.disparar(a.freq_hz, a.dur_ms, false)
+  }
+
+  _testar_voz() {
+    const ok = this.voz.falar('Teste de voz do VIGIA. Atenção: erro elevado, 1,3 por cento, em 1,074 gigahertz.')
+    setTimeout(() => {
+      if (!ok || !this.voz.nome_voz) {
+        void messagebox.showwarning('Voz', 'A voz do Windows não respondeu neste PC (sem voz instalada ou PowerShell bloqueado). Use os avisos por bipe.')
+      } else if (!this.voz.nome_voz.includes('pt-BR')) {
+        void messagebox.showinfo('Voz', `Voz em uso: ${this.voz.nome_voz}. Não há voz em português instalada; instale 'Português (Brasil)' em Configurações > Hora e idioma > Fala.`)
+      }
+    }, 6000)
+  }
+
+  /** Volta divisórias e larguras de colunas de todas as telas ao padrão, na hora. */
+  async _restaurar_layout() {
+    if (!await messagebox.askyesno('Tamanhos das áreas', 'Voltar as divisórias e as larguras das colunas de todas as telas ao padrão?')) return
+    for (const k of Object.keys(this.layout)) delete this.layout[k]   // só um novo arraste grava de novo
+    this.versaoLayout.set(this.versaoLayout.get() + 1)
+    await this.salvar_cfg()
+  }
+
+  // ------------------------------------------------------------------ medição do ciclo
+  _estavel_s() { return Math.max(0.3, Math.min(1.0, Number(this.cfg.ensaio.congelado_s))) }
+
+  /** Campo cujo valor (litros) é somado no totalizador.
+   *  Se o configurado não existir, usa um campo com "litro" no nome ou, havendo um só campo, ele mesmo. */
+  _campo_volume(campos?: CampoDisplay[]): string {
+    const nomes = (campos ?? this.campos).map(c => c.nome)
+    const cfg = this.cfg.totalizador.campo
+    if (nomes.includes(cfg)) return cfg
+    return nomes.find(n => n.toLowerCase().includes('litro')) ?? (nomes.length === 1 ? nomes[0] : cfg)
+  }
+
+  _campo_vol_obj(): CampoDisplay | null {
+    const campos = this.estado !== 'parado' && this.campos_ensaio.length ? this.campos_ensaio : this.campos
+    const nome = this._campo_volume(campos)
+    return campos.find(c => c.nome === nome) ?? campos[0] ?? null
+  }
+
+  /** o amostrador roda durante a medição de ciclo e durante todo o ensaio */
+  get amostrando() { return this.medicao !== null || this.estado !== 'parado' }
+
+  _iniciar_amostrador() {
+    if (this.amostrador) return
+    const n = Math.min(6, Math.max(2, (navigator.hardwareConcurrency || 4) - 2))
+    this.amostrador = new Amostrador(n)
+    this.amostrador.aoAmostra = (t, v) => { if (this.amostrando) this._amostras.push([t, v]) }
+  }
+
+  private _amostrar(bgr: QuadroBgr, t: number) {
+    const campo = this._campo_vol_obj()
+    if (!this.amostrando || !this.amostrador || !campo) return
+    this.amostrador.ler(bgr, t, campo)
+  }
+
+  async medir_ciclo() {
+    if (this.medicao !== null) { await this._fim_medicao('Medição cancelada.', COR_NEUTRO); return }   // botão vira "Cancelar"
+    const campo = this._campo_vol_obj()
+    if (!campo) { await messagebox.showinfo('Ciclo', 'Calibre o campo de litros do display antes de medir o ciclo.'); return }
+    this._ler_form_ensaio()
+    const ref_txt = this.cfg.ensaio.ciclo_ref
+    const ref = ref_txt.toLowerCase() === 'auto' ? null : num(ref_txt, null)
+    const n = Math.max(1, Math.trunc(num(this.v_med_n.get(), 3)!))
+    const log = `medicao_ciclo_${carimbo()}.csv`
+    this.medicao = {
+      det: new DetectorCiclo(ref, campo.decimais, this._estavel_s()), n, saidas: [], congs: [], t0: performance.now() / 1000,
+      log, linhas: [], campo: campo.nome, ult_valor: null,
+    }
+    this.bt_medir.set('■ Cancelar')
+    this.bt_med_aplicar.set(false)
+    this.bt_dwell.set(false)
+    this.lbl_med_media.set({ text: 'Tempo médio do ciclo: medindo…', foreground: COR_AVISO })
+    this.lbl_med.set({ text: `Medindo pelo campo '${campo.nome}'…`, foreground: COR_AVISO })
+    this._iniciar_amostrador()
+  }
+
+  async _fim_medicao(texto: string, cor: string) {
+    const m = this.medicao
+    this.medicao = null
+    this.bt_medir.set('▶ Medir ciclo')
+    if (m && m.linhas.length) {
+      const csv = [['t (s)', `valor lido (${m.campo})`, 'estado', 'evento'], ...m.linhas].map(l => l.join(';')).join('\r\n') + '\r\n'
+      if (await salvarTexto(m.log, '﻿' + csv)) texto += `\nLog quadro a quadro: ${m.log} (pasta resultados)`
+    }
+    this.lbl_med.set({ text: texto, foreground: cor })
+  }
+
+  _medicao_passo(t: number, valor: number | null) {
+    const m = this.medicao!
+    const det = m.det
+    const ev = det.passo(t, valor)
+    let evento = ''
+    if (ev) {
+      const [tipo, x] = ev
+      if (tipo === 'ref') evento = `referência = ${fmtG(x)}`
+      else if (tipo === 'saida') { m.saidas.push(x); evento = `SAÍDA (${m.saidas.length}) em t=${fixo(x - m.t0, 3)}` }
+      else if (tipo === 'chegada') { if (m.saidas.length) m.congs.push(x); evento = `chegou na referência em t=${fixo(x - m.t0, 3)}` }
+    }
+    m.ult_valor = valor
+    m.linhas.push([fixo(t - m.t0, 3).replace('.', ','), valor === null ? '' : fmtG(valor).replace('.', ','), det.estado, evento])
+    const s = m.saidas
+    if (s.length >= m.n + 2) {  // n ciclos válidos + o 1º, que é sempre descartado
+      const [ciclos, per, ench, cong] = resumirCiclos(s.slice(1), m.congs)
+      const pers = ciclos.map(c => c.periodo)
+      const dp = pers.length > 1 ? desvioPadrao(pers) : 0.0
+      this.ciclo_medido = {
+        periodo: per[0]!, enchendo: ench[0], congelado: cong[0], ref: det.ref, decimais: this._campo_vol_obj()!.decimais,
+        ultima_saida: s[s.length - 1], ciclos, desvio: dp,
+      }
+      const detalhes = pers.map(p => br(p, 3)).join(' ')
+      const txt = `Referência ${br(det.ref!, 3)} | ${pers.length} ciclos válidos (1º descartado: ${br(s[1] - s[0], 3)} s)\n`
+        + `Média ${br(per[0]!, 3)} s | desvio-padrão ${br(dp, 3)} s | mín ${br(Math.min(...pers), 3)} | máx ${br(Math.max(...pers), 3)}\n`
+        + `Ciclos (s): ${detalhes}\n`
+        + (cong[0] ? `Abastecendo ≈ ${br(ench[0]!, 2)} s  |  congelado em ${br(det.ref!, 3)} ≈ ${br(cong[0], 2)} s` : 'Não foi possível separar abastecendo/congelado.')
+      this.lbl_med_media.set({ text: `Tempo médio do ciclo: ${br(per[0]!, 3)} s`, foreground: COR_OK })
+      void this._fim_medicao(txt, COR_OK)
+      this.bt_med_aplicar.set(true)
+      this.bt_dwell.set(true)
+      this._mostrar_offset()
+      this.alarme.aviso()
+      return
+    }
+    if (performance.now() / 1000 - m.t0 > 900) {
+      void this._fim_medicao('Medição cancelada: 15 min sem completar os ciclos. Verifique a calibração (o valor congelado está sendo lido corretamente?).', COR_FALHA)
+    }
+  }
+
+  _atualizar_lbl_medicao() {
+    const m = this.medicao
+    if (!m) return
+    const det = m.det, s = m.saidas
+    const v = m.ult_valor
+    const lido = v === null ? 'ilegível' : br(v, 3)
+    const ref = det.ref === null ? 'aprendendo…' : br(det.ref, 3)
+    const pers = s.slice(1).map((b, i) => b - s[i])
+    const validos = pers.slice(1)  // o 1º ciclo é sempre descartado
+    const lista = (pers.length ? `1º (descartado) ${br(pers[0], 3)} | ` : '') + validos.map(p => br(p, 3)).join(' ')
+    this.lbl_med.set({ text: `Medindo — lendo agora: ${lido} | referência: ${ref} | ${det.estado}\nCiclos válidos: ${validos.length}/${m.n}   ${lista}`, foreground: COR_AVISO })
+    if (validos.length) {
+      this.lbl_med_media.set({ text: `Tempo médio do ciclo: ${br(validos.reduce((a, b) => a + b, 0) / validos.length, 3)} s (parcial, ${validos.length}/${m.n})`, foreground: '#1a73e8' })
+    }
+  }
+
+  _offset_atual() { return num(this.v_ens.ciclo_offset_s?.get(), 0.0)! }
+
+  /** Offset que leva o ciclo médio medido ao segundo inteiro mais próximo (software da 4-3 sem decimais). */
+  async _offset_inteiro() {
+    const c = this.ciclo_medido
+    if (!c) { await messagebox.showinfo('Offset do ciclo', "Meça o ciclo primeiro ('▶ Medir ciclo')."); return }
+    this.v_ens.ciclo_offset_s.set(br(offsetInteiro(c.periodo), 3))
+  }
+
+  _mostrar_offset() {
+    const c = this.ciclo_medido
+    const off = this._offset_atual()
+    if (!c) { this.lbl_ciclo_off.set({ text: off ? `offset ${br(off, 3)} s (meça o ciclo)` : '', foreground: '#1a73e8' }); return }
+    const ger = cicloComOffset(c.periodo, off)
+    const inteiro = Math.abs(ger - pyRoundN(ger, 0)) < 0.0005
+    this.lbl_ciclo_off.set({
+      text: `Ciclo p/ o gerador: ${br(c.periodo, 3)} ${off >= 0 ? '+' : '−'} ${br(Math.abs(off), 3)} = ${br(ger, 3)} s` + (inteiro ? '  ✔ segundo inteiro' : '  (com decimais)'),
+      foreground: inteiro ? COR_OK : COR_AVISO,
+    })
+  }
+
+  /** Copia o tempo médio do ciclo + offset para o dwell das varreduras do perfil EMC atual (igual ao gerador). */
+  async _ciclo_para_dwell() {
+    const c = this.ciclo_medido
+    if (!c) return
+    const off = this._offset_atual()
+    const dwell = cicloComOffset(c.periodo, off)
+    if (dwell <= 0) { await messagebox.showerror('Dwell', `Offset ${br(off, 3)} s deixa o ciclo em ${br(dwell, 3)} s.`); return }
+    this.cfg.ensaio.ciclo_offset_s = off
+    const segs = (this.perfis[this.cfg.perfil] ?? []).filter(s => s.tipo === 'varredura')
+    if (!segs.length) { await messagebox.showinfo('Dwell', `O perfil '${this.cfg.perfil}' não tem segmentos de varredura.`); return }
+    const passos = segs.reduce((a, s) => a + frequencias(s).length, 0)
+    let deriva = ''
+    if (off) {
+      deriva = `Offset por ciclo: ${br(off, 3)} s → a bomba (ciclo real ${br(c.periodo, 3)} s) ${off > 0 ? 'adianta' : 'atrasa'} ${br(Math.abs(off), 3)} s por frequência em relação ao gerador; `
+        + `em ${passos} frequências ≈ ${br(Math.abs(off) * passos, 1)} s acumulados.\nA frequência mostrada pelo app segue o dwell (igual ao gerador).\n\n`
+    }
+    if (!await messagebox.askyesno('Dwell', `Tempo médio do ciclo: ${br(c.periodo, 3)} s  |  offset ${br(off, 3)} s\n`
+      + `Ciclo usado (dwell): ${br(dwell, 3)} s\n\n` + deriva
+      + `Usar ${br(dwell, 3)} s como dwell nas ${segs.length} varreduras do perfil\n'${this.cfg.perfil}'?\n`
+      + `(${passos} frequências → ≈ ${fmtTempo(passos * dwell)} de perturbação, 1 abastecimento por frequência)\n\n`
+      + 'Configure o MESMO dwell no gerador.')) return
+    for (const s of segs) s.dwell_s = dwell
+    await this.salvar_perfis_arquivo()
+    this._recarregar_segmentos()
+  }
+
+  async salvar_perfis_arquivo() {
+    await fetch('/api/vigia', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ perfis: this.perfis }) })
+  }
+  _recarregar_segmentos() { /* aba Perfil EMC (próxima etapa) */ }
+
+  async _aplicar_ciclo() {
+    const c = this.ciclo_medido
+    if (!c) return
+    const per = c.periodo, cong = c.congelado
+    // o tempo de "valor parado" (regra do ensaio, padrão 3 s) NÃO é alterado pela medição do ciclo;
+    // só a janela de captura é ajustada para caber no que sobra da fase congelada depois dele
+    const parado = Number(this.cfg.ensaio.congelado_s)
+    const sug: Record<string, number> = { intervalo_s: pyRoundN(per, 2) }
+    let aviso = ''
+    if (cong) {
+      const sobra = cong - parado
+      if (sobra < 0.5) {
+        aviso = `\n\nATENÇÃO: a fase congelada medida (${br(cong, 2)} s) é menor que o tempo de valor parado exigido (${br(parado, 1)} s) + captura. No modo automático a leitura pode não acontecer.`
+      } else sug.janela_s = pyRoundN(Math.max(0.3, Math.min(1.5, sobra * 0.5)), 2)
+    }
+    for (const [k, v] of Object.entries(sug)) this.v_ens[k].set(fmtG(v))
+    this._ler_form_ensaio()
+    await messagebox.showinfo('Ciclo aplicado', `Intervalo entre leituras = ${br(per, 2)} s\n`
+      + `Valida quando o valor ficar parado por ${br(parado, 1)} s (não alterado)\n`
+      + ('janela_s' in sug ? `Janela de captura = ${br(sug.janela_s, 2)} s\n` : '')
+      + '\nNo modo POR TEMPO o intervalo conta a partir da saída do valor congelado de cada abastecimento lido; o 1º abastecimento após o início é sempre lido.' + aviso)
+  }
+
   // ------------------------------------------------------------------ quadros
-  /** Cada quadro novo da câmera: entra na média temporal; a cada 40 ms um deles é lido e mostrado. */
+  /** Cada quadro novo da câmera: entra na média temporal; a cada 40 ms um deles é lido e mostrado;
+   *  com o amostrador ligado, todos vão (tratados) para o pool de leitura. */
   private _quadro_camera(t: number) {
     const p = this.proc
     if (!p?.pronto.get()) return
     const aba = this.nb.get()
-    const ler = (aba === 0 || aba === 1) && !p.ocupado && performance.now() - this._ultLeitura >= 40
-    if (ler) {
+    const mostrar = (aba === 0 || aba === 1) && !p.ocupado && performance.now() - this._ultLeitura >= 40
+    const amostrar = this.amostrando && this.amostrador !== null && p.emVoo < 3
+    if (mostrar) {
       const img = this.camera.capturar()
       if (!img) return
       this._ultLeitura = performance.now()
-      p.ler(img, t, this.campos, aba === 1 ? this.campo_sel : null)
+      p.ler(img, t, this.campos, aba === 1 ? this.campo_sel : null, amostrar)
+    } else if (amostrar) {
+      const img = this.camera.capturar()
+      if (img) p.tratar(img, t)
     } else if ((this.cfg.camera.filtros?.media_n ?? 1) > 1) {
       const img = this.camera.capturar()
       if (img) p.acumular(img, t)
@@ -650,6 +1072,12 @@ export class App {
   tick() {
     this._tick_n++
     const aba = this.nb.get()
+    // medição do ciclo (o amostrador entrega o valor do campo de litros em cada quadro + instante de captura)
+    while (this._amostras.length) {
+      const [t, valor] = this._amostras.shift()!
+      if (this.medicao !== null) this._medicao_passo(t, valor)
+    }
+    if (this.medicao !== null && this._tick_n % 5 === 0) this._atualizar_lbl_medicao()
     if (this._tick_n % 25 === 0) {
       const fr = this.camera.fpsReal
       this.lbl_fps.set({
@@ -698,6 +1126,28 @@ export class App {
       this.lbl_cam.set({ text: this.camera.erro || 'Sem imagem da câmera', foreground: COR_FALHA })
     }
   }
+}
+
+interface Medicao {
+  det: DetectorCiclo; n: number; saidas: number[]; congs: number[]; t0: number; log: string
+  linhas: string[][]; campo: string; ult_valor: number | null
+}
+interface CicloMedido {
+  periodo: number; enchendo: number | null; congelado: number | null; ref: number | null; decimais: number
+  ultima_saida: number; ciclos: Ciclo[]; desvio: number; saida_ensaio?: number
+}
+
+/** datetime.now().strftime("%Y%m%d_%H%M%S") */
+export function carimbo(d = new Date()) {
+  const p2 = (x: number) => String(x).padStart(2, '0')
+  return `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}_${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`
+}
+
+/** grava um arquivo de texto em resultados/ (sub = subpasta) */
+export async function salvarTexto(nome: string, conteudo: string, sub = ''): Promise<string | null> {
+  const r = await fetch('/api/vigia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'texto', nome, conteudo, sub }) }).catch(() => null)
+  if (!r?.ok) return null
+  return (await r.json()).caminho
 }
 
 export { CFG_PADRAO }

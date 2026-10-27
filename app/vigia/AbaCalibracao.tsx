@@ -16,13 +16,14 @@ const LINHAS_FILTRO: [ChaveFiltro, string, number, number, number, string][] = [
 
 export default function AbaCalibracao({ app }: { app: App }) {
   const [expandida, setExpandida] = useState(false)
+  const versaoLayout = useVar(app.versaoLayout)   // "Restaurar tamanhos" redesenha com a divisão natural
   useEffect(() => {
     const esc = (e: KeyboardEvent) => { if (e.key === 'Escape') setExpandida(false) }
     window.addEventListener('keydown', esc)
     return () => window.removeEventListener('keydown', esc)
   }, [])
   return (
-    <Painel layout={app.layout} chave="calibracao_imagem_painel" padrao={t => Math.max(40, t - 470 - 5)}
+    <Painel key={versaoLayout} layout={app.layout} chave="calibracao_imagem_painel" padrao={t => Math.max(40, t - 470 - 5)}
       aoGuardar={() => app.salvarLayoutDepois()} esconderSegundo={expandida}
       primeiro={<Esquerda app={app} expandida={expandida} alternar={() => setExpandida(x => !x)} />}
       segundo={<Lado app={app} />} />

@@ -17,7 +17,11 @@ export type PedidoWorker =
   | {
       tipo: 'quadro'; id: number; t: number; largura: number; altura: number; dados: ArrayBuffer
       campos: Partial<CampoDisplay>[]; recortesDe?: number | null; devolverQuadro?: boolean; soAcumular?: boolean
+      /** devolve também o quadro tratado em BGR (para o amostrador ler em outro worker) */
+      devolverBgr?: boolean
     }
+  /** amostrador: lê os campos num quadro JÁ tratado (BGR) — não mexe na média temporal deste worker */
+  | { tipo: 'ler'; seq: number; t: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[] }
 
 export type RespostaWorker =
   | { tipo: 'pronto'; versao: string }
@@ -25,7 +29,9 @@ export type RespostaWorker =
   | {
       tipo: 'resultado'; id: number; t: number; resultados: Record<string, ResultadoCampo>
       desvio: number; quadro?: { largura: number; altura: number; dados: ArrayBuffer }
+      bgr?: { largura: number; altura: number; dados: ArrayBuffer }
     }
+  | { tipo: 'lido'; seq: number; t: number; valores: Record<string, number | null> }
 
 async function carregarCv() {
   if (cv) return
@@ -51,6 +57,16 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
     if (!cv || !proc) throw new Error('OpenCV ainda carregando')
     if (m.tipo === 'camera') { proc.aplicar(m.cfg); proc.bruto = !!m.bruto; return }
     if (m.tipo === 'zerar_media') { proc.zerarMedia(); return }
+    if (m.tipo === 'ler') {
+      const f = new cv.Mat(m.altura, m.largura, cv.CV_8UC3)
+      f.data.set(new Uint8Array(m.dados))
+      const valores: Record<string, number | null> = {}
+      try {
+        for (const c of m.campos) { const campo = campoDe(c); valores[campo.nome] = lerCampo(cv, f, campo, 'BGR').valor }
+      } finally { f.delete() }
+      ctx.postMessage({ tipo: 'lido', seq: m.seq, t: m.t, valores } satisfies RespostaWorker)
+      return
+    }
     if (m.tipo === 'quadro') {
       const rgba = new cv.Mat(m.altura, m.largura, cv.CV_8UC4)
       rgba.data.set(new Uint8Array(m.dados))
@@ -79,6 +95,7 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
       const desvio = Math.sqrt(Math.max(0, m2 / nc - mu * mu))
       media.delete(); dp.delete()
       let quadro: { largura: number; altura: number; dados: ArrayBuffer } | undefined
+      const bgr2 = m.devolverBgr ? { largura: f.cols, altura: f.rows, dados: f.data.slice().buffer as ArrayBuffer } : undefined
       if (m.devolverQuadro) {
         const saida = new cv.Mat()
         cv.cvtColor(f, saida, cv.COLOR_BGR2RGBA)
@@ -86,10 +103,10 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
         saida.delete()
       }
       f.delete()
-      const resp: RespostaWorker = { tipo: 'resultado', id: m.id, t: m.t, resultados, desvio, quadro }
-      ctx.postMessage(resp, quadro ? [quadro.dados] : [])
+      const resp: RespostaWorker = { tipo: 'resultado', id: m.id, t: m.t, resultados, desvio, quadro, bgr: bgr2 }
+      ctx.postMessage(resp, [...(quadro ? [quadro.dados] : []), ...(bgr2 ? [bgr2.dados] : [])])
     }
   } catch (e) {
-    ctx.postMessage({ tipo: 'erro', msg: e instanceof Error ? e.message : String(e), id: 'id' in m ? m.id : undefined } satisfies RespostaWorker)
+    ctx.postMessage({ tipo: 'erro', msg: e instanceof Error ? e.message : String(e), id: 'id' in m ? m.id : 'seq' in m ? m.seq : undefined } satisfies RespostaWorker)
   }
 }

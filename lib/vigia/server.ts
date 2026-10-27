@@ -37,13 +37,13 @@ export async function carregarPerfis(): Promise<Record<string, Segmento[]>> {
 }
 export const salvarPerfis = (perfis: Record<string, Segmento[]>) => gravarJson(perfisPath(), perfis)
 
-/** Salva uma imagem PNG (base64) em resultados/ com o nome dado; devolve o caminho. */
-export async function salvarFoto(nome: string, base64: string, sub = ''): Promise<string> {
-  const dir = path.join(resultDir(), sub)
-  if (!path.resolve(dir).startsWith(path.resolve(resultDir()))) throw new Error('Pasta inválida')
+/** Salva um arquivo em resultados/ (sub = subpasta); devolve o caminho. */
+export async function salvarArquivo(nome: string, dados: Buffer, sub = ''): Promise<string> {
+  const dir = path.resolve(resultDir(), sub)
+  if (dir !== path.resolve(resultDir()) && !dir.startsWith(path.resolve(resultDir()) + path.sep)) throw new Error('Pasta inválida')
   await fs.mkdir(dir, { recursive: true })
   const p = path.join(dir, path.basename(nome))
-  await fs.writeFile(p, Buffer.from(base64, 'base64'))
+  await fs.writeFile(p, dados)
   return p
 }
 

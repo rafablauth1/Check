@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server'
 import {
-  lerConfigBruta, salvarConfig, carregarPerfis, salvarPerfis, salvarFoto, lerVigiaOriginal, pastaVigia,
+  lerConfigBruta, salvarConfig, carregarPerfis, salvarPerfis, salvarArquivo, lerVigiaOriginal, pastaVigia,
   ORIGEM_VIGIA_PADRAO,
 } from '@/lib/vigia/server'
 import { completarPerfis } from '@/lib/vigia/emc'
@@ -40,7 +40,11 @@ export async function POST(req: NextRequest) {
   try {
     if (b.acao === 'foto') {
       if (typeof b.nome !== 'string' || typeof b.png !== 'string') return erro('Foto inválida')
-      return NextResponse.json({ caminho: await salvarFoto(b.nome, b.png, typeof b.sub === 'string' ? b.sub : '') })
+      return NextResponse.json({ caminho: await salvarArquivo(b.nome, Buffer.from(b.png, 'base64'), typeof b.sub === 'string' ? b.sub : '') })
+    }
+    if (b.acao === 'texto') {
+      if (typeof b.nome !== 'string' || typeof b.conteudo !== 'string') return erro('Texto inválido')
+      return NextResponse.json({ caminho: await salvarArquivo(b.nome, Buffer.from(b.conteudo, 'utf-8'), typeof b.sub === 'string' ? b.sub : '') })
     }
     if (b.acao === 'importar') {
       const orig = await lerVigiaOriginal(typeof b.pasta === 'string' && b.pasta ? b.pasta : ORIGEM_VIGIA_PADRAO)

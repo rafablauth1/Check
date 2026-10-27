@@ -2,10 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { Plus, Trash2, CheckCircle2, AlertTriangle, X, Save } from 'lucide-react'
+import { Plus, Trash2, CheckCircle2, AlertTriangle, X, Save, Library } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { Norma } from '@/lib/normas/tipos'
 import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
+import type { MetaDoc } from '@/lib/conhecimento/tipos'
+import { listarDocs } from '@/lib/conhecimento/cliente'
+import { docsDaNorma, docsSemCadastro, rascunhoDeNorma } from '@/lib/normas/vinculo'
 
 function TipoBadge({ tipo }: { tipo: string }) {
   if (tipo === 'emissao')   return <span className="badge-gold">Emissão</span>
@@ -17,10 +20,14 @@ function slugify(s: string) {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')
 }
 
-function NovaNormaModal({ onSalvar, onFechar }: { onSalvar: () => void; onFechar: () => void }) {
-  const [codigo, setCodigo] = useState('')
-  const [titulo, setTitulo] = useState('')
-  const [tipo,   setTipo]   = useState<'emissao' | 'imunidade' | 'geral'>('emissao')
+function NovaNormaModal({ inicial, onSalvar, onFechar }: {
+  /** Pré-preenchido a partir de um texto da Base de Conhecimento. */
+  inicial?: Pick<Norma, 'codigo' | 'titulo' | 'tipo'>
+  onSalvar: () => void; onFechar: () => void
+}) {
+  const [codigo, setCodigo] = useState(inicial?.codigo ?? '')
+  const [titulo, setTitulo] = useState(inicial?.titulo ?? '')
+  const [tipo,   setTipo]   = useState<'emissao' | 'imunidade' | 'geral'>(inicial?.tipo ?? 'emissao')
   const [saving, setSaving] = useState(false)
   const [err, setErr] = useState('')
 
@@ -81,7 +88,9 @@ function NovaNormaModal({ onSalvar, onFechar }: { onSalvar: () => void; onFechar
 export default function NormasPage() {
   const [normas,  setNormas]  = useState<Norma[]>([])
   const [equips,  setEquips]  = useState<EquipamentoEMC[]>([])
-  const [novaNorma, setNovaNorma] = useState(false)
+  const [novaNorma, setNovaNorma] = useState<false | { inicial?: Pick<Norma, 'codigo' | 'titulo' | 'tipo'> }>(false)
+  // textos da Base de Conhecimento: mostra quais normas têm o texto e quais textos não têm cadastro aqui
+  const [docsBase, setDocsBase] = useState<MetaDoc[]>([])
 
   async function carregar() {
     const [n, e] = await Promise.all([
@@ -90,6 +99,7 @@ export default function NormasPage() {
     ])
     setNormas(Array.isArray(n) ? n : [])
     setEquips(Array.isArray(e) ? e : [])
+    listarDocs().then(setDocsBase).catch(() => {})
   }
 
   useEffect(() => { carregar() }, [])
@@ -112,7 +122,7 @@ export default function NormasPage() {
           <h1 className="page-title">Normas</h1>
           <p className="page-sub">Referências normativas do laboratório</p>
         </div>
-        <button className="btn-primary" onClick={() => setNovaNorma(true)}>
+        <button className="btn-primary" onClick={() => setNovaNorma({})}>
           <Plus size={13}/> Nova norma
         </button>
       </div>
@@ -126,6 +136,15 @@ export default function NormasPage() {
                   <div className="flex items-center gap-2 mb-1">
                     <span className="font-display font-bold text-[15px]" style={{ color: 'var(--accent,#E8B94B)' }}>{n.codigo}</span>
                     <TipoBadge tipo={n.tipo}/>
+                    {(() => {
+                      const textos = docsDaNorma(n, docsBase)
+                      return textos.length > 0 && (
+                        <span title={textos.map(t => t.titulo).join(' · ')}
+                          className="inline-flex items-center gap-1 text-[10px] font-mono px-2 py-0.5 rounded border border-teal/25 bg-teal/8 text-teal">
+                          <Library size={9}/> texto na Base{textos.length > 1 ? ` (${textos.length})` : ''}
+                        </span>
+                      )
+                    })()}
                   </div>
                   <p className="text-[12px] text-white/60 leading-relaxed mb-3">{n.titulo}</p>
                   <div className="flex flex-wrap gap-2">
@@ -156,8 +175,28 @@ export default function NormasPage() {
         )}
       </div>
 
+      {/* textos da Base de Conhecimento sem ficha aqui */}
+      {docsSemCadastro(docsBase, normas).length > 0 && (
+        <div className="card p-5 mt-5">
+          <p className="form-section flex items-center gap-2"><Library size={12} className="text-teal/80"/> Na Base de Conhecimento, sem cadastro aqui</p>
+          <p className="text-[11px] text-white/35 mb-3">O texto destas normas já está na Base. Cadastre para ligar ensaios e padrões a elas — o texto aparece na ficha automaticamente.</p>
+          <div className="space-y-1">
+            {docsSemCadastro(docsBase, normas).map(d => (
+              <div key={d.id} className="flex items-center gap-3 px-3 py-1.5 rounded-lg bg-white/[0.025] border border-white/[0.07]">
+                <span className="flex-1 text-xs text-white/70 truncate">{d.titulo}</span>
+                <Link href={`/conhecimento?doc=${encodeURIComponent(d.id)}`} className="text-[11px] text-white/40 hover:text-teal">Ver texto</Link>
+                <button type="button" className="btn-secondary text-[11px] py-1" onClick={() => setNovaNorma({ inicial: rascunhoDeNorma(d) })}>
+                  <Plus size={11}/> Cadastrar
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {novaNorma && (
         <NovaNormaModal
+          inicial={novaNorma.inicial}
           onSalvar={() => { setNovaNorma(false); carregar() }}
           onFechar={() => setNovaNorma(false)}
         />

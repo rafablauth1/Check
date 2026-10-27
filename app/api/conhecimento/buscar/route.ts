@@ -14,6 +14,8 @@ export async function GET(req: NextRequest) {
   }
   const q = (req.nextUrl.searchParams.get('q') || '').slice(0, 300)
   if (!q.trim()) return NextResponse.json({ resultados: [], semantica: false, documentos, trechos: indice.docs.length })
-  const r = await buscaHibrida(indice, q, 15)
+  // ?docs=id1,id2 → só nesses documentos (tela de Normas)
+  const docs = req.nextUrl.searchParams.get('docs')
+  const r = await buscaHibrida(indice, q, 15, docs ? new Set(docs.split(',').filter(Boolean)) : undefined)
   return NextResponse.json({ ...r, documentos, trechos: indice.docs.length })
 }

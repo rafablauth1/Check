@@ -24,10 +24,12 @@ export async function salvarDoc(doc: Documento, senha: string): Promise<Document
 export async function removerDoc(id: string, senha: string): Promise<void> {
   await json(await fetch(`/api/conhecimento/${encodeURIComponent(id)}`, { method: 'DELETE', headers: comSenha(senha) }))
 }
-export async function buscarNaBase(q: string): Promise<{
+/** `docs`: só nesses documentos (ex.: o texto de uma norma, na tela de Normas). */
+export async function buscarNaBase(q: string, docs?: string[]): Promise<{
   resultados: ResultadoBusca[]; semantica: boolean; documentos: number; trechos: number
 }> {
-  return json(await fetch(`/api/conhecimento/buscar?q=${encodeURIComponent(q)}`, { cache: 'no-store' }))
+  const filtro = docs?.length ? `&docs=${encodeURIComponent(docs.join(','))}` : ''
+  return json(await fetch(`/api/conhecimento/buscar?q=${encodeURIComponent(q)}${filtro}`, { cache: 'no-store' }))
 }
 /** Carrega o modelo de busca e os vetores em segundo plano (tela abrindo). */
 export function aquecerBusca(): void {

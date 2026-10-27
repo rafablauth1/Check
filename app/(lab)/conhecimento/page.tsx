@@ -3,9 +3,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, BookOpen, MessageSquareText, HelpCircle, Plus, Upload, Edit2, Trash2, X, Lock, ArrowRight,
-  Loader2, CheckCircle2, AlertTriangle, FileText, Sparkles, Eye,
+  Loader2, CheckCircle2, AlertTriangle, FileText, Sparkles, Eye, Scale,
 } from 'lucide-react'
+import Link from 'next/link'
 import { cn } from '@/lib/utils'
+import { MdView, VisualizadorDoc, Sumario } from '@/components/conhecimento/VisualizadorDoc'
+import { normaDoDoc } from '@/lib/normas/vinculo'
+import type { Norma } from '@/lib/normas/tipos'
 import { SETTINGS_KEY } from '@/app/cispr15/types'
 import { extrairTextoArquivo } from '@/lib/useOCR'
 import { limparTextoNorma } from '@/lib/conhecimento/importar'
@@ -34,61 +38,6 @@ function Destacado({ texto, destaques }: { texto: string; destaques: [number, nu
   })
   partes.push(texto.slice(pos))
   return <>{partes}</>
-}
-
-/* ─── markdown mínimo (títulos, tabelas, listas, negrito) ──────────────────── */
-function inline(s: string): React.ReactNode[] {
-  return s.split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)/g).map((p, i) =>
-    p.startsWith('**') ? <strong key={i} className="text-white/90">{p.slice(2, -2)}</strong>
-      : p.startsWith('`') ? <code key={i} className="font-mono text-[11px] text-teal/80">{p.slice(1, -1)}</code>
-      : p.startsWith('*') && p.length > 2 ? <em key={i}>{p.slice(1, -1)}</em>
-      : p)
-}
-
-function MdView({ md, alvo }: { md: string; alvo?: string }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const blocos = useMemo(() => md.replace(/\r\n/g, '\n').split(/\n{2,}/), [md])
-  useEffect(() => {
-    if (!alvo || !ref.current) return
-    const chave = alvo.replace(/[…*]/g, '').replace(/^Tabela \d+ \(item ([\d.]+)\)$/, '$1').slice(0, 40).trim()
-    const el = [...ref.current.querySelectorAll<HTMLElement>('[data-bloco]')].find(e => (e.dataset.bloco || '').includes(chave))
-    if (el) { el.scrollIntoView({ block: 'center' }); el.classList.add('ring-1', 'ring-gold/50', 'bg-gold/5') }
-  }, [alvo, blocos])
-  return (
-    <div ref={ref} className="space-y-3 text-[13px] leading-relaxed text-white/70">
-      {blocos.map((b, i) => {
-        const t = b.trim()
-        if (!t) return null
-        const h = t.match(/^(#{1,6})\s+(.+)$/)
-        if (h) {
-          const cls = h[1].length <= 1 ? 'text-lg' : h[1].length === 2 ? 'text-base' : 'text-sm'
-          return <p key={i} data-bloco={h[2]} className={cn('font-bold text-white pt-2 rounded', cls)}>{inline(h[2])}</p>
-        }
-        const linhas = t.split('\n')
-        if (linhas.every(l => l.trim().startsWith('|'))) {
-          const cel = (l: string) => l.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim())
-          const corpo = linhas.filter((_, k) => k !== 1)
-          return (
-            <div key={i} data-bloco={t.slice(0, 200)} className="overflow-x-auto rounded">
-              <table className="w-full text-[11px] border border-white/10">
-                <tbody>
-                  {corpo.map((l, k) => (
-                    <tr key={k} className={k === 0 ? 'bg-white/8 font-semibold text-white/80' : 'border-t border-white/6'}>
-                      {cel(l).map((c, m) => <td key={m} className="px-2 py-1 align-top">{inline(c)}</td>)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )
-        }
-        if (linhas.every(l => /^\s*[-•]\s/.test(l))) {
-          return <ul key={i} data-bloco={t.slice(0, 200)} className="list-disc pl-5 space-y-1 rounded">{linhas.map((l, k) => <li key={k}>{inline(l.replace(/^\s*[-•]\s/, ''))}</li>)}</ul>
-        }
-        return <p key={i} data-bloco={t.slice(0, 200)} className="whitespace-pre-wrap rounded">{inline(t)}</p>
-      })}
-    </div>
-  )
 }
 
 /* ─── senha (a mesma da emissão) ──────────────────────────────────────────── */
@@ -244,12 +193,21 @@ export default function ConhecimentoPage() {
   const [filtroTexto, setFiltroTexto] = useState('')
   const [importando, setImportando] = useState<string | null>(null)
   const [aviso, setAviso] = useState<{ ok: boolean; msg: string } | null>(null)
+  // cadastro de Normas: cada norma da base aponta para a ficha dela (vínculo pelo código)
+  const [normas, setNormas] = useState<Norma[]>([])
 
   async function recarregar() {
     try { setDocs(await listarDocs()); setPendentes(await listarPendentes()) }
     catch (e) { setAviso({ ok: false, msg: e instanceof Error ? e.message : String(e) }) }
   }
-  useEffect(() => { recarregar(); aquecerBusca() }, [])
+  useEffect(() => {
+    recarregar(); aquecerBusca()
+    fetch('/api/normas').then(r => r.json()).then(n => setNormas(Array.isArray(n) ? n : [])).catch(() => {})
+    // vindo da tela de Normas: ?doc=<id>&ancora=<item> abre o texto; ?q= já pergunta
+    const p = new URLSearchParams(window.location.search)
+    if (p.get('doc')) abrir(p.get('doc')!, p.get('ancora') || undefined)
+    else if (p.get('q')) { setQ(p.get('q')!); perguntar(p.get('q')!) }
+  }, [])   // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { if (aviso?.ok) { const t = setTimeout(() => setAviso(null), 3500); return () => clearTimeout(t) } }, [aviso])
 
   async function perguntar(texto = q) {
@@ -515,6 +473,14 @@ export default function ConhecimentoPage() {
                       <p className="text-xs text-white/80 font-semibold truncate">{d.titulo}</p>
                       <p className="text-[10px] text-white/30 truncate">{d.tipo === 'nota' ? (d.fonte || d.pergunta) : d.origem}</p>
                     </button>
+                    {d.tipo === 'norma' && (() => {
+                      const n = normaDoDoc(d, normas)
+                      return n
+                        ? <Link href={`/normas/${n.id}`} title="Ficha da norma no cadastro de Normas"
+                            className="text-[10px] text-gold/70 hover:text-gold flex items-center gap-1 shrink-0"><Scale size={9} /> {n.codigo}</Link>
+                        : <Link href="/normas" title="Esta norma ainda não está no cadastro de Normas"
+                            className="text-[10px] text-white/20 hover:text-white/50 italic shrink-0">sem cadastro em Normas</Link>
+                    })()}
                     <span className="text-[10px] text-white/20 font-mono shrink-0">{d.atualizadoEm ? new Date(d.atualizadoEm).toLocaleDateString('pt-BR') : ''}</span>
                     <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button type="button" title="Editar" onClick={() => editar(d)} className="w-6 h-6 rounded border border-white/8 text-white/30 hover:text-white/70 flex items-center justify-center"><Edit2 size={10} /></button>
@@ -549,24 +515,19 @@ export default function ConhecimentoPage() {
       )}
 
       {/* visualizador */}
-      {viewer && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
-          <div className="card w-full max-w-4xl max-h-[92vh] flex flex-col p-6 gap-3 animate-fade-in">
-            <div className="flex items-start gap-3">
-              <div className="flex-1 min-w-0">
-                <p className="text-white font-bold text-sm">{viewer.doc.titulo}</p>
-                <p className="text-[10px] text-white/30">
-                  {viewer.doc.tipo === 'nota' ? viewer.doc.fonte : viewer.doc.origem}
-                  {viewer.doc.atualizadoEm && ` · atualizado em ${new Date(viewer.doc.atualizadoEm).toLocaleDateString('pt-BR')}`}
-                </p>
-              </div>
-              <button onClick={() => setViewer(null)} className="text-white/30 hover:text-white/70"><X size={16} /></button>
-            </div>
-            {viewer.doc.pergunta && <p className="text-sm text-teal/90 font-semibold">{viewer.doc.pergunta}</p>}
-            <div className="flex-1 overflow-y-auto pr-2"><MdView md={viewer.doc.corpo} alvo={viewer.alvo} /></div>
-          </div>
-        </div>
-      )}
+      {viewer && (() => {
+        const n = normaDoDoc(viewer.doc, normas)
+        return (
+          <VisualizadorDoc doc={viewer.doc} alvo={viewer.alvo} onFechar={() => setViewer(null)}
+            cabecalho={n && (
+              <Link href={`/normas/${n.id}`} title="Ficha da norma no cadastro (ensaios, padrões, limites)"
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg border border-gold/25 text-gold/90 hover:bg-gold/10 text-[11px] font-semibold shrink-0">
+                <Scale size={11} /> {n.codigo} em Normas
+              </Link>
+            )}
+            lateral={viewer.doc.tipo === 'norma' && <Sumario doc={viewer.doc} onIr={a => setViewer(v => v && { ...v, alvo: a })} atual={viewer.alvo} />} />
+        )
+      })()}
 
       {editor && (
         <Editor inicial={editor.rascunho} onFechar={() => setEditor(null)}

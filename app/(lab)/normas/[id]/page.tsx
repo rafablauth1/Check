@@ -7,6 +7,7 @@ import type { Norma, TabelaLimites, SecaoNorma, LinhaTabela, EquipamentoNecessar
 import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
 import type { AparelhoAuxiliar } from '@/lib/auxiliares/tipos'
 import type { GrupoId } from '@/lib/equipamentos/tipos'
+import { TextoNaBase } from '@/app/(lab)/normas/TextoNaBase'
 
 function TipoBadge({ tipo }: { tipo: string }) {
   if (tipo === 'emissao')   return <span className="badge-gold">Emissão</span>
@@ -393,6 +394,9 @@ td.aux .tag em{font-style:normal;font-weight:normal;font-size:8px;letter-spacing
           )}
         </div>
       </div>
+
+      {/* Texto da norma (Base de Conhecimento, vinculado pelo código) */}
+      {!editMode && <TextoNaBase norma={norma} />}
 
       {/* Equipamentos necessários */}
       <div className="card p-5 mb-5">

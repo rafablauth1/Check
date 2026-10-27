@@ -102,9 +102,11 @@ async function vetoresDoIndice(indice: Indice): Promise<Float32Array[]> {
   return vetores
 }
 
-export async function buscaHibrida(indice: Indice, pergunta: string, limite = 15):
+/** `soDocs`: busca só nesses documentos (tela de Normas: "pesquisar nesta norma"). */
+export async function buscaHibrida(indice: Indice, pergunta: string, limite = 15, soDocs?: Set<string>):
   Promise<{ resultados: ResultadoBusca[]; semantica: boolean; erro?: string }> {
-  const todasPalavra = pontuarBM25(indice, pergunta, Infinity)
+  const permitido = (r: { i: number }) => !soDocs || soDocs.has(indice.docs[r.i].trecho.docId)
+  const todasPalavra = pontuarBM25(indice, pergunta, Infinity).filter(permitido)
   let todasSentido: { i: number; score: number }[] = []
   let vqs: Float32Array[] = []
   let erro: string | undefined
@@ -116,7 +118,8 @@ export async function buscaHibrida(indice: Indice, pergunta: string, limite = 15
     const extras = termosAcionados(pergunta, indice.sinonimos)
     const consultas = ['query: ' + pergunta, ...(extras.length ? ['query: ' + pergunta + ' (' + extras.join(', ') + ')'] : [])]
     vqs = await vetorizar(consultas)
-    todasSentido = vetores.map((v, i) => ({ i, score: Math.max(...vqs.map(q => prod(q, v))) })).sort((a, b) => b.score - a.score)
+    todasSentido = vetores.map((v, i) => ({ i, score: Math.max(...vqs.map(q => prod(q, v))) }))
+      .filter(permitido).sort((a, b) => b.score - a.score)
   } catch (e) {
     erro = e instanceof Error ? e.message : String(e)
   }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Plus, Search, X, Edit2, Trash2, Clock, CheckCircle2, RotateCcw, AlertTriangle, Loader2, Settings2, ChevronDown, ChevronUp,
-  BarChart2, TrendingUp,
+  BarChart2, TrendingUp, HardDrive,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { today, CLIENTES_KEY, type ClienteDB } from '@/app/cispr15/types'
@@ -19,13 +19,15 @@ import { ItemModalEmc, novoItemEmc } from '@/app/agenda/emc/ItemModalEmc'
 import { fmtDate, daysUntil, corPrazo, BadgeEnsaio, ChipEtiqueta } from '@/app/agenda/emc/comum'
 import { AnaliseEmc } from '@/app/agenda/emc/AnaliseEmc'
 import { FollowupEmc } from '@/app/agenda/emc/FollowupEmc'
+import { OrganizadorEmc } from '@/app/agenda/emc/OrganizadorEmc'
+import { sincronizarRadian } from '@/lib/emc/organizador/cliente'
 
 type Filtro = 'andamento' | 'aguardando' | 'concluidos' | 'todos'
 type Ordem = 'dataEntrada' | 'previsaoSaida' | 'protocolo'
 
 export function AgendaEmc() {
   const router = useRouter()
-  const [aba,        setAba]        = useState<'agenda' | 'analise' | 'followup'>('agenda')
+  const [aba,        setAba]        = useState<'agenda' | 'analise' | 'followup' | 'radian'>('agenda')
   const [itens,      setItens]      = useState<AgendaItemEmc[]>([])
   const [config,     setConfig]     = useState<ConfigEnsaiosEmc>(CONFIG_EMC_PADRAO)
   const [clientes,   setClientes]   = useState<ClienteDB[]>([])
@@ -48,6 +50,16 @@ export function AgendaEmc() {
     } catch (e) { setErro(e instanceof Error ? e.message : String(e)) }
     finally { setCarregando(false) }
   }
+
+  // ensaios com .DAT no PC do Radian / no registro em T: viram realizados sozinhos
+  useEffect(() => {
+    const sincronizar = () => sincronizarRadian()
+      .then(r => { if (r.atualizados.length) recarregar() })
+      .catch(() => {})
+    sincronizar()
+    const t = setInterval(sincronizar, 5 * 60_000)
+    return () => clearInterval(t)
+  }, [])
 
   useEffect(() => {
     recarregar()
@@ -89,7 +101,7 @@ export function AgendaEmc() {
 
   function alternarEnsaio(item: AgendaItemEmc, ensaioId: string) {
     gravar(item.id, {
-      ensaios: item.ensaios.map(e => e.ensaioId === ensaioId ? { ...e, status: proximoStatus(e.status) } : e),
+      ensaios: item.ensaios.map(e => e.ensaioId === ensaioId ? { ...e, status: proximoStatus(e.status), manual: true } : e),
     })
   }
 
@@ -156,6 +168,7 @@ export function AgendaEmc() {
           ['agenda',   'Agenda',    null],
           ['analise',  'Análise',   <BarChart2 key="a" size={11} />],
           ['followup', 'Follow-up', <TrendingUp key="f" size={11} />],
+          ['radian',   'Radian',    <HardDrive key="r" size={11} />],
         ] as const).map(([t, label, icon]) => (
           <button key={t} type="button" onClick={() => setAba(t)}
             className={cn('flex items-center gap-1.5 px-4 py-1.5 rounded text-xs font-semibold transition-all',
@@ -167,6 +180,7 @@ export function AgendaEmc() {
 
       {aba === 'analise' && <AnaliseEmc itens={itens} catalogo={config.catalogo} />}
       {aba === 'followup' && <FollowupEmc itens={itens} catalogo={config.catalogo} />}
+      {aba === 'radian' && <OrganizadorEmc itens={itens} onAgendaMudou={recarregar} />}
 
       {aba === 'agenda' && (<>
       {/* Toolbar */}

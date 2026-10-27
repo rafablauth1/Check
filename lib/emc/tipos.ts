@@ -82,6 +82,12 @@ export interface EnsaioDaAmostra {
   nome: string
   status: StatusEnsaio
   relogio?: boolean             // medido por pulso (modo relógio)
+  /** 'radian' = marcado sozinho pela sincronização (achou .DAT do ensaio no
+   *  PC do Radian ou no registro em T:). */
+  fonte?: 'radian'
+  realizadoEm?: string          // data do .DAT mais recente (aaaa-mm-dd)
+  /** Status mexido à mão na agenda: a sincronização não mexe mais nele. */
+  manual?: boolean
 }
 
 export interface AgendaItemEmc {

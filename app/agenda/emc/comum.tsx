@@ -55,7 +55,9 @@ export function BadgeEnsaio({ e, onClick, small }: { e: EnsaioDaAmostra; onClick
   const cls = e.status === 'realizado' ? 'border-green/30 bg-green/10 text-green-400'
     : e.status === 'reprovado' ? 'border-red-500/30 bg-red-500/10 text-red-400'
     : 'border-white/10 text-white/35 hover:border-white/25 hover:text-white/60'
-  const titulo = `${e.codigo} — ${e.nome} · ${e.status}${e.relogio ? ' · medição por relógio' : ''}`
+  const origem = e.fonte === 'radian' && e.status === 'realizado' && !e.manual
+    ? ` · .DAT do Radian${e.realizadoEm ? ' de ' + fmtDate(e.realizadoEm) : ''}` : ''
+  const titulo = `${e.codigo} — ${e.nome} · ${e.status}${origem}${e.relogio ? ' · medição por relógio' : ''}`
   const conteudo = (
     <>
       {e.status === 'realizado' ? <CheckCircle2 size={8} /> : e.status === 'reprovado' ? <XCircle size={8} /> : null}

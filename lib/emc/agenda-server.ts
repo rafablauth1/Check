@@ -61,6 +61,24 @@ export async function atualizarItemEmc(id: string, parcial: Partial<AgendaItemEm
   return salvo
 }
 
+/** Muda vários itens numa gravação só (sincronização com o Radian). `mudar`
+    devolve o item novo, ou null para deixar como está. Devolve os alterados. */
+export async function atualizarVariosEmc(mudar: (item: AgendaItemEmc) => AgendaItemEmc | null): Promise<AgendaItemEmc[]> {
+  const alterados: AgendaItemEmc[] = []
+  const { itens, estado } = await lerAgendaEmc()
+  if (estado === 'corrompido') throw new AgendaEmcIlegivel()
+  const agora = new Date().toISOString()
+  const proxima = itens.map(x => {
+    const novo = mudar(x)
+    if (!novo) return x
+    const salvo = preservarTravados(x, { ...novo, id: x.id, criadoEm: x.criadoEm, atualizadoEm: agora })
+    alterados.push(salvo)
+    return salvo
+  })
+  if (alterados.length) await escreverJSON(ARQUIVO_AGENDA_EMC, proxima)
+  return alterados
+}
+
 export async function removerItemEmc(id: string): Promise<boolean> {
   let achou = false
   await mudarAgendaEmc(lista => lista.filter(x => (x.id === id ? ((achou = true), false) : true)))

@@ -97,6 +97,10 @@ export function montarEnsaios(
       nome: cat?.nome ?? antes?.nome ?? id,
       status: antes?.status ?? 'pendente',
       ...(relogio.has(id) ? { relogio: true } : {}),
+      // de onde veio o status (sincronização com o Radian / mexido à mão)
+      ...(antes?.fonte ? { fonte: antes.fonte } : {}),
+      ...(antes?.realizadoEm ? { realizadoEm: antes.realizadoEm } : {}),
+      ...(antes?.manual ? { manual: true } : {}),
     }
   })
 }

@@ -297,7 +297,7 @@ export function OrganizadorEmc({ itens, onAgendaMudou }: { itens: AgendaItemEmc[
       </div>
 
       {/* Log */}
-      <div className="rounded-lg bg-[#121212] border border-white/8 px-3 py-2 h-28 overflow-y-auto font-mono text-[10.5px] leading-relaxed">
+      <div className="rounded-lg bg-[var(--deep,#07090D)] border border-white/8 px-3 py-2 h-28 overflow-y-auto font-mono text-[10.5px] leading-relaxed">
         {log.length ? log.map((l, i) => <div key={i} className={cn('whitespace-pre', l.tag ? COR_LOG[l.tag] : 'text-white/60')}>{l.msg}</div>)
           : <span className="text-white/20">Sem mensagens.</span>}
       </div>
@@ -358,8 +358,8 @@ function MarcaEnvio({ dat, env }: { dat: number; env: number }) {
 function ModalPastas({ cfg, onSalvar, onFechar }: { cfg: ConfigOrganizador; onSalvar: (c: ConfigOrganizador) => void; onFechar: () => void }) {
   const [c, setC] = useState(cfg)
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onFechar}>
-      <div className="card w-full max-w-2xl p-5 space-y-4" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" onClick={onFechar}>
+      <div className="card !bg-[var(--bg2,#111620)] shadow-2xl shadow-black/60 w-full max-w-2xl p-5 space-y-4 animate-fade-in" onClick={e => e.stopPropagation()}>
         <div className="flex items-center"><p className="text-sm font-semibold text-white flex-1">Pastas do Organizador</p>
           <button type="button" onClick={onFechar} className="text-white/40 hover:text-white"><X size={14} /></button></div>
         <div className="space-y-1">
@@ -449,8 +449,8 @@ function ModalVerificacao({ arquivosIniciais, limiteInicial, continuar, onLimite
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4">
-      <div className="card w-full max-w-5xl max-h-[88vh] flex flex-col p-4 gap-3">
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
+      <div className="card !bg-[var(--bg2,#111620)] shadow-2xl shadow-black/60 w-full max-w-5xl max-h-[88vh] flex flex-col p-4 gap-3 animate-fade-in">
         <div className="flex items-center gap-2 flex-wrap text-[11px] text-white/55">
           <p className="text-sm font-semibold text-white mr-3">Pontos destoantes</p>
           Destoa se ficar a mais de
@@ -466,7 +466,7 @@ function ModalVerificacao({ arquivosIniciais, limiteInicial, continuar, onLimite
 
         <div className="flex-1 overflow-y-auto border border-white/8 rounded-lg">
           <table className="w-full text-[11px]">
-            <thead className="sticky top-0 bg-[#1a1a1a] text-white/35 text-[10px] uppercase font-mono">
+            <thead className="sticky top-0 z-10 bg-[var(--bg2,#111620)] text-white/35 text-[10px] uppercase font-mono">
               <tr><th className="text-left px-2 py-1.5">Arquivo / série</th><th className="text-left px-2">Hora</th><th className="text-left px-2">Run</th><th className="text-left px-2">%Error</th><th className="text-left px-2"></th></tr>
             </thead>
             <tbody>
@@ -557,8 +557,8 @@ function ModalFinalizados({ itens, raiz, onReabrir, onFechar }: {
     if (confirm(`Voltar ${lista.length} protocolo(s) para a lista?`)) onReabrir(lista)
   }
   return (
-    <div className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4" onClick={onFechar}>
-      <div className="card w-full max-w-md max-h-[80vh] flex flex-col p-4 gap-3" onClick={e => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4" onClick={onFechar}>
+      <div className="card !bg-[var(--bg2,#111620)] shadow-2xl shadow-black/60 w-full max-w-md max-h-[80vh] flex flex-col p-4 gap-3 animate-fade-in" onClick={e => e.stopPropagation()}>
         <div className="flex items-center"><p className="text-sm font-semibold text-white flex-1">Finalizados</p>
           <button type="button" onClick={onFechar} className="text-white/40 hover:text-white"><X size={14} /></button></div>
         <input className="input text-xs" autoFocus placeholder="Filtrar…" value={f} onChange={e => setF(e.target.value)} />

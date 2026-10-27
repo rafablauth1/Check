@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Search, BookOpen, MessageSquareText, HelpCircle, Plus, Upload, Edit2, Trash2, X, Lock, ArrowRight,
-  Loader2, CheckCircle2, AlertTriangle, FileText, Sparkles, Eye, Scale,
+  Loader2, CheckCircle2, AlertTriangle, FileText, Sparkles, Eye, Scale, Image as ImageIcon,
 } from 'lucide-react'
 import Link from 'next/link'
 import { cn } from '@/lib/utils'
@@ -12,12 +12,14 @@ import { normaDoDoc } from '@/lib/normas/vinculo'
 import type { Norma } from '@/lib/normas/tipos'
 import { SETTINGS_KEY } from '@/app/cispr15/types'
 import { extrairTextoArquivo } from '@/lib/useOCR'
+import { lerPdfNorma } from '@/lib/conhecimento/pdf-norma'
 import { limparTextoNorma } from '@/lib/conhecimento/importar'
 import { dividirEmTrechos } from '@/lib/conhecimento/markdown'
+import { inserirFiguras, ehTabela, limparLegenda, type FiguraPdf } from '@/lib/conhecimento/figuras-md'
 import type { Documento, MetaDoc, PerguntaPendente, ResultadoBusca, TipoDoc } from '@/lib/conhecimento/tipos'
 import {
   listarDocs, lerDoc, criarDoc, salvarDoc, removerDoc, buscarNaBase, listarPendentes, registrarPendente,
-  removerPendente, converterDocx, aquecerBusca,
+  removerPendente, converterDocx, aquecerBusca, enviarImagens,
 } from '@/lib/conhecimento/cliente'
 
 /* Base de Conhecimento: normas e notas do laboratório em .md, com busca local
@@ -96,7 +98,7 @@ function useSenha() {
 }
 
 /* ─── editor de documento/nota ────────────────────────────────────────────── */
-type Rascunho = Omit<Documento, 'id'> & { id?: string }
+type Rascunho = Omit<Documento, 'id'> & { id?: string; figuras?: FiguraPdf[] }
 
 function Editor({ inicial, onSalvar, onFechar }: {
   inicial: Rascunho; onSalvar: (d: Rascunho) => Promise<void>; onFechar: () => void
@@ -107,6 +109,9 @@ function Editor({ inicial, onSalvar, onFechar }: {
   const [previa, setPrevia] = useState(false)
   const nota = d.tipo === 'nota'
   const nTrechos = useMemo(() => dividirEmTrechos({ ...d, id: 'x' } as Documento).length, [d])
+  const figurasUsadas = useMemo(() => (d.figuras ?? []).filter(f => f.usar), [d.figuras])
+  const alternarFigura = (arquivo: string) =>
+    setD(p => ({ ...p, figuras: p.figuras?.map(f => f.arquivo === arquivo ? { ...f, usar: !f.usar } : f) }))
   async function salvar() {
     if (!d.titulo.trim()) { setErro('Informe o título.'); return }
     if (!d.corpo.trim()) { setErro(nota ? 'Escreva a resposta.' : 'O texto está vazio.'); return }
@@ -156,13 +161,42 @@ function Editor({ inicial, onSalvar, onFechar }: {
         </div>
         <div className="flex-1 min-h-[280px] overflow-y-auto">
           {previa
-            ? <div className="p-3 rounded-lg border border-white/8"><MdView md={d.corpo} /></div>
+            ? <div className="p-3 rounded-lg border border-white/8">
+                <MdView md={figurasUsadas.length ? inserirFiguras(d.corpo, 'previa', figurasUsadas) : d.corpo}
+                  imagem={src => { const f = figurasUsadas.find(x => src === `img/previa/${x.arquivo}`); return f ? `data:image/png;base64,${f.png}` : undefined }} />
+              </div>
             : <textarea className="input w-full h-full min-h-[280px] font-mono text-[12px] leading-relaxed resize-none" value={d.corpo} onChange={set('corpo')}
                 placeholder={nota ? 'Escreva a resposta. Pode usar **negrito**, listas com "- " e tabelas.' : 'Texto da norma. Itens numerados ("2.5.2.4 …") e títulos ("## …") viram trechos pesquisáveis.'} />}
         </div>
+        {!!d.figuras?.length && (
+          <div className="space-y-1.5">
+            <p className="text-[10px] text-white/45 flex items-center gap-1.5">
+              <ImageIcon size={11} className="text-teal/80" />
+              Figuras e tabelas do PDF: {figurasUsadas.length} de {d.figuras.length} entram no texto, antes da legenda.
+              Clique para tirar as que saíram erradas.
+            </p>
+            <div className="flex gap-2 overflow-x-auto pb-1">
+              {d.figuras.map(f => (
+                <button key={f.arquivo} type="button" onClick={() => alternarFigura(f.arquivo)} title={limparLegenda(f.legenda)}
+                  className={cn('shrink-0 w-28 rounded-lg border p-1 text-left transition-all',
+                    f.usar ? 'border-teal/40 bg-teal/5' : 'border-white/8 opacity-40')}>
+                  <div className="h-16 bg-white rounded overflow-hidden flex items-center justify-center">
+                    <img src={`data:image/png;base64,${f.png}`} alt="" className="max-h-16 max-w-full object-contain" />
+                  </div>
+                  <p className="text-[9px] text-white/60 truncate mt-1">{f.tipo} {f.numero}</p>
+                  <p className="text-[8px] text-white/30 truncate">
+                    {f.usar ? '✓ entra' : 'fora'}{ehTabela(f.tipo) ? (f.md ? ' · tabela transcrita' : ' · só imagem') : ''} · p.{f.pagina}
+                  </p>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
         {!nota && (
           <p className="text-[10px] text-white/30">
-            Confira o texto convertido: tabelas que eram imagem no PDF não viram texto — copie-as à mão como tabela markdown (| coluna | coluna |).
+            Confira o texto convertido. {d.figuras?.length
+              ? 'As tabelas transcritas são automáticas: confira os valores na imagem (aparece na Prévia).'
+              : 'Tabelas que eram imagem no PDF não viram texto — copie-as à mão como tabela markdown (| coluna | coluna |).'}
           </p>
         )}
         {erro && <p className="text-[11px] text-red-400 flex items-center gap-1.5"><AlertTriangle size={11} /> {erro}</p>}
@@ -248,7 +282,17 @@ export default function ConhecimentoPage() {
   }
 
   async function salvarEditor(d: Rascunho, senha: string) {
-    const salvo = d.id ? await salvarDoc(d as Documento, senha) : await criarDoc(d, senha)
+    const { figuras, ...doc } = d
+    let salvo = doc.id ? await salvarDoc(doc as Documento, senha) : await criarDoc(doc, senha)
+    const usar = (figuras ?? []).filter(f => f.usar)
+    if (usar.length) {
+      setImportando(`figuras de ${salvo.titulo}`)
+      try {
+        await enviarImagens(salvo.id, usar.map(f => ({ arquivo: f.arquivo, png: f.png })), senha,
+          n => setImportando(`figuras ${n} de ${usar.length}`))
+        salvo = await salvarDoc({ ...salvo, corpo: inserirFiguras(salvo.corpo, salvo.id, usar) }, senha)
+      } finally { setImportando(null) }
+    }
     editor?.aoSalvar?.()
     setEditor(null)
     await recarregar()
@@ -261,11 +305,19 @@ export default function ConhecimentoPage() {
       try {
         const nome = arquivo.name.toLowerCase()
         let texto: string
+        let figuras: FiguraPdf[] = []
         if (nome.endsWith('.md')) texto = await arquivo.text()
         else if (nome.endsWith('.docx')) texto = limparTextoNorma(await converterDocx(arquivo))
-        else texto = limparTextoNorma(await extrairTextoArquivo(arquivo))   // pdf, txt, imagem (OCR)
+        else if (nome.endsWith('.pdf')) {
+          // pdf.js no próprio app: tira as páginas em francês das IEC, as marcas de licença e
+          // recorta figuras/tabelas. Pouco texto = PDF escaneado → OCR (como antes)
+          const lida = await lerPdfNorma(arquivo, msg => setImportando(`${arquivo.name} — ${msg}`)).catch(() => null)
+          if (lida && lida.texto.replace(/\s/g, '').length > 300) { texto = lida.texto; figuras = lida.figuras }
+          else texto = limparTextoNorma(await extrairTextoArquivo(arquivo))
+        }
+        else texto = limparTextoNorma(await extrairTextoArquivo(arquivo))   // txt, imagem (OCR)
         const titulo = arquivo.name.replace(/\.[^.]+$/, '')
-        setEditor({ rascunho: { titulo, tipo: 'norma', origem: arquivo.name, corpo: nome.endsWith('.md') ? texto : `# ${titulo}\n\n${texto}` } })
+        setEditor({ rascunho: { titulo, tipo: 'norma', origem: arquivo.name, corpo: nome.endsWith('.md') ? texto : `# ${titulo}\n\n${texto}`, figuras } })
       } catch (e) {
         setAviso({ ok: false, msg: `Não foi possível ler ${arquivo.name}: ${e instanceof Error ? e.message : String(e)}` })
       } finally { setImportando(null) }

@@ -21,7 +21,9 @@ function inline(s: string): React.ReactNode[] {
 /** "img/<doc>/<arquivo>.png" (relativo à pasta da Base) → rota que entrega a imagem. */
 const srcImagem = (s: string) => s.startsWith('img/') ? `/api/conhecimento/imagem/${s.slice(4)}` : s
 
-export function MdView({ md, alvo }: { md: string; alvo?: string }) {
+/** `imagem`: resolve o endereço de uma figura antes da rota padrão (prévia do editor:
+    as figuras do PDF ainda não foram enviadas, vêm como data: URL). */
+export function MdView({ md, alvo, imagem }: { md: string; alvo?: string; imagem?: (src: string) => string | undefined }) {
   const ref = useRef<HTMLDivElement>(null)
   const [ampliada, setAmpliada] = useState<{ src: string; legenda: string } | null>(null)
   const blocos = useMemo(() => md.replace(/\r\n/g, '\n').split(/\n{2,}/), [md])
@@ -52,7 +54,7 @@ export function MdView({ md, alvo }: { md: string; alvo?: string }) {
         // figura/tabela recortada da norma: ![legenda](img/<doc>/<arquivo>.png)
         const img = t.match(/^!\[([^\]]*)\]\(([^)\s]+)\)$/)
         if (img) {
-          const src = srcImagem(img[2])
+          const src = imagem?.(img[2]) ?? srcImagem(img[2])
           return (
             <figure key={i} data-bloco={img[1]} className="rounded py-1">
               <button type="button" onClick={() => setAmpliada({ src, legenda: img[1] })} title="Ampliar"

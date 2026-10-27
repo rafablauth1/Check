@@ -73,6 +73,23 @@ async function gravarTexto(caminho: string, conteudo: string, relativo: string) 
   }
 }
 
+/** Figura/tabela recortada do PDF de uma norma: <conhecimento>/img/<doc>/<arquivo>.png (+ espelho). */
+export async function gravarImagem(docId: string, arquivo: string, dados: Buffer) {
+  if (!/^[a-z0-9-]+$/i.test(docId) || !/^[A-Za-z0-9-]+\.png$/.test(arquivo)) throw new Error('Nome de imagem inválido.')
+  const relativo = path.join(PASTA_CONHECIMENTO, 'img', docId, arquivo)
+  const caminho = path.join(await pasta(), 'img', docId, arquivo)
+  await fs.promises.mkdir(path.dirname(caminho), { recursive: true })
+  const tmp = `${caminho}.tmp.${process.pid}.${Date.now()}`
+  await fs.promises.writeFile(tmp, dados)
+  await fs.promises.rename(tmp, caminho)
+  const { mirrorFolder } = await readSettings()
+  if (mirrorFolder) {
+    const mp = path.join(mirrorFolder, relativo)
+    fs.promises.mkdir(path.dirname(mp), { recursive: true })
+      .then(() => fs.promises.writeFile(mp, dados)).catch(() => {})
+  }
+}
+
 /** Id livre a partir do título (acrescenta -2, -3… se já existir). */
 export async function idLivre(titulo: string): Promise<string> {
   const existentes = new Set((await arquivosMd()).map(a => a.id))

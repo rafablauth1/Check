@@ -45,6 +45,16 @@ export async function registrarPendente(pergunta: string): Promise<void> {
 export async function removerPendente(id: string, senha: string): Promise<void> {
   await json(await fetch(`/api/conhecimento/pendentes?id=${encodeURIComponent(id)}`, { method: 'DELETE', headers: comSenha(senha) }))
 }
+/** Envia figuras/tabelas recortadas do PDF (em lotes, para não mandar dezenas de MB de uma vez). */
+export async function enviarImagens(docId: string, imagens: { arquivo: string; png: string }[], senha: string,
+  progresso?: (feitas: number) => void): Promise<void> {
+  for (let i = 0; i < imagens.length; i += 8) {
+    await json(await fetch(`/api/conhecimento/${encodeURIComponent(docId)}/imagens`, {
+      method: 'POST', headers: comSenha(senha), body: JSON.stringify({ imagens: imagens.slice(i, i + 8) }),
+    }))
+    progresso?.(Math.min(i + 8, imagens.length))
+  }
+}
 export async function converterDocx(arquivo: File): Promise<string> {
   const fd = new FormData()
   fd.append('arquivo', arquivo)

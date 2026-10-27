@@ -6,7 +6,9 @@ import {
   type CampoDisplay, type ResultadoCampo,
 } from '@/lib/vigia/seg7'
 import { CFG_PADRAO, FILTROS_PADRAO, carregarConfig, type ConfigVigia, type ConfigCamera } from '@/lib/vigia/config'
-import { frequencias, fmtTempo, type Segmento } from '@/lib/vigia/emc'
+import {
+  frequencias, fmtTempo, fmtFreq, duracao, tempoPasso, expandir, chaveSegmento, segmentoDe, type Segmento,
+} from '@/lib/vigia/emc'
 import { DetectorCiclo, resumirCiclos, desvioPadrao, type Ciclo } from '@/lib/vigia/ciclo'
 import { Alarme, Voz } from '@/lib/vigia/alarme'
 import { CameraWeb, listarCameras, resolverFonte } from '@/lib/vigia/camera-web'
@@ -282,6 +284,7 @@ export class App {
     if (!(this.cfg.perfil in this.perfis) && Object.keys(this.perfis).length) this.cfg.perfil = Object.keys(this.perfis)[0]
     this._montar_calibracao()
     this._montar_config()
+    this._montar_emc()
     this.proc = new Processador(this.cvPronto)
     this.proc.aoResultado = m => this._resultado(m)
     this.proc.aoBgr = (bgr, t) => this._amostrar(bgr, t)
@@ -992,7 +995,6 @@ export class App {
   async salvar_perfis_arquivo() {
     await fetch('/api/vigia', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ perfis: this.perfis }) })
   }
-  _recarregar_segmentos() { /* aba Perfil EMC (próxima etapa) */ }
 
   async _aplicar_ciclo() {
     const c = this.ciclo_medido
@@ -1015,6 +1017,210 @@ export class App {
       + `Valida quando o valor ficar parado por ${br(parado, 1)} s (não alterado)\n`
       + ('janela_s' in sug ? `Janela de captura = ${br(sug.janela_s, 2)} s\n` : '')
       + '\nNo modo POR TEMPO o intervalo conta a partir da saída do valor congelado de cada abastecimento lido; o 1º abastecimento após o início é sempre lido.' + aviso)
+  }
+
+  // ================================================================== ABA EMC
+  static CORES_SEG: Record<string, string> = { feito: '#c8e6c9', atual: '#fff3c4', pulado: '#ffe0b2' }
+  v_perfil = new Var('')
+  perfisNomes = new Var<string[]>([])
+  /** linhas da tabela de segmentos (muda a cada _recarregar_segmentos / _pintar_segmentos) */
+  linhasSeg = new Var<{ id: string; valores: string[]; tag?: string }[]>([])
+  selSeg = new Var<string[]>([])
+  v_seg: Record<string, Var<string>> = Object.fromEntries(
+    ['nome', 'tipo', 'f_ini', 'f_fim', 'passo_pct', 'dwell_s', 'extra_s', 'duracao_s', 'obs', 'face', 'polarizacao'].map(k => [k, new Var('')]))
+  v_seg_ag = new Var(true)
+  txt_freqs = new Var('')
+  lbl_total = new Var('')
+  /** diálogo "Gerar faces × polarizações" aberto: faixas base */
+  dlgFaces = new Var<Segmento[] | null>(null)
+  seg_status: string[] = []
+  cron_segmentos: Segmento[] = []
+
+  _montar_emc() {
+    this.v_perfil.set(this.cfg.perfil)
+    this.perfisNomes.set(Object.keys(this.perfis))
+    this._recarregar_segmentos()
+  }
+
+  _segs(): Segmento[] {
+    const k = this.v_perfil.get()
+    return (this.perfis[k] ??= [])
+  }
+
+  _recarregar_segmentos(sel: number | null = null) {
+    let total = 0.0, passos = 0
+    const linhas = this._segs().map((s, i) => {
+      const vr = s.tipo === 'varredura'
+      const n = vr ? frequencias(s).length : 0
+      passos += n
+      total += duracao(s)
+      return {
+        id: String(i), valores: [
+          String(i + 1), s.nome, s.face, s.polarizacao, s.tipo, vr ? fmtFreq(s.f_ini) : '—', vr ? fmtFreq(s.f_fim) : '—',
+          vr ? br(s.passo_pct, 2) : '—', vr ? br(s.dwell_s, 2) : '—', vr ? br(s.extra_s, 2) : '—',
+          vr ? String(n) : '—', fmtTempo(duracao(s)), s.aguardar ? 'sim' : 'não', s.obs, '',
+        ],
+      }
+    })
+    this.linhasSeg.set(linhas)
+    this.lbl_total.set(`Total: ${this._segs().length} segmento(s), ${passos} frequências, tempo de perturbação ≈ ${fmtTempo(total)} (sem contar as pausas para troca de segmento)   |   arraste as linhas para mudar a ordem`)
+    if (sel !== null && sel < linhas.length) this.selSeg.set([String(sel)])
+    this._pintar_segmentos()
+  }
+
+  /** Pinta os segmentos já feitos (verde), o atual (amarelo) e os pulados (laranja). */
+  _pintar_segmentos() {
+    let mapa: Record<string, string> = {}
+    if (this.seg_status.length && this.cron_segmentos.length) {
+      mapa = Object.fromEntries(this.cron_segmentos.map((s, i) => [chaveSegmento(s), this.seg_status[i]]))
+    }
+    const segs = this._segs()
+    let mudou = false
+    const linhas = this.linhasSeg.get().map(l => {
+      const i = Number(l.id)
+      const v = i < segs.length ? mapa[chaveSegmento(segs[i])] ?? '' : ''
+      const tag = v in App.CORES_SEG ? v : undefined
+      const sit = v !== 'pendente' ? v : ''
+      if (l.tag === tag && l.valores[14] === sit) return l
+      mudou = true
+      const valores = [...l.valores]; valores[14] = sit
+      return { ...l, valores, tag }
+    })
+    if (mudou) this.linhasSeg.set(linhas)
+  }
+
+  _seg_selecionado(ids: string[]) {
+    this.selSeg.set(ids)
+    if (!ids.length) return
+    const seg = this._segs()[Number(ids[0])]
+    if (!seg) return
+    const sr = seg as unknown as Record<string, unknown>
+    for (const [k, v] of Object.entries(this.v_seg)) {
+      const val = sr[k]
+      v.set(typeof val === 'number' ? fmtG(val) : String(val))
+    }
+    this.v_seg_ag.set(seg.aguardar)
+    if (seg.tipo === 'varredura') {
+      const tp = tempoPasso(seg)
+      const linhas = frequencias(seg).map((fr, i) => `${String(i + 1).padStart(4)}  ${fmtTempo(i * tp).padStart(7)}  ${fmtFreq(fr)}`)
+      this.txt_freqs.set('passo  tempo   frequência\n' + linhas.join('\n'))
+    } else {
+      this.txt_freqs.set(`Etapa por tempo: ${fmtTempo(duracao(seg))}`)
+    }
+  }
+
+  _seg_do_form(): Segmento {
+    const g = Object.fromEntries(Object.entries(this.v_seg).map(([k, v]) => [k, v.get()]))
+    return segmentoDe({
+      nome: g.nome.trim() || 'Segmento', tipo: (g.tipo || 'varredura') as Segmento['tipo'],
+      f_ini: num(g.f_ini, 80)!, f_fim: num(g.f_fim, 1000)!, passo_pct: Math.max(0.01, num(g.passo_pct, 1)!),
+      dwell_s: Math.max(0.0, num(g.dwell_s, 1)!), extra_s: Math.max(0.0, num(g.extra_s, 0)!),
+      duracao_s: Math.max(0.0, num(g.duracao_s, 60)!), aguardar: this.v_seg_ag.get(), obs: g.obs,
+      face: g.face.trim(), polarizacao: g.polarizacao.trim(),
+    })
+  }
+
+  /** Repete as faixas do perfil para cada face do EUT e polarização da antena. */
+  async _gerar_faces() {
+    const segs = this._segs()
+    let base = segs.filter(s => !s.face && !s.polarizacao)
+    if (!base.length) {  // perfil já expandido: usa uma cópia de cada faixa distinta
+      const vistos = new Set<string>()
+      for (const s of segs) {
+        const chave = JSON.stringify([s.nome, s.tipo, s.f_ini, s.f_fim, s.passo_pct, s.dwell_s, s.extra_s, s.duracao_s])
+        if (!vistos.has(chave)) { vistos.add(chave); base.push(s) }
+      }
+    }
+    if (!base.length) { await messagebox.showinfo('Gerar', 'Adicione antes as faixas (ex.: 80–300 MHz, 300 MHz–1 GHz, 1–3 GHz).'); return }
+    base = [...base]
+    this.dlgFaces.set(base)
+  }
+
+  async _gerar_faces_aplicar(base: Segmento[], faces: string[], pols: string[], ordem: string) {
+    const novos = expandir(base, faces, pols, ordem)
+    if (await messagebox.askyesno('Gerar', `Substituir os ${this._segs().length} segmento(s) do perfil '${this.v_perfil.get()}' por ${novos.length} segmentos?`)) {
+      this.perfis[this.v_perfil.get()] = novos
+      this._recarregar_segmentos()
+      this.dlgFaces.set(null)
+    }
+  }
+
+  private _sel1() { const s = this.selSeg.get(); return s.length ? Number(s[0]) : null }
+
+  _seg_add() {
+    this._segs().push(this._seg_do_form())
+    this._recarregar_segmentos(this._segs().length - 1)
+  }
+
+  _seg_upd() {
+    const i = this._sel1()
+    if (i === null) return
+    this._segs()[i] = this._seg_do_form()
+    this._recarregar_segmentos(i)
+    this._seg_selecionado([String(i)])
+  }
+
+  _seg_rem() {
+    const i = this._sel1()
+    if (i === null) return
+    this._segs().splice(i, 1)
+    this.selSeg.set([])
+    this._recarregar_segmentos()
+  }
+
+  _seg_mover(d: number) {
+    const i = this._sel1()
+    if (i === null) return
+    const j = i + d
+    const segs = this._segs()
+    if (j >= 0 && j < segs.length) {
+      ;[segs[i], segs[j]] = [segs[j], segs[i]]
+      this._recarregar_segmentos(j)
+    }
+  }
+
+  /** arrastar segmentos na aba Perfil EMC */
+  _seg_drag_fim(ini: string, alvo: string) {
+    const i = Number(ini), j = Number(alvo)
+    const segs = this._segs()
+    segs.splice(j, 0, segs.splice(i, 1)[0])
+    this._recarregar_segmentos(j)
+    void this.salvar_perfis_arquivo().catch(() => undefined)
+  }
+
+  _perfil_escolhido() {
+    this.cfg.perfil = this.v_perfil.get()
+    this.selSeg.set([])
+    this._recarregar_segmentos()
+    this._atualizar_lbl_perfil()
+  }
+  _atualizar_lbl_perfil() { /* aba Ensaio (próxima etapa) */ }
+
+  async _novo_perfil(base: Segmento[] | null = null) {
+    const nome = await simpledialog.askstring('Perfil', 'Nome do novo perfil:')
+    if (!nome) return
+    if (nome in this.perfis) { await messagebox.showwarning('Perfil', 'Já existe um perfil com esse nome.'); return }
+    this.perfis[nome] = (base ?? []).map(s => segmentoDe({ ...s }))
+    this.perfisNomes.set(Object.keys(this.perfis))
+    this.v_perfil.set(nome)
+    this._perfil_escolhido()
+  }
+
+  _duplicar_perfil() { void this._novo_perfil(this._segs()) }
+
+  async _excluir_perfil() {
+    const nome = this.v_perfil.get()
+    if (Object.keys(this.perfis).length <= 1 || !await messagebox.askyesno('Perfil', `Excluir o perfil '${nome}'?`)) return
+    delete this.perfis[nome]
+    this.perfisNomes.set(Object.keys(this.perfis))
+    this.v_perfil.set(Object.keys(this.perfis)[0])
+    this._perfil_escolhido()
+  }
+
+  async _salvar_perfis() {
+    await this.salvar_perfis_arquivo()
+    await this.salvar_cfg()
+    await messagebox.showinfo('Perfis', `Perfis salvos em ${this.pastaDados}\\perfis_emc.json`)
   }
 
   // ------------------------------------------------------------------ quadros

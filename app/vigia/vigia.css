@@ -106,3 +106,16 @@
 .vg-spinbox > div { display: flex; flex-direction: column; width: 15px; border-left: 1px solid #e3e3e3; }
 .vg-spinbox > div > button { flex: 1; font-size: 6px; line-height: 1; padding: 0; background: #f6f6f6; color: #606060; border: none; cursor: default; }
 .vg-spinbox > div > button:hover { background: #e5f1fb; }
+
+/* ttk.Treeview */
+.vg-tree { flex: 1; min-height: 0; overflow: auto; background: #fff; border: 1px solid #828790; position: relative; }
+.vg-tree table { border-collapse: separate; border-spacing: 0; table-layout: fixed; font-size: 12px; }
+.vg-tree th {
+  position: sticky; top: 0; z-index: 1; background: #fff; font-weight: normal; height: 25px; padding: 0 4px;
+  border-right: 1px solid #e5e5e5; border-bottom: 1px solid #e5e5e5; text-align: left; white-space: nowrap; overflow: hidden;
+}
+.vg-tree th:hover { background: #d9ebf9; }
+.vg-tree th > .borda { position: absolute; top: 0; right: -3px; width: 6px; height: 100%; cursor: col-resize; z-index: 2; }
+.vg-tree td { height: 22px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: clip; cursor: default; }
+.vg-tree tr.sel td { background: #0078d7 !important; color: #fff; }
+.vg-text { font-family: Consolas, monospace; font-size: 12px; background: #fff; border: 1px solid #828790; white-space: pre; overflow: auto; padding: 1px 2px; user-select: text; }

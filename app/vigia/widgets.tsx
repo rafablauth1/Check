@@ -210,3 +210,67 @@ export function Dialogos() {
     </div>
   )
 }
+
+export interface ColunaTabela { id: string; largura: number; anchor?: 'w' | 'center' | 'e' }
+
+/** ttk.Treeview (show="headings") + colunas_ajustaveis: larguras guardadas em layout[chave]. */
+export function Tabela({ colunas, linhas, layout, chave, sel, aoSelecionar, aoArrastar, aoDuploClique, aoMenu, cores, altura }: {
+  colunas: ColunaTabela[]; linhas: { id: string; valores: ReactNode[]; tag?: string }[]
+  layout: Record<string, unknown>; chave: string; sel: string[]; aoSelecionar: (ids: string[]) => void
+  /** arrastar uma linha para outra posição (de, para) */
+  aoArrastar?: (de: string, para: string) => void
+  aoDuploClique?: (id: string) => void
+  aoMenu?: (id: string, x: number, y: number) => void
+  cores?: Record<string, string>; altura?: number
+}) {
+  const [, forcar] = useState(0)
+  const salvas = (layout[chave] && typeof layout[chave] === 'object' ? layout[chave] : {}) as Record<string, number>
+  const larg = (c: ColunaTabela) => Math.max(30, Number(salvas[c.id] ?? c.largura))
+  const arrasto = useRef<{ de: string; para: string | null } | null>(null)
+  const redimensionar = (c: ColunaTabela, e: React.PointerEvent) => {
+    e.preventDefault(); e.stopPropagation()
+    const x0 = e.clientX, w0 = larg(c)
+    const mover = (ev: PointerEvent) => {
+      const atual = (layout[chave] && typeof layout[chave] === 'object' ? layout[chave] : {}) as Record<string, number>
+      layout[chave] = { ...atual, [c.id]: Math.max(30, Math.round(w0 + ev.clientX - x0)) }
+      forcar(n => n + 1)
+    }
+    const soltar = () => { window.removeEventListener('pointermove', mover); window.removeEventListener('pointerup', soltar) }
+    window.addEventListener('pointermove', mover); window.addEventListener('pointerup', soltar)
+  }
+  const total = colunas.reduce((a, c) => a + larg(c), 0)
+  return (
+    <div className="vg-tree" style={{ height: altura }} onPointerUp={() => {
+      const a = arrasto.current
+      arrasto.current = null
+      if (a && a.para && a.para !== a.de) aoArrastar?.(a.de, a.para)
+    }}>
+      <table style={{ width: total }}>
+        <colgroup>{colunas.map(c => <col key={c.id} style={{ width: larg(c) }} />)}</colgroup>
+        <thead>
+          <tr>{colunas.map(c => (
+            <th key={c.id} style={{ position: 'sticky' }}>{c.id}<span className="borda" onPointerDown={e => redimensionar(c, e)} /></th>
+          ))}</tr>
+        </thead>
+        <tbody>
+          {linhas.map(l => (
+            <tr key={l.id} className={sel.includes(l.id) ? 'sel' : ''}
+              onPointerDown={e => {
+                if (e.button !== 0) return
+                if (e.ctrlKey) aoSelecionar(sel.includes(l.id) ? sel.filter(x => x !== l.id) : [...sel, l.id])
+                else aoSelecionar([l.id])
+                arrasto.current = aoArrastar ? { de: l.id, para: null } : null
+              }}
+              onPointerEnter={() => { if (arrasto.current) { arrasto.current.para = l.id; if (l.id !== arrasto.current.de) aoSelecionar([l.id]) } }}
+              onDoubleClick={() => aoDuploClique?.(l.id)}
+              onContextMenu={e => { if (aoMenu) { e.preventDefault(); if (!sel.includes(l.id)) aoSelecionar([l.id]); aoMenu(l.id, e.clientX, e.clientY) } }}>
+              {l.valores.map((v, i) => (
+                <td key={i} style={{ textAlign: colunas[i].anchor === 'w' ? 'left' : colunas[i].anchor === 'e' ? 'right' : 'center', background: l.tag ? cores?.[l.tag] : undefined }}>{v}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}

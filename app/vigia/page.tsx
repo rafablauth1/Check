@@ -7,6 +7,7 @@ import { useVar, messagebox } from '@/lib/vigia/tk'
 import { Notebook, Dialogos } from './widgets'
 import AbaCalibracao from './AbaCalibracao'
 import AbaConfig from './AbaConfig'
+import AbaEmc from './AbaEmc'
 
 const ABAS = [
   '  Ensaio  ',
@@ -46,7 +47,7 @@ export default function VigiaPage() {
           <EmBreve texto="Ensaio" />
           <AbaCalibracao app={app} />
           <AbaConfig app={app} />
-          <EmBreve texto="Perfil EMC" />
+          <AbaEmc app={app} />
           <EmBreve texto="Registro (FOR EMC38)" />
         </Notebook>
       )}

@@ -41,3 +41,6 @@ dados/*.lock
 # dicionário pt-BR do corretor ortográfico: gerado por scripts/copy-dicionario.js
 # a partir de node_modules/dictionary-pt (ver predev/prebuild em package.json)
 public/dicionario/
+
+# OpenCV do VIGIA-7S (WebAssembly): gerado por scripts/copy-opencv.js
+public/vigia/opencv.js

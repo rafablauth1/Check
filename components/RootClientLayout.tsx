@@ -20,6 +20,7 @@ function getPageTitle(pathname: string): string {
   if (pathname === '/agenda')               return 'Agenda'
   if (pathname === '/configuracoes')        return 'Configurações'
   if (pathname === '/grandezas')            return 'Grandezas'
+  if (pathname === '/vigia')                return 'VIGIA-7S — verificação de displays de 7 segmentos'
   if (/^\/equipamentos\/[^/]+$/.test(pathname)) return 'Detalhe do Equipamento'
   if (/^\/normas\/[^/]+$/.test(pathname))       return 'Detalhe da Norma'
   if (/^\/checagens\/[^/]+$/.test(pathname))    return 'Detalhe da Checagem'

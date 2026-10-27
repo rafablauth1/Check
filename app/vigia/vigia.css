@@ -1,0 +1,108 @@
+/* VIGIA-7S no app — aparência do ttk tema "vista" (Windows), só dentro de .vg */
+.vg {
+  --vg-fundo: #f0f0f0;
+  --vg-borda: #adadad;
+  --vg-borda-campo: #7a7a7a;
+  --vg-azul: #0078d7;
+  font-family: 'Segoe UI', Tahoma, sans-serif;
+  font-size: 12px;              /* Segoe UI 9 pt */
+  color: #000;
+  background: var(--vg-fundo);
+  color-scheme: light;
+  user-select: none;
+}
+.vg * { box-sizing: border-box; }
+.vg input, .vg select, .vg button, .vg textarea { font: inherit; color: #000; }
+
+/* ---- Notebook */
+.vg-nb { display: flex; flex-direction: column; min-height: 0; }
+.vg-nb > .vg-abas { display: flex; align-items: flex-end; padding-left: 2px; position: relative; z-index: 1; }
+.vg-nb > .vg-abas > button {
+  white-space: pre; padding: 2px 6px 3px; margin-right: -1px; background: #f0f0f0; border: 1px solid #d9d9d9;
+  border-bottom: none; cursor: default; position: relative; top: 1px; height: 21px;
+}
+.vg-nb > .vg-abas > button:hover { background: #d8eaf9; border-color: #7eb4ea; }
+.vg-nb > .vg-abas > button.sel { background: #fff; border-color: #d9d9d9; height: 24px; top: 1px; margin: 0 -2px 0 -2px; z-index: 2; padding: 3px 8px 4px; }
+.vg-nb > .vg-pag { flex: 1; min-height: 0; border: 1px solid #d9d9d9; background: #fff; padding: 4px; display: flex; flex-direction: column; }
+.vg-nb.vg-nb-interno > .vg-pag { background: var(--vg-fundo); flex: none; }
+
+/* ---- Botão */
+.vg-bt {
+  min-width: 0; padding: 1px 8px; height: 23px; border: 1px solid var(--vg-borda); border-radius: 0;
+  background: #e1e1e1; cursor: default; white-space: nowrap;
+}
+.vg-bt:hover:not(:disabled) { background: #e5f1fb; border-color: var(--vg-azul); }
+.vg-bt:active:not(:disabled) { background: #cce4f7; border-color: #005499; }
+.vg-bt:focus-visible { outline: 1px dotted #000; outline-offset: -4px; }
+.vg-bt:disabled { color: #a0a0a0; background: #ccc; border-color: #bfbfbf; }
+.vg-bt.acao { font-size: 13px; font-weight: bold; height: auto; padding: 6px 10px; }
+.vg-bt.pequeno { font-size: 11px; height: 19px; padding: 0 4px; }
+
+/* ---- Campos */
+.vg-entry, .vg-combo, .vg-spin {
+  height: 21px; border: 1px solid var(--vg-borda-campo); background: #fff; padding: 0 3px; border-radius: 0; outline: none;
+}
+.vg-entry:hover, .vg-combo:hover, .vg-spin:hover { border-color: #000; }
+.vg-entry:focus, .vg-combo:focus, .vg-spin:focus { border-color: var(--vg-azul); }
+.vg-combo[data-ro] { background: #e1e1e1; border-color: var(--vg-borda); }
+.vg-spin::-webkit-inner-spin-button { opacity: 1; height: 19px; }
+
+.vg-check { display: inline-flex; align-items: center; gap: 4px; cursor: default; white-space: nowrap; }
+.vg-check input { margin: 0; width: 13px; height: 13px; accent-color: var(--vg-azul); }
+
+/* ---- Escala (ttk.Scale) */
+.vg-escala { display: flex; align-items: center; gap: 2px; min-width: 0; }
+.vg-escala input[type=range] { flex: 1; min-width: 40px; height: 22px; accent-color: var(--vg-azul); margin: 0; }
+.vg-escala > span { width: 46px; text-align: right; flex: none; }
+
+/* ---- LabelFrame */
+.vg-lf { border: 1px solid #dcdcdc; border-radius: 0; padding: 2px 0 2px; margin: 0; min-width: 0; }
+.vg-lf > legend { padding: 0 2px; margin-left: 6px; }
+
+/* ---- Listbox */
+.vg-list { border: 1px solid #828790; background: #fff; overflow-y: auto; font-size: 13px; }
+.vg-list > div { padding: 0 2px; white-space: pre; cursor: default; line-height: 18px; }
+.vg-list > div.sel { background: #0078d7; color: #fff; }
+
+/* ---- PanedWindow */
+.vg-paned { display: flex; min-height: 0; min-width: 0; flex: 1; }
+.vg-paned.vert { flex-direction: column; }
+.vg-sash { flex: none; width: 5px; cursor: col-resize; background: var(--vg-fundo); }
+.vg-paned.vert > .vg-sash { width: auto; height: 5px; cursor: row-resize; }
+
+/* ---- Rótulos */
+.vg-titulo { font-size: 15px; font-weight: bold; }
+.vg-info { font-size: 13px; }
+.vg-grande { font-size: 37px; font-weight: bold; }
+.vg-freq { font-family: Consolas, monospace; font-size: 29px; font-weight: bold; color: #1a73e8; }
+.vg-live { font-family: Consolas, monospace; font-size: 24px; font-weight: bold; }
+
+/* ---- Diálogos (messagebox) */
+.vg-dlg-fundo { position: fixed; inset: 0; background: rgba(0,0,0,.08); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.vg-dlg { background: #fff; border: 1px solid #888; box-shadow: 0 6px 24px rgba(0,0,0,.35); min-width: 320px; max-width: 560px; }
+.vg-dlg > .tit { height: 30px; display: flex; align-items: center; padding: 0 10px; background: #fff; border-bottom: 1px solid #e5e5e5; }
+.vg-dlg > .corpo { padding: 18px 20px; display: flex; gap: 14px; white-space: pre-wrap; user-select: text; font-size: 12px; }
+.vg-dlg > .rodape { background: var(--vg-fundo); padding: 10px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid #dfdfdf; }
+.vg-dlg > .rodape .vg-bt { min-width: 75px; }
+
+.vg-canvas { background: #111; display: block; width: 100%; height: 100%; outline: none; }
+.vg-expandir { position: absolute; top: 6px; right: 12px; font-size: 11px; height: 19px; padding: 0 4px; z-index: 3; }
+
+/* o globals.css tira a aparência nativa de todos os campos: aqui ela volta (como no Windows) */
+.vg input[type=checkbox], .vg input[type=radio], .vg input[type=range], .vg select { -webkit-appearance: auto; appearance: auto; }
+.vg input[type=checkbox], .vg input[type=radio] { background: #fff; }
+.vg select.vg-combo { background: #e1e1e1; padding: 0 0 0 2px; }
+.vg * { border-color: #adadad; }
+.vg ::-webkit-scrollbar { width: 17px; height: 17px; }
+.vg ::-webkit-scrollbar-track { background: #f0f0f0; }
+.vg ::-webkit-scrollbar-thumb { background: #cdcdcd; border-radius: 0; border: 1px solid #f0f0f0; }
+.vg ::-webkit-scrollbar-thumb:hover { background: #a6a6a6; }
+
+/* ttk.Spinbox */
+.vg-spinbox { display: inline-flex; height: 21px; border: 1px solid var(--vg-borda-campo); background: #fff; }
+.vg-spinbox:hover { border-color: #000; }
+.vg-spinbox:focus-within { border-color: var(--vg-azul); }
+.vg-spinbox > input { border: none; outline: none; padding: 0 3px; min-width: 0; background: #fff; height: 19px; }
+.vg-spinbox > div { display: flex; flex-direction: column; width: 15px; border-left: 1px solid #e3e3e3; }
+.vg-spinbox > div > button { flex: 1; font-size: 6px; line-height: 1; padding: 0; background: #f6f6f6; color: #606060; border: none; cursor: default; }
+.vg-spinbox > div > button:hover { background: #e5f1fb; }

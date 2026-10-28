@@ -9,6 +9,7 @@ import AbaCalibracao from './AbaCalibracao'
 import AbaConfig from './AbaConfig'
 import AbaEmc from './AbaEmc'
 import AbaEnsaio from './AbaEnsaio'
+import AbaRegistro from './AbaRegistro'
 import JanelasEnsaio from './JanelasEnsaio'
 
 const ABAS = [
@@ -24,10 +25,12 @@ export default function VigiaPage() {
   if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') Object.assign(window, { __vigia: app, __vigiaDialogo: dialogo })   // testes automáticos
   const carregado = useVar(app.carregado)
   const versaoCv = useVar(app.cvPronto)
+  const [dados, setDados] = useState({ pasta: '', compartilhada: false })
   useEffect(() => {
     let vivo = true
     void (async () => {
       const r = await fetch('/api/vigia', { cache: 'no-store' }).then(x => x.json()).catch(() => null)
+      if (vivo && r) setDados({ pasta: r.pasta, compartilhada: !!r.compartilhada })
       // 1ª vez no app: oferece trazer a calibração e os perfis do VIGIA-7S (o original só é lido)
       if (vivo && r && !r.config && r.origem?.existe
         && await messagebox.askyesno('VIGIA-7S', `Encontrei o VIGIA-7S em:\n${r.origem.pasta}\n\nTrazer a calibração da câmera, os campos e os perfis EMC de lá?\n(o VIGIA-7S original não é alterado)`)) {
@@ -50,7 +53,7 @@ export default function VigiaPage() {
           <AbaCalibracao app={app} />
           <AbaConfig app={app} />
           <AbaEmc app={app} />
-          <EmBreve texto="Registro (FOR EMC38)" />
+          <AbaRegistro app={app} pasta={dados.pasta} compartilhada={dados.compartilhada} />
         </Notebook>
       )}
       {carregado && !versaoCv && <div style={{ position: 'absolute', bottom: 10, left: 16, color: '#5f6368' }}>Carregando OpenCV…</div>}
@@ -58,8 +61,4 @@ export default function VigiaPage() {
       <Dialogos />
     </div>
   )
-}
-
-function EmBreve({ texto }: { texto: string }) {
-  return <div style={{ padding: 20, color: '#5f6368' }}>Aba “{texto}”: em porte (próxima etapa).</div>
 }

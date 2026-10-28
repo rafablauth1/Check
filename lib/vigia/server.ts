@@ -1,18 +1,27 @@
-// VIGIA-7S no app — arquivos do VIGIA (só no servidor): config.json, perfis_emc.json e resultados/,
-// numa pasta própria do app (userData/vigia). O VIGIA-7S original só é LIDO (importar), nunca alterado.
+// VIGIA-7S no app — arquivos do VIGIA (só no servidor): config.json, perfis_emc.json e resultados/.
+// São os MESMOS do VIGIA-7S da área de trabalho (pasta "Ensaio via Cam"): calibração, perfis, ensaios e registros
+// ficam compartilhados entre os dois. Só os dados — o código do VIGIA-7S (vigia7s/) nunca é tocado.
+// Sem o VIGIA-7S no PC: pasta própria do app (userData/vigia). VIGIA_PASTA (variável de ambiente) força outra pasta.
 import fs from 'fs/promises'
+import { existsSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { getUserDataDir } from '@/lib/settings-server'
 import { completarPerfis, type Segmento } from '@/lib/vigia/emc'
 
-export const pastaVigia = () => path.join(getUserDataDir(), 'vigia')
+/** Pasta do VIGIA-7S original (área de trabalho). */
+export const ORIGEM_VIGIA_PADRAO = path.join(os.homedir(), 'Desktop', 'Ensaio via Cam')
+
+/** BASE do VIGIA: config.json, perfis_emc.json e resultados/ ficam nela. */
+export function pastaVigia() {
+  if (process.env.VIGIA_PASTA) return process.env.VIGIA_PASTA
+  if (existsSync(path.join(ORIGEM_VIGIA_PADRAO, 'vigia7s'))) return ORIGEM_VIGIA_PADRAO
+  return path.join(getUserDataDir(), 'vigia')
+}
+export const compartilhada = () => path.resolve(pastaVigia()) === path.resolve(ORIGEM_VIGIA_PADRAO)
 export const cfgPath = () => path.join(pastaVigia(), 'config.json')
 export const perfisPath = () => path.join(pastaVigia(), 'perfis_emc.json')
 export const resultDir = () => path.join(pastaVigia(), 'resultados')
-
-/** Pasta do VIGIA-7S original (para importar a calibração). */
-export const ORIGEM_VIGIA_PADRAO = path.join(os.homedir(), 'Desktop', 'Ensaio via Cam')
 
 async function lerJson<T>(p: string): Promise<T | null> {
   try { return JSON.parse(await fs.readFile(p, 'utf-8')) as T } catch { return null }
@@ -45,6 +54,26 @@ export async function salvarArquivo(nome: string, dados: Buffer, sub = ''): Prom
   const p = path.join(dir, path.basename(nome))
   await fs.writeFile(p, dados)
   return p
+}
+
+/** resolver_caminho(): relativo à BASE; absoluto antigo que não existe mais → mesmo arquivo em resultados/registros. */
+export function resolverCaminho(p: string): string | null {
+  if (!p) return null
+  if (!path.isAbsolute(p)) return path.join(pastaVigia(), p)
+  // registro de outra cópia do app (ex.: Desktop → pendrive): usa o desta cópia, se existir
+  const alt = path.join(resultDir(), 'registros', path.basename(p))
+  const partes = path.normalize(p).toLowerCase().split(path.sep)
+  if (partes.slice(-3, -1).join('/') === 'resultados/registros' && existsSync(alt)) return alt
+  if (existsSync(p)) return p
+  return existsSync(alt) ? alt : null
+}
+
+/** Registro FOR EMC38 aberto por último no VIGIA (config.registro_arquivo) — só lido. */
+export async function lerRegistroAberto(): Promise<{ arquivo: string; reg: Record<string, unknown> } | null> {
+  const cfg = await lerConfigBruta()
+  const p = resolverCaminho(typeof cfg?.registro_arquivo === 'string' ? cfg.registro_arquivo : '')
+  const reg = p ? await lerJson<Record<string, unknown>>(p) : null
+  return p && reg ? { arquivo: p, reg } : null
 }
 
 /** Lê (sem alterar) config.json e perfis_emc.json do VIGIA-7S original. */
@@ -102,6 +131,20 @@ export async function ensaiosIncompletos(): Promise<{ pasta: string; rel: string
     if (est && !est.concluido) saida.push({ pasta: p, rel: nome, est })
   }
   return saida
+}
+
+/** O VIGIA-7S da área de trabalho está aberto? (pythonw … vigia7s\app.py) — os dois usam os mesmos ensaios. */
+let _aberto = { t: 0, v: false }
+export async function vigiaAberto(): Promise<boolean> {
+  if (process.platform !== 'win32') return false
+  if (Date.now() - _aberto.t < 5000) return _aberto.v
+  const { execFile } = await import('child_process')
+  const filtro = "CommandLine like '%vigia7s%app.py%' and (Name like 'python%')"
+  const v = await new Promise<boolean>(res => execFile('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-Command', `@(Get-CimInstance Win32_Process -Filter "${filtro}").Count`],
+    { windowsHide: true, timeout: 15000 }, (e, out) => res(!e && Number(String(out).trim()) > 0)))
+  _aberto = { t: Date.now(), v }
+  return v
 }
 
 /** os.startfile(pasta) */

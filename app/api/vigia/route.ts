@@ -2,15 +2,17 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   lerConfigBruta, salvarConfig, carregarPerfis, salvarPerfis, salvarArquivo, lerVigiaOriginal, pastaVigia,
   ORIGEM_VIGIA_PADRAO, escreverRel, lerRel, existeRel, ensaiosIncompletos, abrirPasta, caminhoRel, resultDir,
+  compartilhada, lerRegistroAberto, vigiaAberto,
 } from '@/lib/vigia/server'
 import { gerarResultadoXlsx } from '@/lib/vigia/excel'
 import { completarPerfis } from '@/lib/vigia/emc'
 
 // VIGIA-7S no app.
-// GET                         → { config (bruta, o cliente mescla com o padrão), perfis, pasta, origem }
+// GET                         → { config (bruta, o cliente mescla com o padrão), perfis, pasta, compartilhada, origem }
 // PUT  { config? , perfis? }  → grava config.json / perfis_emc.json
 // POST { acao: 'foto', nome, png, sub? }      → grava em resultados/
 // POST { acao: 'importar', pasta? }           → copia a calibração do VIGIA-7S original (só lê o original)
+// POST { acao: 'registro' }                   → registro FOR EMC38 aberto no VIGIA (só leitura)
 
 export const dynamic = 'force-dynamic'
 
@@ -18,7 +20,7 @@ const erro = (msg: string, status = 400) => NextResponse.json({ error: msg }, { 
 
 export async function GET() {
   const [config, perfis, orig] = await Promise.all([lerConfigBruta(), carregarPerfis(), lerVigiaOriginal()])
-  return NextResponse.json({ config, perfis, pasta: pastaVigia(), origem: { pasta: orig.pasta, existe: !!orig.config } })
+  return NextResponse.json({ config, perfis, pasta: pastaVigia(), compartilhada: compartilhada(), origem: { pasta: orig.pasta, existe: !!orig.config } })
 }
 
 export async function PUT(req: NextRequest) {
@@ -58,9 +60,13 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ texto: d ? d.toString(b.binario ? 'base64' : 'utf-8') : null })
     }
     if (b.acao === 'existe') return NextResponse.json({ existe: await existeRel(String(b.rel)), caminho: caminhoRel(String(b.rel)) })
-    if (b.acao === 'ensaios') return NextResponse.json({ itens: await ensaiosIncompletos(), base: resultDir() })
+    if (b.acao === 'ensaios') {
+      const [itens, vigia_aberto] = await Promise.all([ensaiosIncompletos(), vigiaAberto()])
+      return NextResponse.json({ itens, base: resultDir(), vigia_aberto })
+    }
     if (b.acao === 'abrir') return NextResponse.json({ caminho: await abrirPasta(String(b.rel ?? '')) })
     if (b.acao === 'excel') return NextResponse.json({ caminho: await gerarResultadoXlsx(String(b.rel), b.dados) })
+    if (b.acao === 'registro') return NextResponse.json({ registro: await lerRegistroAberto() })
     if (b.acao === 'importar') {
       const orig = await lerVigiaOriginal(typeof b.pasta === 'string' && b.pasta ? b.pasta : ORIGEM_VIGIA_PADRAO)
       if (!orig.config) return erro(`Não encontrei config.json do VIGIA-7S em "${orig.pasta}".`, 404)

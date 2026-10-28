@@ -1,10 +1,30 @@
-// VIGIA-7S no app — Registro (FOR EMC38): porte de vigia7s/registro.py (em andamento).
+// VIGIA-7S no app — Registro (FOR EMC38): partes de vigia7s/registro.py que o ensaio usa.
+// O Registro em si (aba, Excel FOR EMC38, relatório) ainda está em teste no VIGIA-7S: fica no VIGIA da área de
+// trabalho, que usa os mesmos dados (resultados/registros/). Aqui o registro aberto lá só é lido.
 import { num, pyRoundN } from '@/lib/vigia/util'
 import type { LeituraReg, TotReg } from '@/lib/vigia/ensaio'
 
+export type Registro = { dados?: Record<string, unknown>; iniciais?: Record<string, { cab?: Record<string, unknown> }> } & Record<string, unknown>
+
+/** num() do registro.py: aceita "1.234,56", "92,11", "4". */
+export function numReg(s: unknown, padrao: number | null = null): number | null {
+  if (s === null || s === undefined) return padrao
+  if (typeof s === 'number') return s
+  if (typeof s === 'boolean') return Number(s)
+  let t = String(s).trim().replace(/ /g, '')
+  if (!t) return padrao
+  t = t.includes(',') && t.includes('.') ? t.replace(/\./g, '').replace(/,/g, '.') : t.replace(/,/g, '.')  // 1.234,56
+  return num(t, padrao)
+}
+
 /** Preço unitário cadastrado uma vez em Dados da amostra (vale para todos os pontos e ensaios). */
-export function precoReg(reg: { dados: Record<string, unknown> }): number | null {
-  return num(reg.dados.preco, null)
+export function precoReg(reg: Registro): number | null {
+  return numReg(reg.dados?.preco)
+}
+
+/** Preset da verificação INICIAL (valor esperado do volume quando o campo não tem um). */
+export function presetReg(reg: Registro): number | null {
+  return numReg(reg.iniciais?.INICIAL?.cab?.preset, 0) || null
 }
 
 /** Total a pagar = litros × preço, em centavos (como o mostrador). */

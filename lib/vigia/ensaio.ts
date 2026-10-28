@@ -11,7 +11,7 @@ import { br, num, fixo, pyRoundN, erroPct, fmtErro, falaNum, falaFreq, strftime,
 import { Var, rotulo as rot, messagebox, simpledialog, fmtG } from '@/lib/vigia/tk'
 import { desenharCampos, semAcento } from '@/lib/vigia/desenho'
 import { App, COR_OK, COR_FALHA, COR_NEUTRO, COR_AVISO, NOME_APP, DESCRICAO_APP } from '@/lib/vigia/app'
-import { leiturasETotais } from '@/lib/vigia/registro'
+import { leiturasETotais, precoReg, presetReg, type Registro } from '@/lib/vigia/registro'
 
 export type Linha = (string | number)[]
 export interface LinhaTabela { id: string; valores: (string | number)[]; tag: string }
@@ -178,6 +178,16 @@ export class VigiaApp extends App {
     this._atualizar_lbl_perfil()
     this.alarme.ao_disparar = () => { /* restaurar_expandidas: a tela da aba Ensaio já fica inteira */ }
     setTimeout(() => void this._verificar_interrompido(), 1500)
+    void this.carregar_registro()
+  }
+
+  // ------------------------------------------------------------------ registro (no VIGIA da área de trabalho)
+  /** registro FOR EMC38 aberto no VIGIA-7S (mesmos dados): preço e preset para as leituras */
+  registro = new Var<{ arquivo: string; reg: Registro } | null>(null)
+
+  async carregar_registro() {
+    const r = await api({ acao: 'registro' }).catch(() => null)
+    if (r) this.registro.set(r.registro as { arquivo: string; reg: Registro } | null)
   }
 
   _colunas(): string[] {
@@ -289,6 +299,7 @@ export class VigiaApp extends App {
 
   /** Relógio, leitura programada, detectores e cronograma EMC (início novo ou retomada). */
   _preparar_execucao(segs: Segmento[], tempo_ja: number) {
+    void this.carregar_registro()  // o registro pode ter mudado no VIGIA da área de trabalho
     const agora = monotonic()
     this.t_inicio = agora - tempo_ja
     this.t_pausado = 0.0
@@ -416,9 +427,9 @@ export class VigiaApp extends App {
     return this.registro_preset?.() ?? null
   }
   /** preset da verificação INICIAL do Registro (aba Registro FOR EMC38) */
-  registro_preset: (() => number | null) | null = null
+  registro_preset: (() => number | null) | null = () => { const r = this.registro.get(); return r ? presetReg(r.reg) : null }
   /** preço unitário cadastrado no Registro (Dados da amostra) */
-  registro_preco: (() => number | null) | null = null
+  registro_preco: (() => number | null) | null = () => { const r = this.registro.get(); return r ? precoReg(r.reg) : null }
 
   _recarregar_tabela() {
     const cols = this._colunas()
@@ -592,8 +603,12 @@ export class VigiaApp extends App {
     return txt
   }
 
+  /** VIGIA-7S da área de trabalho aberto (mesmos ensaios): visto na última consulta dos ensaios */
+  vigia_aberto = false
+
   async _ensaios_incompletos() {
     const r = await api({ acao: 'ensaios' })
+    this.vigia_aberto = !!r.vigia_aberto
     return r.itens as { pasta: string; rel: string; est: Record<string, unknown> }[]
   }
 
@@ -619,6 +634,8 @@ export class VigiaApp extends App {
     if (this.estado !== 'parado') { await messagebox.showinfo('Continuar', 'Já há um ensaio em andamento.'); return }
     const est = await this._ler_estado(rel)
     if (!est) { await messagebox.showerror('Continuar', 'Não foi possível ler o estado salvo desse ensaio.'); return }
+    await this._ensaios_incompletos().catch(() => [])
+    if (this.vigia_aberto && !await messagebox.askyesno('Continuar', `O VIGIA-7S da área de trabalho está aberto e usa os mesmos ensaios: o ensaio ${rel} (salvo em ${est.salvo_em}) pode estar rodando lá agora.\n\nSe continuar aqui com ele rodando lá, os dois gravam no mesmo ensaio.\n\nContinuar aqui mesmo assim?`)) return
     if (!this.campos.length) { await messagebox.showerror('Continuar', 'Configure os campos do display antes de continuar.'); return }
     const nomes_agora = this.campos.map(c => c.nome)
     const campos_est = (est.campos as string[] | undefined) ?? []
@@ -743,7 +760,10 @@ export class VigiaApp extends App {
   /** Ao abrir o app: oferece continuar um ensaio que ficou no meio (app fechado/travado). */
   async _verificar_interrompido() {
     if (this.estado !== 'parado') return
-    for (const { rel, est } of (await this._ensaios_incompletos().catch(() => [])).slice(0, 1)) {
+    const itens = await this._ensaios_incompletos().catch(() => [])
+    // VIGIA-7S da área de trabalho aberto: o ensaio "no meio" pode estar rodando lá agora — não mexe nele
+    if (this.vigia_aberto) return
+    for (const { rel, est } of itens.slice(0, 1)) {
       if (est.interrompido || est.estado === 'rodando' || est.estado === 'pausado') {
         if (await messagebox.askyesno('Ensaio interrompido', `O ensaio ${rel} ficou no meio (${est.n_leitura}/${est.n_abastecimentos} abastecimentos, salvo em ${est.salvo_em}).\n\nDeseja continuar de onde parou?`)) {
           await this.continuar_ensaio(rel)
@@ -888,8 +908,11 @@ export class VigiaApp extends App {
       this.registro_importar?.(sugestao)
     }
   }
-  /** aba Registro: importar_dialogo(sugestão) */
-  registro_importar: ((sugestao: string | null) => void) | null = null
+  /** aba Registro: importar_dialogo(sugestão) — o Registro está no VIGIA-7S da área de trabalho (mesmos dados) */
+  registro_importar: ((sugestao: string | null) => void) | null = sugestao => void messagebox.showinfo('Registro (FOR EMC38)',
+    'O Registro (FOR EMC38) ainda está em teste no VIGIA-7S e fica no VIGIA da área de trabalho, que usa os mesmos dados.\n\n'
+    + "Lá, na aba Registro (FOR EMC38): '⬇ Importar leituras do ensaio da câmera…' → 'Outro ensaio salvo…' e escolha a pasta:\n"
+    + this.pasta + (sugestao ? `\n\nEnsaio do registro: ${sugestao}` : ''))
 
   // ------------------------------------------------------------------ totalizador
   _tot_base() { return (this.tot_inicial ?? 0.0) + this.tot_ajuste }

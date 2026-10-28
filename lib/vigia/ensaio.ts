@@ -11,7 +11,8 @@ import { br, num, fixo, pyRoundN, erroPct, fmtErro, falaNum, falaFreq, strftime,
 import { Var, rotulo as rot, messagebox, simpledialog, fmtG } from '@/lib/vigia/tk'
 import { desenharCampos, semAcento } from '@/lib/vigia/desenho'
 import { App, COR_OK, COR_FALHA, COR_NEUTRO, COR_AVISO, NOME_APP, DESCRICAO_APP } from '@/lib/vigia/app'
-import { leiturasETotais, precoReg, presetReg, type Registro } from '@/lib/vigia/registro'
+import { leiturasETotais, precoReg, presetReg } from '@/lib/vigia/registro'
+import { RegistroUI } from '@/lib/vigia/registro-ui'
 
 export type Linha = (string | number)[]
 export interface LinhaTabela { id: string; valores: (string | number)[]; tag: string }
@@ -178,16 +179,39 @@ export class VigiaApp extends App {
     this._atualizar_lbl_perfil()
     this.alarme.ao_disparar = () => { /* restaurar_expandidas: a tela da aba Ensaio já fica inteira */ }
     setTimeout(() => void this._verificar_interrompido(), 1500)
-    void this.carregar_registro()
   }
 
-  // ------------------------------------------------------------------ registro (no VIGIA da área de trabalho)
-  /** registro FOR EMC38 aberto no VIGIA-7S (mesmos dados): preço e preset para as leituras */
-  registro = new Var<{ arquivo: string; reg: Registro } | null>(null)
+  // ------------------------------------------------------------------ Registro (FOR EMC38)
+  /** aba Registro (RegistroUI): o registro aberto é o mesmo do VIGIA-7S da área de trabalho */
+  registro = new RegistroUI(this)
 
-  async carregar_registro() {
-    const r = await api({ acao: 'registro' }).catch(() => null)
-    if (r) this.registro.set(r.registro as { arquivo: string; reg: Registro } | null)
+  /** Totalizadores registrados (inicial, parciais, retomada, final) do ensaio atual e dos ensaios cujas leituras
+   *  foram trazidas para ele — para preencher os totalizadores dos blocos e faixas do Registro. */
+  _totais_sessao(): Record<string, TotReg[]> {
+    const t: Record<string, TotReg[]> = { ...(this.tot_importados ?? {}) }
+    if (this.pastaRel) t[this.caminhoPortatil()] = this.tot_registros
+    return t
+  }
+
+  /** Ensaio importado para o Registro sai de resultados\ e vai para a pasta do registro
+   *  (resultadosegistros\<registro>\ensaios\) — não se mistura com os ensaios ainda não registrados.
+   *  Ensaio em andamento não é movido. Retorna {caminho gravado nas leituras: novo caminho portátil}. */
+  async _arquivar_ensaios(pastas: string[], destino: string): Promise<Record<string, string>> {
+    const atual = this.pastaRel ? this.caminhoPortatil() : null
+    await this._io.catch(() => undefined)  // gravações pendentes da pasta do ensaio antes de mover
+    const r = await api({ acao: 'reg_arquivar', pastas, destino, em_andamento: this.estado !== 'parado' ? atual : null }).catch(() => null)
+    const mapa = (r?.mapa ?? {}) as Record<string, string>
+    for (const [p, novo_p] of Object.entries(mapa)) {
+      if (atual && p === atual) {
+        this.pastaRel = novo_p.replace(/^resultados\//, '')
+        this.pasta = String(r.caminhos?.[p] ?? this.pasta)
+      }
+      for (const l of this.leituras_reg) {  // leituras ainda em memória (próxima importação / Registro)
+        if (l.ensaio === p) l.ensaio = novo_p
+        if (l.foto && String(l.foto).startsWith(p)) l.foto = novo_p + String(l.foto).slice(p.length)
+      }
+    }
+    return mapa
   }
 
   _colunas(): string[] {
@@ -299,7 +323,6 @@ export class VigiaApp extends App {
 
   /** Relógio, leitura programada, detectores e cronograma EMC (início novo ou retomada). */
   _preparar_execucao(segs: Segmento[], tempo_ja: number) {
-    void this.carregar_registro()  // o registro pode ter mudado no VIGIA da área de trabalho
     const agora = monotonic()
     this.t_inicio = agora - tempo_ja
     this.t_pausado = 0.0
@@ -427,9 +450,9 @@ export class VigiaApp extends App {
     return this.registro_preset?.() ?? null
   }
   /** preset da verificação INICIAL do Registro (aba Registro FOR EMC38) */
-  registro_preset: (() => number | null) | null = () => { const r = this.registro.get(); return r ? presetReg(r.reg) : null }
+  registro_preset: (() => number | null) | null = () => (this.registro.carregado.get() ? presetReg(this.registro.reg) : null)
   /** preço unitário cadastrado no Registro (Dados da amostra) */
-  registro_preco: (() => number | null) | null = () => { const r = this.registro.get(); return r ? precoReg(r.reg) : null }
+  registro_preco: (() => number | null) | null = () => (this.registro.carregado.get() ? precoReg(this.registro.reg) : null)
 
   _recarregar_tabela() {
     const cols = this._colunas()
@@ -908,11 +931,8 @@ export class VigiaApp extends App {
       this.registro_importar?.(sugestao)
     }
   }
-  /** aba Registro: importar_dialogo(sugestão) — o Registro está no VIGIA-7S da área de trabalho (mesmos dados) */
-  registro_importar: ((sugestao: string | null) => void) | null = sugestao => void messagebox.showinfo('Registro (FOR EMC38)',
-    'O Registro (FOR EMC38) ainda está em teste no VIGIA-7S e fica no VIGIA da área de trabalho, que usa os mesmos dados.\n\n'
-    + "Lá, na aba Registro (FOR EMC38): '⬇ Importar leituras do ensaio da câmera…' → 'Outro ensaio salvo…' e escolha a pasta:\n"
-    + this.pasta + (sugestao ? `\n\nEnsaio do registro: ${sugestao}` : ''))
+  /** aba Registro: importar_dialogo(sugestão) */
+  registro_importar: ((sugestao: string | null) => void) | null = sugestao => void this.registro.importar_dialogo(sugestao)
 
   // ------------------------------------------------------------------ totalizador
   _tot_base() { return (this.tot_inicial ?? 0.0) + this.tot_ajuste }

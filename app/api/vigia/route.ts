@@ -2,9 +2,13 @@ import { NextRequest, NextResponse } from 'next/server'
 import {
   lerConfigBruta, salvarConfig, carregarPerfis, salvarPerfis, salvarArquivo, lerVigiaOriginal, pastaVigia,
   ORIGEM_VIGIA_PADRAO, escreverRel, lerRel, existeRel, ensaiosIncompletos, abrirPasta, caminhoRel, resultDir,
-  compartilhada, lerRegistroAberto, vigiaAberto,
+  compartilhada, vigiaAberto, usuarioWindows, resolverCaminho, caminhoPortatil, caminhoBase,
+  listarRegistros, lerRegistro, salvarRegistro, localizarFoto, ensaiosSalvos, listarEnsaiosSalvos, lerEstadoEnsaio,
+  arquivarEnsaios, abrirArquivo,
 } from '@/lib/vigia/server'
 import { gerarResultadoXlsx } from '@/lib/vigia/excel'
+import { exportarExcel } from '@/lib/vigia/registro-excel'
+import { completar, type Registro } from '@/lib/vigia/registro'
 import { completarPerfis } from '@/lib/vigia/emc'
 
 // VIGIA-7S no app.
@@ -12,7 +16,7 @@ import { completarPerfis } from '@/lib/vigia/emc'
 // PUT  { config? , perfis? }  → grava config.json / perfis_emc.json
 // POST { acao: 'foto', nome, png, sub? }      → grava em resultados/
 // POST { acao: 'importar', pasta? }           → copia a calibração do VIGIA-7S original (só lê o original)
-// POST { acao: 'registro' }                   → registro FOR EMC38 aberto no VIGIA (só leitura)
+// POST { acao: 'reg_*' }                      → Registro FOR EMC38 (ler/salvar/listar, ensaios salvos, fotos, Excel)
 
 export const dynamic = 'force-dynamic'
 
@@ -20,7 +24,7 @@ const erro = (msg: string, status = 400) => NextResponse.json({ error: msg }, { 
 
 export async function GET() {
   const [config, perfis, orig] = await Promise.all([lerConfigBruta(), carregarPerfis(), lerVigiaOriginal()])
-  return NextResponse.json({ config, perfis, pasta: pastaVigia(), compartilhada: compartilhada(), origem: { pasta: orig.pasta, existe: !!orig.config } })
+  return NextResponse.json({ config, perfis, pasta: pastaVigia(), compartilhada: compartilhada(), usuario: usuarioWindows(), origem: { pasta: orig.pasta, existe: !!orig.config } })
 }
 
 export async function PUT(req: NextRequest) {
@@ -66,7 +70,42 @@ export async function POST(req: NextRequest) {
     }
     if (b.acao === 'abrir') return NextResponse.json({ caminho: await abrirPasta(String(b.rel ?? '')) })
     if (b.acao === 'excel') return NextResponse.json({ caminho: await gerarResultadoXlsx(String(b.rel), b.dados) })
-    if (b.acao === 'registro') return NextResponse.json({ registro: await lerRegistroAberto() })
+    // Registro (FOR EMC38): caminhos portáteis (relativos à pasta do VIGIA)
+    if (b.acao === 'reg_resolver') {
+      const p = resolverCaminho(String(b.caminho ?? ''))
+      return NextResponse.json({ caminho: p ? caminhoPortatil(p) : null })
+    }
+    if (b.acao === 'reg_listar') return NextResponse.json({ itens: await listarRegistros() })
+    if (b.acao === 'reg_ler') return NextResponse.json({ reg: await lerRegistro(String(b.caminho)) })
+    if (b.acao === 'reg_salvar') {
+      if (typeof b.dados !== 'string') return erro('Registro inválido')
+      return NextResponse.json({ arquivo: await salvarRegistro(String(b.caminho), JSON.parse(b.dados)) })
+    }
+    if (b.acao === 'reg_fotos') {
+      const linhas = Array.isArray(b.linhas) ? b.linhas : []
+      return NextResponse.json({ fotos: await Promise.all(linhas.map((l: Record<string, unknown>) => localizarFoto(l as never).catch(() => null))) })
+    }
+    if (b.acao === 'reg_ensaios_salvos') {
+      return NextResponse.json({ lista: await ensaiosSalvos((Array.isArray(b.pastas) ? b.pastas : []).map(String)) })
+    }
+    if (b.acao === 'reg_ensaios_lista') return NextResponse.json({ itens: await listarEnsaiosSalvos() })
+    if (b.acao === 'reg_estado') {
+      const r = await lerEstadoEnsaio(String(b.rel))
+      if (!r) return erro('estado_ensaio.json não encontrado', 404)
+      return NextResponse.json({ est: r.est, pasta: caminhoPortatil(r.pasta) })
+    }
+    if (b.acao === 'reg_arquivar') {
+      const mapa = await arquivarEnsaios((Array.isArray(b.pastas) ? b.pastas : []).map(String), String(b.destino),
+        typeof b.em_andamento === 'string' ? b.em_andamento : null)
+      return NextResponse.json({ mapa, caminhos: Object.fromEntries(Object.entries(mapa).map(([k, v]) => [k, caminhoBase(v)])) })
+    }
+    if (b.acao === 'reg_excel') {
+      if (typeof b.dados !== 'string') return erro('Registro inválido')
+      const arquivo = caminhoBase(String(b.caminho))
+      await exportarExcel(completar(JSON.parse(b.dados)) as Registro, arquivo, Number(b.limite ?? 1.0))
+      return NextResponse.json({ arquivo })
+    }
+    if (b.acao === 'abrir_arquivo') return NextResponse.json({ caminho: await abrirArquivo(String(b.caminho)) })
     if (b.acao === 'importar') {
       const orig = await lerVigiaOriginal(typeof b.pasta === 'string' && b.pasta ? b.pasta : ORIGEM_VIGIA_PADRAO)
       if (!orig.config) return erro(`Não encontrei config.json do VIGIA-7S em "${orig.pasta}".`, 404)

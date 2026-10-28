@@ -16,7 +16,7 @@ export async function resolve(spec, ctx, next) {
     const f = comExtensao(path.join(REPO, spec.slice(2)))
     if (f) return { url: pathToFileURL(f).href, shortCircuit: true, format: 'module' }
   }
-  if ((spec.startsWith('./') || spec.startsWith('../')) && ctx.parentURL?.startsWith('file:')) {
+  if ((spec.startsWith('./') || spec.startsWith('../')) && ctx.parentURL?.startsWith('file:') && !ctx.parentURL.includes('/node_modules/')) {
     const f = comExtensao(path.resolve(path.dirname(fileURLToPath(ctx.parentURL)), spec))
     if (f) return { url: pathToFileURL(f).href, shortCircuit: true, format: 'module' }
   }

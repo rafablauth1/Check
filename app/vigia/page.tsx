@@ -25,20 +25,24 @@ export default function VigiaPage() {
   if (process.env.NODE_ENV !== 'production' && typeof window !== 'undefined') Object.assign(window, { __vigia: app, __vigiaDialogo: dialogo })   // testes automáticos
   const carregado = useVar(app.carregado)
   const versaoCv = useVar(app.cvPronto)
-  const [dados, setDados] = useState({ pasta: '', compartilhada: false })
+  const [vigiaAberto, setVigiaAberto] = useState(false)
   useEffect(() => {
     let vivo = true
     void (async () => {
       const r = await fetch('/api/vigia', { cache: 'no-store' }).then(x => x.json()).catch(() => null)
-      if (vivo && r) setDados({ pasta: r.pasta, compartilhada: !!r.compartilhada })
       // 1ª vez no app: oferece trazer a calibração e os perfis do VIGIA-7S (o original só é lido)
       if (vivo && r && !r.config && r.origem?.existe
         && await messagebox.askyesno('VIGIA-7S', `Encontrei o VIGIA-7S em:\n${r.origem.pasta}\n\nTrazer a calibração da câmera, os campos e os perfis EMC de lá?\n(o VIGIA-7S original não é alterado)`)) {
         await app.importar_vigia()
       }
       if (vivo) await app.iniciar()
+      if (vivo) await app.registro.iniciar(String(r?.usuario ?? ''), String(r?.pasta ?? ''))
+      // VIGIA-7S da área de trabalho aberto: avisa na aba Registro (os dois gravam o mesmo arquivo)
+      const e = await fetch('/api/vigia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'ensaios' }) })
+        .then(x => x.json()).catch(() => null)
+      if (vivo && e) setVigiaAberto(!!e.vigia_aberto)
     })()
-    const sair = () => app.fechar()
+    const sair = () => { void app.registro.salvar_agora(); app.fechar() }
     window.addEventListener('beforeunload', sair)
     return () => { vivo = false; window.removeEventListener('beforeunload', sair); app.fechar() }
   }, [app])
@@ -53,7 +57,7 @@ export default function VigiaPage() {
           <AbaCalibracao app={app} />
           <AbaConfig app={app} />
           <AbaEmc app={app} />
-          <AbaRegistro app={app} pasta={dados.pasta} compartilhada={dados.compartilhada} />
+          <AbaRegistro app={app} vigiaAberto={vigiaAberto} />
         </Notebook>
       )}
       {carregado && !versaoCv && <div style={{ position: 'absolute', bottom: 10, left: 16, color: '#5f6368' }}>Carregando OpenCV…</div>}

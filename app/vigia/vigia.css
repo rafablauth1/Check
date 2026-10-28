@@ -132,3 +132,8 @@
 .vg-jan > .corpo { padding: 12px; overflow: auto; }
 .vg-textarea { border: 1px solid var(--vg-borda-campo); background: #fff; font: 12px 'Segoe UI'; padding: 2px 3px; resize: vertical; outline: none; }
 .vg-textarea:focus { border-color: var(--vg-azul); }
+
+/* tk.Text (observações do Registro) */
+.vg textarea.vg-texto { appearance: auto; border: 1px solid #7a7a7a; background: #fff; color: #000; padding: 2px 4px; outline: none; }
+.vg textarea.vg-texto:focus { border-color: #0078d7; }
+.vg textarea.vg-texto:disabled { background: #f4f4f4; }

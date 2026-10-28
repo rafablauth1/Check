@@ -20,7 +20,19 @@ node --experimental-transform-types --import ./loader-alias.mjs emc_ts.mjs emc_p
 rem detector de ciclo da bomba + formatos/arredondamentos
 python ciclo_py.py "%VIGIA%" > ciclo_py.json
 node --experimental-transform-types --import ./loader-alias.mjs ciclo_ts.mjs ciclo_py.json
+
+rem Registro (FOR EMC38): importar, totalizadores, montar por segmento, cálculos — sobre os ensaios salvos (só lê)
+python registro_py.py "%VIGIA%" registro.json > registro_py.json
+set VIGIA_PASTA=%VIGIA%
+node --experimental-transform-types --import ./loader-alias.mjs registro_ts.mjs registro_py.json registro.json
+
+rem planilha FOR EMC38: célula por célula (valor, fórmula, formato, cores, bordas, mesclagens, formatação condicional, gráficos)
+node --experimental-transform-types --import ./loader-alias.mjs registro_excel_ts.mjs registro.json saida_ts.xlsx
+python registro_excel_cmp.py "%VIGIA%" registro.json saida_ts.xlsx
 ```
+
+Resultado em 28/10/2026 (Registro): 6 ensaios salvos, 12 importações (1.474 linhas), montagem por segmento
+(722 leituras) e formatos iguais; planilha FOR EMC38 igual em 15.998 células e 4 gráficos.
 
 Resultado em 27/10/2026: 303/303 leituras idênticas (inclusive frações de cada segmento),
 10 perfis / 72 segmentos iguais, 60 sequências de bomba (2.916 eventos) iguais.

@@ -68,14 +68,6 @@ export function resolverCaminho(p: string): string | null {
   return existsSync(alt) ? alt : null
 }
 
-/** Registro FOR EMC38 aberto por último no VIGIA (config.registro_arquivo) — só lido. */
-export async function lerRegistroAberto(): Promise<{ arquivo: string; reg: Record<string, unknown> } | null> {
-  const cfg = await lerConfigBruta()
-  const p = resolverCaminho(typeof cfg?.registro_arquivo === 'string' ? cfg.registro_arquivo : '')
-  const reg = p ? await lerJson<Record<string, unknown>>(p) : null
-  return p && reg ? { arquivo: p, reg } : null
-}
-
 /** Lê (sem alterar) config.json e perfis_emc.json do VIGIA-7S original. */
 export async function lerVigiaOriginal(pasta = ORIGEM_VIGIA_PADRAO) {
   const [config, perfis] = await Promise.all([
@@ -154,4 +146,168 @@ export async function abrirPasta(rel: string) {
   const { spawn } = await import('child_process')
   spawn('explorer.exe', [p], { detached: true, stdio: 'ignore' }).unref()
   return p
+}
+
+// ----------------------------------------------------------------------------- Registro (FOR EMC38)
+/** Caminho absoluto de um caminho da BASE do VIGIA (portátil, "resultados/…", ou absoluto dentro dela). */
+export function caminhoBase(p: string): string {
+  const base = path.resolve(pastaVigia())
+  const abs = path.resolve(base, p || '.')
+  if (abs.toLowerCase() !== base.toLowerCase() && !abs.toLowerCase().startsWith(base.toLowerCase() + path.sep)) {
+    throw new Error('Caminho fora da pasta do VIGIA')
+  }
+  return abs
+}
+
+/** caminho_portatil(): relativo à BASE, com "/" (fora dela: o próprio caminho). */
+export function caminhoPortatil(p: string): string {
+  if (!p) return ''
+  const rel = path.relative(path.resolve(pastaVigia()), path.resolve(p))
+  return rel.startsWith('..') || path.isAbsolute(rel) ? p : rel.split(path.sep).join('/')
+}
+
+export const pastaRegistros = () => path.join(resultDir(), 'registros')
+
+/** usuário do Windows (getpass.getuser()) */
+export const usuarioWindows = () => process.env.USERNAME || process.env.USER || os.userInfo().username
+
+/** Registros (.json) da pasta resultados/registros, mais recentes primeiro. */
+export async function listarRegistros() {
+  const base = pastaRegistros()
+  const nomes = (await fs.readdir(base).catch(() => [] as string[])).filter(n => n.toLowerCase().endsWith('.json'))
+  const itens = await Promise.all(nomes.map(async n => {
+    const st = await fs.stat(path.join(base, n)).catch(() => null)
+    return { nome: n, caminho: caminhoPortatil(path.join(base, n)), mtime: st?.mtimeMs ?? 0 }
+  }))
+  return itens.sort((a, b) => b.mtime - a.mtime)
+}
+
+export async function lerRegistro(p: string): Promise<Record<string, unknown> | null> {
+  return lerJson<Record<string, unknown>>(caminhoBase(p))
+}
+
+/** json.dump(reg, f, ensure_ascii=False, indent=1); recria a pasta se tiver sido apagada/movida */
+export async function salvarRegistro(p: string, reg: unknown) {
+  const abs = caminhoBase(p)
+  await fs.mkdir(path.dirname(abs), { recursive: true })
+  await fs.writeFile(abs, JSON.stringify(reg, null, 1), 'utf-8')
+  return abs
+}
+
+/** localizar_foto(): foto da leitura da câmera que originou a linha do Registro (caminho portátil ou null).
+ *  Usa o caminho gravado na importação; sem ele, procura pela pasta do ensaio e nº da leitura
+ *  (imagens/leitura_0031_*.jpg). */
+export async function localizarFoto(linha: { foto?: string; ensaio?: string; n?: number }): Promise<string | null> {
+  const abs_ = (p: string) => (path.isAbsolute(p) ? p : path.join(pastaVigia(), p))
+  if (linha.foto && existsSync(abs_(linha.foto))) return caminhoPortatil(abs_(linha.foto))
+  if (linha.ensaio && linha.n) {
+    const pasta = path.join(abs_(linha.ensaio), 'imagens')
+    const pref = `leitura_${String(Math.trunc(Number(linha.n))).padStart(4, '0')}_`
+    let achados = (await fs.readdir(pasta).catch(() => [] as string[])).filter(f => f.startsWith(pref)).sort()
+    // se houver a foto da 1ª leitura suspeita e a da leitura final, mostra a final
+    const finais = achados.filter(f => !f.includes('SUSPEITA'))
+    if (finais.length) achados = finais
+    if (achados.length) return caminhoPortatil(path.join(pasta, achados[0]))
+  }
+  return null
+}
+
+/** ensaios_salvos(): ensaios salvos (estado_ensaio.json) nas pastas indicadas, com as leituras PRÓPRIAS de cada um
+ *  (sem as trazidas de outro ensaio) agrupadas por segmento. Pasta e fotos das leituras apontam para onde a pasta
+ *  do ensaio está agora (ensaios já movidos para a pasta do registro). */
+export async function ensaiosSalvos(pastasBusca: string[]) {
+  const { leiturasETotais, num } = await import('@/lib/vigia/registro')
+  const saida: Record<string, unknown>[] = []
+  for (const b of pastasBusca) {
+    const base = caminhoBase(b)
+    const nomes = await fs.readdir(base).catch(() => null)
+    if (!nomes) continue
+    for (const nome of nomes.sort()) {
+      const pasta = path.join(base, nome)
+      const est = nome.startsWith('ensaio_') ? await lerJson<Record<string, unknown>>(path.join(pasta, 'estado_ensaio.json')) : null
+      if (!est) continue
+      const [leituras, totais] = leiturasETotais(est, pasta)
+      const proprias = leituras.filter(l => !l.importada && l.volume !== null && l.volume !== undefined)
+      if (!proprias.length) continue
+      const atual = caminhoPortatil(pasta)
+      const antigos = new Set(proprias.map(l => l.ensaio))
+      const regs = [...antigos].map(a => totais[String(a)]).find(t => t) ?? (est.tot_registros as unknown[]) ?? []
+      for (const l of proprias) {
+        const ant = l.ensaio
+        if (l.foto && ant && String(l.foto).startsWith(String(ant))) l.foto = atual + String(l.foto).slice(String(ant).length)
+        l.ensaio = atual
+      }
+      const segs: Record<string, unknown[]> = {}
+      for (const l of proprias) (segs[l.segmento || '—'] ??= []).push(l)
+      const defs: Record<string, [number | null, number | null]> = {}
+      for (const s of (est.segmentos as Record<string, unknown>[]) ?? []) {
+        const rot = [s.nome, s.face, s.polarizacao].filter(p => p).join(' | ')
+        defs[rot] = [num(s.f_ini), num(s.f_fim)]
+      }
+      const m = nome.match(/^ensaio_(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})/)
+      const quando = m ? `${m[3]}/${m[2]} ${m[4]}:${m[5]}` : String(est.salvo_em ?? '')
+      saida.push({ pasta, rel: atual, nome: est.nome || nome, quando, ordem: nome, segmentos: segs, totais: { [atual]: regs }, defs })
+    }
+  }
+  return saida
+}
+
+/** Ensaios salvos para escolher um e importar: pastas ensaio_* com estado_ensaio.json em resultados/ e nas
+ *  pastas de registro (no Python: filedialog para escolher o estado_ensaio.json). */
+export async function listarEnsaiosSalvos() {
+  const saida: { rel: string; nome: string; salvo_em: string; n: number }[] = []
+  const varrer = async (dir: string, fundo: number) => {
+    for (const nome of await fs.readdir(dir).catch(() => [] as string[])) {
+      const p = path.join(dir, nome)
+      if (nome.startsWith('ensaio_')) {
+        const est = await lerJson<Record<string, unknown>>(path.join(p, 'estado_ensaio.json'))
+        if (est) saida.push({ rel: caminhoPortatil(p), nome: String(est.nome || nome), salvo_em: String(est.salvo_em ?? ''),
+          n: ((est.leituras_reg as unknown[]) ?? []).length })
+      } else if (fundo > 0 && (await fs.stat(p).catch(() => null))?.isDirectory()) await varrer(p, fundo - 1)
+    }
+  }
+  await varrer(resultDir(), 3)  // resultados/ensaio_* e resultados/registros/<reg>/ensaios/ensaio_*
+  const base = (r: string) => r.split('/').pop()!
+  return saida.sort((a, b) => (base(a.rel) < base(b.rel) ? 1 : base(a.rel) > base(b.rel) ? -1 : 0))
+}
+
+/** Estado salvo de um ensaio (para importar): {est, pasta portátil}. */
+export async function lerEstadoEnsaio(rel: string) {
+  const pasta = caminhoBase(rel)
+  const est = await lerJson<Record<string, unknown>>(path.join(pasta, 'estado_ensaio.json'))
+  return est ? { est, pasta } : null
+}
+
+/** _arquivar_ensaios(): ensaio importado para o Registro sai de resultados\ e vai para a pasta do registro
+ *  (resultados\registros\<registro>\ensaios\) — não se mistura com os ensaios ainda não registrados.
+ *  emAndamento: pasta (portátil) do ensaio rodando agora, que não é movido. Retorna {caminho gravado: novo}. */
+export async function arquivarEnsaios(pastas: string[], destino: string, emAndamento: string | null) {
+  const mapa: Record<string, string> = {}
+  const regs = path.normalize(pastaRegistros()).toLowerCase()
+  const dest = caminhoBase(destino)
+  for (const p of pastas) {
+    const origem = path.normalize(path.isAbsolute(p) ? p : path.join(pastaVigia(), p))
+    const st = await fs.stat(origem).catch(() => null)
+    if (!st?.isDirectory() || origem.toLowerCase().startsWith(regs)) continue  // não existe mais ou já está num registro
+    if (emAndamento && path.normalize(caminhoBase(emAndamento)).toLowerCase() === origem.toLowerCase()) continue
+    let novo = path.join(dest, path.basename(origem))
+    if (existsSync(novo)) {
+      const d = new Date(), z = (n: number) => String(n).padStart(2, '0')
+      novo += `_${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`
+    }
+    try {
+      await fs.mkdir(dest, { recursive: true })
+      await fs.rename(origem, novo)
+    } catch { continue }
+    mapa[p] = caminhoPortatil(novo)
+  }
+  return mapa
+}
+
+/** os.startfile(arquivo) */
+export async function abrirArquivo(p: string) {
+  const abs = caminhoBase(p)
+  const { spawn } = await import('child_process')
+  spawn('explorer.exe', [abs], { detached: true, stdio: 'ignore' }).unref()  // abre com o programa padrão
+  return abs
 }

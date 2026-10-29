@@ -60,6 +60,11 @@ function PorTipo({ cfg, ensaioId, tempo, templates, onChange }: {
     <div className="ml-[96px] my-1.5 space-y-1.5">
       <p className="text-[10px] text-white/30">Por tipo de equipamento (vazio = o geral acima). Acréscimos somam ao tempo por amostra (ou ao c/ relógio) quando o cadastro da amostra bate.</p>
       {tipos.length === 0 && <p className="text-[10px] text-white/25 italic">Nenhum tipo de equipamento faz este ensaio.</p>}
+      {tipos.length > 0 && (
+        <div className="grid grid-cols-[200px_110px_110px_110px] gap-2 px-2 text-[9px] text-white/30 font-mono uppercase tracking-widest">
+          <span>Tipo</span><span>Montagem</span><span>Por amostra</span><span>c/ relógio</span>
+        </div>
+      )}
       {tipos.map(tp => {
         const pt = tempo?.porTipo?.[tp.id] ?? {}
         const temRelogio = tp.perguntas.some(p => p.marcaRelogio?.includes(ensaioId))
@@ -69,10 +74,10 @@ function PorTipo({ cfg, ensaioId, tempo, templates, onChange }: {
           <div key={tp.id} className="p-2 rounded-lg bg-white/[0.02] border border-white/6 space-y-1.5">
             <div className="grid grid-cols-[200px_110px_110px_110px] gap-2 items-center">
               <span className="flex items-center gap-1.5 text-[11px] text-white/65 truncate"><Icone name={tp.icone} size={12} className="text-teal/70 shrink-0" />{tp.nome}</span>
-              <Minutos valor={pt.montagemMin} onChange={v => mudar(tp.id, { ...pt, montagemMin: v })} placeholder="mont." />
-              <Minutos valor={pt.ensaioMin} onChange={v => mudar(tp.id, { ...pt, ensaioMin: v })} placeholder="amostra" />
+              <Minutos valor={pt.montagemMin} onChange={v => mudar(tp.id, { ...pt, montagemMin: v })} placeholder="geral" />
+              <Minutos valor={pt.ensaioMin} onChange={v => mudar(tp.id, { ...pt, ensaioMin: v })} placeholder="geral" />
               {temRelogio
-                ? <Minutos valor={pt.relogioMin} onChange={v => mudar(tp.id, { ...pt, relogioMin: v })} placeholder="relógio" />
+                ? <Minutos valor={pt.relogioMin} onChange={v => mudar(tp.id, { ...pt, relogioMin: v })} placeholder="geral" />
                 : <span className="text-[9px] text-white/20 font-mono" title="Este tipo não mede este ensaio por relógio">sem relógio</span>}
             </div>
             {acrescimos.map((a, i) => (

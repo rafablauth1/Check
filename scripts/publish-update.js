@@ -127,9 +127,10 @@ try {
   // pacote manual) — é ele que a atualização sem instalador consome.
   if (temZip) fs.copyFileSync(path.join(distDir, zipNome), path.join(NETWORK_UPDATE_FOLDER, zipNome))
   fs.copyFileSync(outFile, path.join(NETWORK_UPDATE_FOLDER, 'version.json'))
-  // remove instaladores antigos da pasta de rede (mantém só o atual)
+  // remove instaladores antigos da pasta de rede (mantém só o atual) — inclusive
+  // restos de cópia interrompida ("Setup X.exe.1343…"), que não terminam em .exe
   for (const f of fs.readdirSync(NETWORK_UPDATE_FOLDER)) {
-    if ((f.endsWith('.exe') || f.endsWith('.blockmap') || f.endsWith('.zip')) && f !== installer && f !== installer + '.blockmap' && f !== zipNome) {
+    if (/\.(exe|blockmap|zip)(\.|$)/i.test(f) && f !== installer && f !== installer + '.blockmap' && f !== zipNome) {
       try { fs.rmSync(path.join(NETWORK_UPDATE_FOLDER, f), { force: true }) } catch {}
     }
   }
@@ -221,10 +222,7 @@ try {
 
   // Some com instalador de versão anterior — a pasta guarda só a atual.
   for (const f of fs.readdirSync(REDE_DIST)) {
-    if (f.endsWith('.exe') && f !== installer) {
-      try { fs.rmSync(path.join(REDE_DIST, f), { force: true }) } catch {}
-    }
-    if (f.endsWith('.exe.blockmap') && f !== installer + '.blockmap') {
+    if (/\.(exe|blockmap|zip)(\.|$)/i.test(f) && f !== installer) {
       try { fs.rmSync(path.join(REDE_DIST, f), { force: true }) } catch {}
     }
   }

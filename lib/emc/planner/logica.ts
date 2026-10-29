@@ -1,4 +1,5 @@
 import type { AgendaItemEmc } from '@/lib/emc/tipos'
+import { respostasEfetivas, todasValem } from '@/lib/emc/regras'
 import type { ConfigPlanner, Jornada, Pessoa, Tarefa, TempoEnsaio } from '@/lib/emc/planner/tipos'
 
 // Lógica do planner — funções puras, usadas pelo quadro (cronograma de cada dia)
@@ -89,16 +90,28 @@ export interface TempoCalculado {
   relogio: boolean
 }
 
-/** Tempo de um ensaio para esta amostra: medição por relógio e tempo próprio do tipo de equipamento. */
-export function tempoDoEnsaio(cfg: ConfigPlanner, ensaioId: string, item?: AgendaItemEmc): TempoCalculado | null {
+type ItemTempo = Pick<AgendaItemEmc, 'templateId' | 'template' | 'respostas' | 'ensaios'>
+
+/**
+ * Tempo de um ensaio para esta amostra:
+ *   1. o do tipo de equipamento, se houver; senão o geral;
+ *   2. medida por relógio → o tempo "c/ relógio" (do tipo, senão o geral);
+ *   3. mais os acréscimos do tipo cujas condições batem com as respostas do
+ *      cadastro da amostra (reativa, aquisição pelo software…).
+ */
+export function tempoDoEnsaio(cfg: ConfigPlanner, ensaioId: string, item?: ItemTempo): TempoCalculado | null {
   const tempo = cfg.tempos.find(t => t.ensaioId === ensaioId)
   if (!tempo || !tempo.setupId) return null
   const relogio = !!item?.ensaios.find(e => e.ensaioId === ensaioId)?.relogio
   const pt = item ? tempo.porTipo?.[item.templateId] : undefined
   const normal = pt?.ensaioMin ?? tempo.ensaioMin
-  const ensaioMin = relogio ? (pt?.relogioMin ?? tempo.relogioMin ?? normal) : normal
+  let ensaioMin = relogio ? (pt?.relogioMin ?? tempo.relogioMin ?? normal) : normal
+  if (item && pt?.acrescimos?.length) {
+    const r = respostasEfetivas(item.template, item.respostas ?? {})
+    for (const a of pt.acrescimos) if (a.quando.length && todasValem(a.quando, r)) ensaioMin += a.minutos || 0
+  }
   return {
-    tempo, ensaioMin: Math.max(0, ensaioMin || 0), montagemMin: Math.max(0, tempo.montagemMin || 0),
+    tempo, ensaioMin: Math.max(0, ensaioMin || 0), montagemMin: Math.max(0, pt?.montagemMin ?? tempo.montagemMin ?? 0),
     configuracao: tempo.configuracao || ensaioId, relogio,
   }
 }

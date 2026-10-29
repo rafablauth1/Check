@@ -16,6 +16,8 @@
 // A lógica (cronograma do dia e organização da semana) está em
 // lib/emc/planner/logica.ts.
 
+import type { Condicao } from '@/lib/emc/tipos'
+
 export interface Pessoa {
   id: string
   nome: string
@@ -35,11 +37,20 @@ export interface Setup {
   obs?: string
 }
 
+/** Minutos a mais (ou a menos) quando as respostas do cadastro da amostra batem
+    — ex.: medidor que mede reativa, aquisição pelo software. Os que valem somam. */
+export interface AcrescimoTempo {
+  quando: Condicao[]            // perguntas do template do tipo (E)
+  minutos: number
+}
+
 /** Tempo de um ensaio para um tipo de equipamento em particular (o 4-3 de um
     radar não leva o mesmo que o de um medidor). Vazio = usa o geral. */
 export interface TempoPorTipo {
+  montagemMin?: number
   ensaioMin?: number
   relogioMin?: number
+  acrescimos?: AcrescimoTempo[]
 }
 
 export interface TempoEnsaio {

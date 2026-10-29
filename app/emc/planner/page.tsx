@@ -5,14 +5,17 @@ import { useRouter } from 'next/navigation'
 import { ArrowLeft, ArrowRight, Lock, Plus, Trash2, Save, Loader2, CheckCircle2, AlertTriangle, ChevronDown, ChevronRight, Monitor } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { SETTINGS_KEY, today } from '@/app/cispr15/types'
-import type { ConfigEnsaiosEmc } from '@/lib/emc/tipos'
+import type { ConfigEnsaiosEmc, Respostas, TemplateEnsaio } from '@/lib/emc/tipos'
+import { ensaiosComRelogio } from '@/lib/emc/regras'
+import { Icone } from '@/lib/taxonomia/icones'
+import { EditorCondicoes, novaCondicao } from '@/app/emc/EditorCondicoes'
 import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
 import { CONFIG_EMC_PADRAO } from '@/lib/emc/padrao'
 import { carregarConfigEmc } from '@/lib/emc/cliente'
-import type { ConfigPlanner, Pessoa, Setup, Tarefa, TempoEnsaio } from '@/lib/emc/planner/tipos'
+import type { AcrescimoTempo, ConfigPlanner, Pessoa, Setup, Tarefa, TempoEnsaio, TempoPorTipo } from '@/lib/emc/planner/tipos'
 import { JORNADA_PADRAO, CORES_PESSOA } from '@/lib/emc/planner/tipos'
 import { carregarPlanner, salvarConfigPlanner } from '@/lib/emc/planner/cliente'
-import { fmtDuracao, minutosUteis, tempoGastoMs } from '@/lib/emc/planner/logica'
+import { fmtDuracao, minutosUteis, tempoGastoMs, tempoDoEnsaio } from '@/lib/emc/planner/logica'
 import { Label } from '@/app/agenda/emc/comum'
 
 /* Cadastros do planner da imunidade: pessoas (e o que cada uma é habilitada a
@@ -32,6 +35,104 @@ function Minutos({ valor, onChange, placeholder }: { valor?: number; onChange: (
       <input type="number" min={0} step={5} className="input text-xs font-mono w-[70px] py-1" placeholder={placeholder}
         value={valor ?? ''} onChange={e => onChange(e.target.value === '' ? undefined : Math.max(0, Number(e.target.value)))} />
       <span className="text-[9px] text-white/25 font-mono w-9">{valor ? fmtDuracao(valor) : ''}</span>
+    </div>
+  )
+}
+
+/* Tempo de um ensaio por tipo de equipamento: montagem, por amostra e com relógio
+   próprios, mais acréscimos conforme as respostas do cadastro da amostra (mede
+   reativa, aquisição pelo software…). A prévia calcula cada combinação com a
+   mesma função do planner (tempoDoEnsaio). */
+function PorTipo({ cfg, ensaioId, tempo, templates, onChange }: {
+  cfg: ConfigPlanner; ensaioId: string; tempo?: TempoEnsaio; templates: TemplateEnsaio[]
+  onChange: (porTipo: Record<string, TempoPorTipo>) => void
+}) {
+  // só os tipos que fazem este ensaio (ou que já têm tempo próprio para ele)
+  const tipos = templates.filter(tp => tp.regras.some(r => r.ensaioId === ensaioId) || tempo?.porTipo?.[tp.id])
+  const mudar = (tpId: string, novo: TempoPorTipo) => {
+    const porTipo = { ...(tempo?.porTipo ?? {}) }
+    const vazio = novo.montagemMin === undefined && novo.ensaioMin === undefined && novo.relogioMin === undefined && !novo.acrescimos?.length
+    if (vazio) delete porTipo[tpId]
+    else porTipo[tpId] = novo
+    onChange(porTipo)
+  }
+  return (
+    <div className="ml-[96px] my-1.5 space-y-1.5">
+      <p className="text-[10px] text-white/30">Por tipo de equipamento (vazio = o geral acima). Acréscimos somam ao tempo por amostra (ou ao c/ relógio) quando o cadastro da amostra bate.</p>
+      {tipos.length === 0 && <p className="text-[10px] text-white/25 italic">Nenhum tipo de equipamento faz este ensaio.</p>}
+      {tipos.map(tp => {
+        const pt = tempo?.porTipo?.[tp.id] ?? {}
+        const temRelogio = tp.perguntas.some(p => p.marcaRelogio?.includes(ensaioId))
+        const acrescimos = pt.acrescimos ?? []
+        const setAcr = (lista: AcrescimoTempo[]) => mudar(tp.id, { ...pt, acrescimos: lista })
+        return (
+          <div key={tp.id} className="p-2 rounded-lg bg-white/[0.02] border border-white/6 space-y-1.5">
+            <div className="grid grid-cols-[200px_110px_110px_110px] gap-2 items-center">
+              <span className="flex items-center gap-1.5 text-[11px] text-white/65 truncate"><Icone name={tp.icone} size={12} className="text-teal/70 shrink-0" />{tp.nome}</span>
+              <Minutos valor={pt.montagemMin} onChange={v => mudar(tp.id, { ...pt, montagemMin: v })} placeholder="mont." />
+              <Minutos valor={pt.ensaioMin} onChange={v => mudar(tp.id, { ...pt, ensaioMin: v })} placeholder="amostra" />
+              {temRelogio
+                ? <Minutos valor={pt.relogioMin} onChange={v => mudar(tp.id, { ...pt, relogioMin: v })} placeholder="relógio" />
+                : <span className="text-[9px] text-white/20 font-mono" title="Este tipo não mede este ensaio por relógio">sem relógio</span>}
+            </div>
+            {acrescimos.map((a, i) => (
+              <div key={i} className="flex items-start gap-2 pl-[208px]">
+                <div className="flex items-center gap-1 shrink-0">
+                  <span className="text-[10px] text-white/40 font-mono">+</span>
+                  <input type="number" step={5} className="input text-xs font-mono w-[64px] py-0.5" value={a.minutos}
+                    onChange={ev => setAcr(acrescimos.map((x, j) => j === i ? { ...x, minutos: Number(ev.target.value) || 0 } : x))} />
+                  <span className="text-[10px] text-white/40">min quando</span>
+                </div>
+                <EditorCondicoes conds={a.quando} perguntas={tp.perguntas} vazio="(escolha a condição)"
+                  onChange={c => setAcr(acrescimos.map((x, j) => j === i ? { ...x, quando: c } : x))} />
+                <button type="button" title="Tirar acréscimo" onClick={() => setAcr(acrescimos.filter((_, j) => j !== i))}
+                  className="text-white/25 hover:text-red-400 pt-0.5"><Trash2 size={11} /></button>
+              </div>
+            ))}
+            {tp.perguntas.length > 0 && (
+              <button type="button" className="ml-[208px] text-[10px] text-white/35 hover:text-teal flex items-center gap-1"
+                onClick={() => { const c = novaCondicao(tp.perguntas); setAcr([...acrescimos, { quando: c ? [c] : [], minutos: 10 }]) }}>
+                <Plus size={9} /> acréscimo por resposta do cadastro
+              </button>
+            )}
+            <PreviaTempo cfg={cfg} ensaioId={ensaioId} tempo={tempo} tp={tp} />
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+/** Todas as combinações das perguntas que mexem no tempo deste ensaio (as dos acréscimos e a do relógio). */
+function PreviaTempo({ cfg, ensaioId, tempo, tp }: { cfg: ConfigPlanner; ensaioId: string; tempo?: TempoEnsaio; tp: TemplateEnsaio }) {
+  if (!tempo?.setupId) return <p className="pl-[208px] text-[10px] text-white/25 italic">Escolha o setup do ensaio para ver os tempos.</p>
+  const usadas = new Set<string>()
+  tp.perguntas.forEach(p => { if (p.marcaRelogio?.includes(ensaioId)) usadas.add(p.id) })
+  tempo.porTipo?.[tp.id]?.acrescimos?.forEach(a => a.quando.forEach(c => usadas.add(c.perguntaId)))
+  const perguntas = tp.perguntas.filter(p => usadas.has(p.id) && p.tipo !== 'multipla')
+  let combos: Respostas[] = [{}]
+  for (const p of perguntas) {
+    const vals = p.tipo === 'simnao' ? ['nao', 'sim'] : (p.opcoes ?? [])
+    combos = combos.flatMap(c => vals.map(v => ({ ...c, [p.id]: v })))
+    if (combos.length > 16) break
+  }
+  const linhas = combos.slice(0, 16).map(resp => {
+    const relogio = ensaiosComRelogio(tp, resp).has(ensaioId)
+    const tc = tempoDoEnsaio(cfg, ensaioId, { templateId: tp.id, template: tp, respostas: resp, ensaios: [{ ensaioId, codigo: '', nome: '', status: 'pendente', relogio }] })
+    const rotulo = perguntas.map(p => {
+      const v = resp[p.id]
+      if (p.tipo === 'simnao') return v === 'sim' ? (p.etiqueta || p.texto) : ''
+      return String(v ?? '')
+    }).filter(Boolean).join(' + ') || 'básico'
+    return { rotulo, min: tc?.ensaioMin ?? 0 }
+  })
+  return (
+    <div className="pl-[208px] flex flex-wrap gap-1">
+      {linhas.map((l, i) => (
+        <span key={i} className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] border border-white/8 text-white/50">
+          {l.rotulo} <span className="text-teal/80">{fmtDuracao(l.min)}</span>
+        </span>
+      ))}
     </div>
   )
 }
@@ -288,6 +389,12 @@ export default function PlannerCadastrosPage() {
                   <span className="font-mono font-bold text-teal text-xs">{e.codigo}</span>
                   <span className="text-[11px] text-white/55 truncate" title={e.nome}>
                     {e.nome}
+                    {!!Object.keys(t?.porTipo ?? {}).length && (
+                      <button type="button" onClick={() => setAberto(exp ? null : e.id)}
+                        className="block text-[9px] text-purple-300/70 font-mono hover:text-purple-200">
+                        tempo próprio em {Object.keys(t!.porTipo!).length} tipo(s)
+                      </button>
+                    )}
                     {r && <span className="block text-[9px] text-white/30 font-mono">real: média {fmtDuracao(r.soma / r.n)} em {r.n} ensaio(s)</span>}
                   </span>
                   <select className={cn('input text-xs py-1', !t?.setupId && 'text-white/30')} value={t?.setupId ?? ''} onChange={ev => setTempo(e.id, { setupId: ev.target.value })}>
@@ -303,26 +410,8 @@ export default function PlannerCadastrosPage() {
                   <input type="checkbox" className="accent-teal w-3.5 h-3.5" checked={t?.acompanhado ?? true} onChange={ev => setTempo(e.id, { acompanhado: ev.target.checked })} />
                 </div>
                 {exp && (
-                  <div className="ml-[96px] my-1.5 p-2 rounded-lg bg-white/[0.02] border border-white/6 space-y-1">
-                    <p className="text-[10px] text-white/30">Tempo por amostra só para um tipo de equipamento (vazio = o geral acima).</p>
-                    {emc.templates.map(tp => {
-                      const pt = t?.porTipo?.[tp.id] ?? {}
-                      const mudar = (parcial: { ensaioMin?: number; relogioMin?: number }) => {
-                        const novo = { ...pt, ...parcial }
-                        const porTipo = { ...(t?.porTipo ?? {}) }
-                        if (novo.ensaioMin === undefined && novo.relogioMin === undefined) delete porTipo[tp.id]
-                        else porTipo[tp.id] = novo
-                        setTempo(e.id, { porTipo })
-                      }
-                      return (
-                        <div key={tp.id} className="grid grid-cols-[220px_110px_110px] gap-2 items-center">
-                          <span className="text-[11px] text-white/50 truncate">{tp.nome}</span>
-                          <Minutos valor={pt.ensaioMin} onChange={v => mudar({ ensaioMin: v })} placeholder="geral" />
-                          <Minutos valor={pt.relogioMin} onChange={v => mudar({ relogioMin: v })} placeholder="geral" />
-                        </div>
-                      )
-                    })}
-                  </div>
+                  <PorTipo cfg={cfg} ensaioId={e.id} tempo={t} templates={emc.templates}
+                    onChange={porTipo => setTempo(e.id, { porTipo })} />
                 )}
               </div>
             )

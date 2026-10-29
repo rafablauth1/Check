@@ -42,6 +42,8 @@ function template221(id: string, nome: string, icone: string, observacao: string
         marcaRelogio: SETE_221.filter(e => e !== 'imunidade-radiada-4-3' && e !== 'imunidade-conduzida-4-6')
           .concat('burst-4-4-reativa'),
       },
+      // como os valores são lidos durante o ensaio — muda o tempo (planner)
+      { id: 'aquisicao', texto: 'Aquisição dos valores', tipo: 'unica', opcoes: ['Display', 'Software'], etiqueta: 'Aquisição', mostrarEtiqueta: true },
     ],
     regras: [
       ...sempre(...SETE_221),

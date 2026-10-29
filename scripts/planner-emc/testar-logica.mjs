@@ -65,6 +65,33 @@ checar('relógio usa relogioMin', L.tempoDoEnsaio(cfg, 'esd', itensMap.get('A'))
 checar('normal usa ensaioMin', L.tempoDoEnsaio(cfg, 'esd', itensMap.get('B')).ensaioMin === 60)
 checar('tempo por tipo', L.tempoDoEnsaio(cfg, 'rad', itensMap.get('F')).ensaioMin === 240)
 checar('sem tempo = null', L.tempoDoEnsaio(cfg, 'x419', itensMap.get('E')) === null)
+
+/* tempo por tipo com acréscimos pelas respostas do cadastro (medidor: reativa, aquisição) */
+const tplMedidor = {
+  id: 'medidor', nome: 'Medidor', perguntas: [
+    { id: 'reativa', texto: 'Mede reativa?', tipo: 'simnao' },
+    { id: 'relogio', texto: 'Modo relógio?', tipo: 'simnao', marcaRelogio: ['esd'] },
+    { id: 'aquisicao', texto: 'Aquisição', tipo: 'unica', opcoes: ['Display', 'Software'] },
+    { id: 'so-fixo', texto: 'Oculta', tipo: 'simnao', mostrarQuando: [{ perguntaId: 'reativa', operador: 'eh', valor: 'nao' }] },
+  ], regras: [],
+}
+const cfgTipo = { ...cfg, tempos: cfg.tempos.map(t => t.ensaioId !== 'esd' ? t : { ...t, porTipo: { medidor: {
+  montagemMin: 40, ensaioMin: 70, relogioMin: 100, acrescimos: [
+    { quando: [{ perguntaId: 'reativa', operador: 'eh', valor: 'sim' }], minutos: 20 },
+    { quando: [{ perguntaId: 'aquisicao', operador: 'eh', valor: 'Software' }], minutos: 15 },
+    { quando: [{ perguntaId: 'so-fixo', operador: 'eh', valor: 'sim' }], minutos: 500 },
+    { quando: [], minutos: 999 },                                   // sem condição: não vale
+  ] } } }) }
+const med = (respostas, relogio = false) => ({ templateId: 'medidor', template: tplMedidor, respostas, ensaios: [ens('esd', relogio ? { relogio: true } : {})] })
+const tt = (r, rel) => L.tempoDoEnsaio(cfgTipo, 'esd', med(r, rel))
+checar('tipo: base', tt({ reativa: 'nao', aquisicao: 'Display' }).ensaioMin === 70, tt({ reativa: 'nao', aquisicao: 'Display' }).ensaioMin)
+checar('tipo: reativa +20', tt({ reativa: 'sim', aquisicao: 'Display' }).ensaioMin === 90)
+checar('tipo: software +15', tt({ reativa: 'nao', aquisicao: 'Software' }).ensaioMin === 85)
+checar('tipo: relógio + reativa + software', tt({ reativa: 'sim', aquisicao: 'Software' }, true).ensaioMin === 135)
+checar('tipo: montagem própria', tt({}).montagemMin === 40)
+checar('tipo: pergunta oculta não conta', tt({ reativa: 'sim', 'so-fixo': 'sim' }).ensaioMin === 90)
+checar('tipo: pergunta visível conta', tt({ reativa: 'nao', 'so-fixo': 'sim' }).ensaioMin === 570)
+checar('outro tipo usa o geral', L.tempoDoEnsaio(cfgTipo, 'esd', { ...med({ reativa: 'sim' }), templateId: 'agua' }).ensaioMin === 60)
 checar('tempoGastoMs', L.tempoGastoMs({ sessoes: [
   { inicio: '2026-11-02T10:00:00Z', fim: '2026-11-02T10:30:00Z' },
   { inicio: '2026-11-02T11:00:00Z' },

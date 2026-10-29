@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Plus, Search, X, Edit2, Trash2, Clock, CheckCircle2, RotateCcw, AlertTriangle, Loader2, Settings2, ChevronDown, ChevronUp,
-  BarChart2, TrendingUp, HardDrive,
+  BarChart2, TrendingUp, HardDrive, CalendarRange,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { today, CLIENTES_KEY, type ClienteDB } from '@/app/cispr15/types'
@@ -20,6 +20,7 @@ import { fmtDate, daysUntil, corPrazo, BadgeEnsaio, ChipEtiqueta } from '@/app/a
 import { AnaliseEmc } from '@/app/agenda/emc/AnaliseEmc'
 import { FollowupEmc } from '@/app/agenda/emc/FollowupEmc'
 import { OrganizadorEmc } from '@/app/agenda/emc/OrganizadorEmc'
+import { PlannerEmc } from '@/app/agenda/emc/PlannerEmc'
 import { sincronizarRadian } from '@/lib/emc/organizador/cliente'
 
 type Filtro = 'andamento' | 'aguardando' | 'concluidos' | 'todos'
@@ -27,7 +28,7 @@ type Ordem = 'dataEntrada' | 'previsaoSaida' | 'protocolo'
 
 export function AgendaEmc() {
   const router = useRouter()
-  const [aba,        setAba]        = useState<'agenda' | 'analise' | 'followup' | 'radian'>('agenda')
+  const [aba,        setAba]        = useState<'agenda' | 'planner' | 'analise' | 'followup' | 'radian'>('agenda')
   const [itens,      setItens]      = useState<AgendaItemEmc[]>([])
   const [config,     setConfig]     = useState<ConfigEnsaiosEmc>(CONFIG_EMC_PADRAO)
   const [clientes,   setClientes]   = useState<ClienteDB[]>([])
@@ -166,6 +167,7 @@ export function AgendaEmc() {
       <div className="flex gap-0.5 p-0.5 rounded-lg bg-white/4 border border-white/8 w-fit">
         {([
           ['agenda',   'Agenda',    null],
+          ['planner',  'Planner',   <CalendarRange key="p" size={11} />],
           ['analise',  'Análise',   <BarChart2 key="a" size={11} />],
           ['followup', 'Follow-up', <TrendingUp key="f" size={11} />],
           ['radian',   'Radian',    <HardDrive key="r" size={11} />],
@@ -181,6 +183,7 @@ export function AgendaEmc() {
       {aba === 'analise' && <AnaliseEmc itens={itens} catalogo={config.catalogo} />}
       {aba === 'followup' && <FollowupEmc itens={itens} catalogo={config.catalogo} />}
       {aba === 'radian' && <OrganizadorEmc itens={itens} onAgendaMudou={recarregar} />}
+      {aba === 'planner' && <PlannerEmc itens={itens} catalogo={config.catalogo} onAgendaMudou={recarregar} />}
 
       {aba === 'agenda' && (<>
       {/* Toolbar */}

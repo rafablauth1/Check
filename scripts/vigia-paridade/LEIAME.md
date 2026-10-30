@@ -29,6 +29,12 @@ node --experimental-transform-types --import ./loader-alias.mjs registro_ts.mjs 
 rem planilha FOR EMC38: célula por célula (valor, fórmula, formato, cores, bordas, mesclagens, formatação condicional, gráficos)
 node --experimental-transform-types --import ./loader-alias.mjs registro_excel_ts.mjs registro.json saida_ts.xlsx
 python registro_excel_cmp.py "%VIGIA%" registro.json saida_ts.xlsx
+rem média temporal da câmera (cv2.accumulateWeighted — o opencv.js não tem: feita em JS, igual bit a bit)
+python media_py.py quadros.bin media_py.bin
+node --experimental-transform-types --import ./loader-alias.mjs media_ts.mjs quadros.bin media_py.bin
+
+rem vídeo direto na tela: semTratamento() só vale true quando o quadro tratado é byte a byte o bruto
+node --experimental-transform-types --import ./loader-alias.mjs sem_tratamento.mjs
 ```
 
 Resultado em 28/10/2026 (Registro): 6 ensaios salvos, 12 importações (1.474 linhas), montagem por segmento

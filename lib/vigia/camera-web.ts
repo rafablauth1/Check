@@ -167,6 +167,16 @@ export class CameraWeb {
     return this.ctx2d!.getImageData(0, 0, w, h)
   }
 
+  /** Quadro atual do vídeo como VideoFrame (sem copiar os pixels): o worker é quem converte em RGBA,
+   *  fora da tela. null sem vídeo, ou se o navegador não tiver WebCodecs. Quem recebe fecha (close). */
+  quadroVideo(): VideoFrame | null {
+    if (!this.video || typeof VideoFrame === 'undefined' || !this.video.videoWidth) return null
+    try { return new VideoFrame(this.video) } catch { return null }
+  }
+
+  /** null = ainda não conferido; true = o worker lê o VideoFrame com os MESMOS pixels de capturar() */
+  videoFrameOk: boolean | null = null
+
   resolucao(): [number, number] {
     if (this.video) return [this.video.videoWidth, this.video.videoHeight]
     if (this.imagem) return [this.imagem.naturalWidth, this.imagem.naturalHeight]
@@ -180,5 +190,6 @@ export class CameraWeb {
     if (this.imagem?.src.startsWith('blob:')) URL.revokeObjectURL(this.imagem.src)
     this.video = null; this.imagem = null; this.stream = null
     this.fpsReal = null; this.nFps = 0; this.tFps = 0
+    this.videoFrameOk = null
   }
 }

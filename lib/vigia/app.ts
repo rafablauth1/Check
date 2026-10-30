@@ -12,7 +12,7 @@ import {
 import { DetectorCiclo, resumirCiclos, desvioPadrao, type Ciclo } from '@/lib/vigia/ciclo'
 import { Alarme, Voz } from '@/lib/vigia/alarme'
 import { CameraWeb, listarCameras, resolverFonte } from '@/lib/vigia/camera-web'
-import { ordenarCantos } from '@/lib/vigia/camera-proc'
+import { ordenarCantos, semTratamento } from '@/lib/vigia/camera-proc'
 import { desenharCampos, desenharPerspectiva, imagemDebug, Visor } from '@/lib/vigia/desenho'
 import { br, num, pyRoundN, fixo, offsetInteiro, cicloComOffset } from '@/lib/vigia/util'
 import { Var, rotulo, messagebox, simpledialog, fmtG } from '@/lib/vigia/tk'
@@ -45,6 +45,10 @@ export type ChaveFiltro = 'media_n' | 'mediana' | 'desfoque' | 'contraste' | 'br
 
 type QuadroBgr = { largura: number; altura: number; dados: ArrayBuffer }
 
+/** leituras para a tela no máximo a cada ~33 ms (~30/s; o Python lê a cada 40 ms). Com a câmera a
+ *  60 fps lê um quadro sim, outro não; a 30 fps, todos. */
+const INTERVALO_LEITURA_MS = 30
+
 /** Fala com o worker do OpenCV que trata os quadros (média temporal, perspectiva, zoom, filtros) e lê para a tela. */
 class Processador {
   worker: Worker
@@ -62,9 +66,11 @@ class Processador {
     this.worker.onmessage = (ev: MessageEvent<RespostaWorker>) => {
       const m = ev.data
       if (m.tipo === 'pronto') { this.pronto.set(m.versao); return }
+      if (m.tipo === 'acumulado') { this.acumulando--; return }
+      if (m.tipo === 'rgba') { this.pedidosRgba.get(m.id)?.(m.dados); this.pedidosRgba.delete(m.id); return }
       if (m.tipo === 'erro') {
         this.erro.set(m.msg)
-        if (m.id !== undefined) { if (m.id < 0) this.emVoo--; else this.ocupado = false }
+        if (m.id !== undefined) { if (m.id === -2) this.acumulando--; else if (m.id < 0) this.emVoo--; else this.ocupado = false }
         return
       }
       if (m.tipo === 'resultado') {
@@ -79,13 +85,45 @@ class Processador {
     this.worker.onerror = e => this.erro.set(e.message || 'Falha ao carregar o OpenCV')
     this.enviar({ tipo: 'iniciar' })
   }
-  enviar(m: PedidoWorker, transf: Transferable[] = []) { this.worker.postMessage(m, transf) }
-  /** leitura para a tela (com o quadro de volta); bgr: devolve também o quadro tratado ao amostrador */
-  ler(img: ImageData, t: number, campos: CampoDisplay[], recortesDe: number | null, bgr = false) {
-    this.ocupado = true
-    const dados = img.data.buffer as ArrayBuffer
-    this.enviar({ tipo: 'quadro', id: ++this.id, t, largura: img.width, altura: img.height, dados, campos, recortesDe, devolverQuadro: true, devolverBgr: bgr }, [dados])
+  enviar(m: PedidoWorker, transf: Transferable[] = []) {
+    if (m.tipo === 'camera') { this.cfgCamera = m.cfg; this.bruto = !!m.bruto }
+    this.worker.postMessage(m, transf)
   }
+  /** o que o worker está aplicando (para saber se o quadro tratado = quadro bruto) */
+  cfgCamera: Record<string, unknown> | null = null
+  bruto = false
+
+  /** o quadro vai em RGBA (imagem parada, ou WebCodecs não conferido) ou como VideoFrame (sem cópia na tela) */
+  private quadro(img: ImageData | VideoFrame): { largura: number; altura: number; dados?: ArrayBuffer; vf?: VideoFrame; transf: Transferable[] } {
+    if (img instanceof ImageData) {
+      const dados = img.data.buffer as ArrayBuffer
+      return { largura: img.width, altura: img.height, dados, transf: [dados] }
+    }
+    return { largura: img.displayWidth, altura: img.displayHeight, vf: img, transf: [img] }
+  }
+
+  /** leitura para a tela; devolverQuadro: o quadro tratado volta para ser mostrado (com tratamento);
+   *  bgr: devolve também o quadro tratado ao amostrador */
+  ler(img: ImageData | VideoFrame, t: number, campos: CampoDisplay[], recortesDe: number | null, bgr = false, devolverQuadro = true) {
+    this.ocupado = true
+    const { transf, ...q } = this.quadro(img)
+    this.enviar({ tipo: 'quadro', id: ++this.id, t, ...q, campos, recortesDe, devolverQuadro, devolverBgr: bgr }, transf)
+  }
+
+  /** Confere se o worker lê o VideoFrame com os mesmos pixels da captura na tela (img = o mesmo quadro). */
+  conferirVideoFrame(img: ImageData, vf: VideoFrame): Promise<boolean> {
+    const id = ++this.id
+    return new Promise(r => {
+      this.pedidosRgba.set(id, dados => {
+        if (!dados || dados.byteLength !== img.data.byteLength) { r(false); return }
+        const a = img.data, b = new Uint8Array(dados)
+        for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) { r(false); return }
+        r(true)
+      })
+      this.enviar({ tipo: 'rgba', id, vf }, [vf])
+    })
+  }
+  private pedidosRgba = new Map<number, (dados: ArrayBuffer | null) => void>()
   private pedidos = new Map<number, (r: Extract<RespostaWorker, { tipo: 'resultado' }>) => void>()
   /** instante (relógio local) do último quadro tratado */
   ultimoT = -Infinity
@@ -101,14 +139,17 @@ class Processador {
   }
 
   /** só trata o quadro e devolve em BGR (amostrador) */
-  tratar(img: ImageData, t: number) {
+  tratar(img: ImageData | VideoFrame, t: number) {
     this.emVoo++
-    const dados = img.data.buffer as ArrayBuffer
-    this.enviar({ tipo: 'quadro', id: -1, t, largura: img.width, altura: img.height, dados, campos: [], devolverBgr: true }, [dados])
+    const { transf, ...q } = this.quadro(img)
+    this.enviar({ tipo: 'quadro', id: -1, t, ...q, campos: [], devolverBgr: true }, transf)
   }
-  acumular(img: ImageData, t: number) {
-    const dados = img.data.buffer as ArrayBuffer
-    this.enviar({ tipo: 'quadro', id: -1, t, largura: img.width, altura: img.height, dados, campos: [], soAcumular: true }, [dados])
+  /** quadros só para a média temporal ainda no worker */
+  acumulando = 0
+  acumular(img: ImageData | VideoFrame, t: number) {
+    this.acumulando++
+    const { transf, ...q } = this.quadro(img)
+    this.enviar({ tipo: 'quadro', id: -2, t, ...q, campos: [], soAcumular: true }, transf)
   }
   fechar() { this.worker.terminate() }
 }
@@ -275,6 +316,8 @@ export class App {
   protected _tick_n = 0
   private _timer: ReturnType<typeof setInterval> | null = null
   private _ultLeitura = 0
+  /** já chegou alguma leitura da câmera (há quadro na tela) */
+  private _tem_quadro = false
   private _salvarCfgTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor() {
@@ -531,7 +574,8 @@ export class App {
   }
 
   async _salvar_foto() {
-    const f = this.ult_img
+    // vídeo direto: o quadro tratado é o próprio quadro da câmera
+    const f = this.ult_img ?? (this._video_direto() ? this.camera.capturar() : null)
     if (!f) return
     const c = document.createElement('canvas')
     c.width = f.width; c.height = f.height
@@ -1241,42 +1285,90 @@ export class App {
   }
 
   // ------------------------------------------------------------------ quadros
-  /** Cada quadro novo da câmera: entra na média temporal; a cada 40 ms um deles é lido e mostrado;
-   *  com o amostrador ligado, todos vão (tratados) para o pool de leitura. */
+  /** Cada quadro novo da câmera: entra na média temporal; a cada ~33 ms um deles é lido para a tela;
+   *  com o amostrador ligado, todos vão (tratados) para o pool de leitura.
+   *  Sem tratamento (quadro tratado = bruto), a tela mostra o vídeo direto em TODO quadro da câmera,
+   *  com as marcações da última leitura — o quadro não precisa voltar do worker. */
   protected _quadro_camera(t: number) {
     const p = this.proc
     if (!p?.pronto.get()) return
     const aba = this.nb.get()
-    const mostrar = (aba === 0 || aba === 1) && !p.ocupado && performance.now() - this._ultLeitura >= 40
+    const visivel = aba === 0 || aba === 1
+    const direto = this._video_direto()
+    if (visivel && direto && this._tem_quadro) this._mostrar_quadro(this.camera.video!, this.ult_res_live)
+    const ler = visivel && !p.ocupado && performance.now() - this._ultLeitura >= INTERVALO_LEITURA_MS
     const amostrar = this.amostrando && this.amostrador !== null && p.emVoo < 3
-    if (mostrar) {
-      const img = this.camera.capturar()
-      if (!img) return
+    if (ler) {
+      const q = this._pegar_quadro()
+      if (!q) return
       this._ultLeitura = performance.now()
-      p.ler(img, t, this.campos, aba === 1 ? this.campo_sel : null, amostrar)
+      p.ler(q, t, this.campos, aba === 1 ? this.campo_sel : null, amostrar, !direto)
     } else if (amostrar) {
-      const img = this.camera.capturar()
-      if (img) p.tratar(img, t)
+      const q = this._pegar_quadro()
+      if (q) p.tratar(q, t)
     } else if ((this.cfg.camera.filtros?.media_n ?? 1) > 1) {
-      const img = this.camera.capturar()
-      if (img) p.acumular(img, t)
+      // fila cheia: copia na tela (ImageData) para não segurar os buffers da câmera — nenhum quadro fica fora da média
+      const q = p.acumulando < 3 ? this._pegar_quadro() : this.camera.capturar()
+      if (q) p.acumular(q, t)
     }
+  }
+
+  /** a tela pode desenhar o vídeo direto? (vídeo/câmera e o worker não altera o quadro) */
+  private _video_direto() {
+    return !!this.camera.video && !!this.proc && semTratamento(this.proc.cfgCamera, this.proc.bruto)
+  }
+
+  /** Quadro para o worker: VideoFrame (sem copiar na tela) depois de conferido que dá os mesmos pixels; senão RGBA. */
+  private _pegar_quadro(): ImageData | VideoFrame | null {
+    const c = this.camera
+    if (c.video && c.videoFrameOk) return c.quadroVideo() ?? c.capturar()
+    if (c.video && c.videoFrameOk === null) void this._conferir_videoframe()
+    return c.capturar()
+  }
+
+  private _conferindo = false
+  /** Uma vez por câmera aberta: o worker lê o VideoFrame byte a byte igual à captura na tela?
+   *  (3 tentativas: o vídeo pode trocar de quadro entre as duas capturas.) Se não, fica a captura na tela. */
+  private async _conferir_videoframe() {
+    const c = this.camera, v = c.video
+    if (this._conferindo || !this.proc || !v) return
+    this._conferindo = true
+    try {
+      let ok = false
+      for (let i = 0; i < 3 && !ok && c.video === v && this.proc; i++) {
+        const img = c.capturar(), vf = c.quadroVideo()
+        if (!img || !vf) { vf?.close(); break }
+        ok = await this.proc.conferirVideoFrame(img, vf)
+      }
+      if (c.video === v) c.videoFrameOk = ok
+    } finally { this._conferindo = false }
   }
 
   protected _resultado(m: Extract<RespostaWorker, { tipo: 'resultado' }>) {
     this.ult_res_live = m.resultados
-    if (!m.quadro) return
+    this._tem_quadro = true
+    if (!m.quadro) { this.ult_img = null; return }   // vídeo direto: desenhado a cada quadro em _quadro_camera
     const img = new ImageData(new Uint8ClampedArray(m.quadro.dados), m.quadro.largura, m.quadro.altura)
     this.ult_img = img
+    this._mostrar_quadro(img, m.resultados)
+  }
+
+  /** desenha o quadro (tratado, ou o vídeo direto) com as marcações dos campos na aba visível */
+  private _mostrar_quadro(fonte: ImageData | HTMLVideoElement, resultados: Record<string, ResultadoCampo>) {
     const aba = this.nb.get()
     if (aba !== 0 && aba !== 1) return
-    if (!this.quadroCanvas || this.quadroCanvas.width !== img.width || this.quadroCanvas.height !== img.height) {
-      this.quadroCanvas = new OffscreenCanvas(img.width, img.height)
+    const w = fonte instanceof ImageData ? fonte.width : fonte.videoWidth
+    const h = fonte instanceof ImageData ? fonte.height : fonte.videoHeight
+    if (!w || !h) return
+    if (!this.quadroCanvas || this.quadroCanvas.width !== w || this.quadroCanvas.height !== h) {
+      this.quadroCanvas = new OffscreenCanvas(w, h)
     }
     const ctx = this.quadroCanvas.getContext('2d')!
-    ctx.putImageData(img, 0, 0)
+    if (fonte instanceof ImageData) ctx.putImageData(fonte, 0, 0)
+    else ctx.drawImage(fonte, 0, 0)
+    const img = { width: w, height: h }
     const modo_dig = aba === 1 && this.v_modo.get() === 'digitos'
-    desenharCampos(ctx, img.height, this.campos, m.resultados, aba === 1 ? this.campo_sel : null, modo_dig ? this.cel_sel : null)
+    desenharCampos(ctx, img.height, this.campos, resultados, aba === 1 ? this.campo_sel : null, modo_dig ? this.cel_sel : null)
     if (this._persp_coletando !== null && aba === 1) desenharPerspectiva(ctx, this._persp_coletando)
     if (aba === 1 && this.canvasCal) {
       this.visor_cal.mostrar(this.canvasCal, this.quadroCanvas, img.width, img.height)
@@ -1324,7 +1416,7 @@ export class App {
     this._tick_ensaio_meio()    // leitura programada e resultados das leituras
     // imagem parada (arquivo): não há quadros novos, trata no tick
     if (this.camera.imagem) this._quadro_camera(performance.now() / 1000)
-    const temQuadro = this.camera.ativa && !!this.ult_img
+    const temQuadro = this.camera.ativa && this._tem_quadro
     if (temQuadro && aba === 1 && this._tick_n % 5 === 0) {
       this.lbl_persp.set({ text: this.persp_pts.length ? 'perspectiva: ativa' : '', foreground: COR_NEUTRO })
       const modo_dig = this.v_modo.get() === 'digitos'

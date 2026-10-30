@@ -12,6 +12,21 @@ export function ordenarCantos(pts: number[][]): number[][] {
   return [p[argmin(s)], p[argmin(d)], p[argmax(s)], p[argmax(d)]]
 }
 
+/** true quando obter() devolve o quadro igual ao recebido (sem média, perspectiva, zoom digital nem
+ *  filtro): a tela pode mostrar o vídeo direto, sem esperar o quadro voltar do worker.
+ *  Tem de seguir EXATAMENTE as condições de aplicar/acumular/perspectiva/zoomDigital/filtrar. */
+export function semTratamento(cfg: { zoom_digital?: number; filtros?: Partial<Filtros> } | null, bruto: boolean): boolean {
+  if (!cfg) return false
+  const p = { ...FILTROS_PADRAO, ...(cfg.filtros ?? {}) }
+  if (Math.trunc(p.media_n || 1) > 1) return false   // a média vale mesmo no modo bruto
+  if (bruto) return true
+  return (p.perspectiva || []).length !== 4
+    && Math.max(1.0, Number(cfg.zoom_digital ?? 1.0)) <= 1.001
+    && Math.trunc(p.mediana || 0) < 3 && Math.trunc(p.desfoque || 0) < 3
+    && !(Math.abs(Number(p.contraste ?? 1.0) - 1.0) > 0.01 || Math.abs(Number(p.brilho ?? 0.0)) > 0.5)
+    && !p.clahe && !(Number(p.nitidez ?? 0.0) > 0.01)
+}
+
 export class ProcessadorCamera {
   filtros: Filtros = { ...FILTROS_PADRAO }
   zoomDig = 1.0
@@ -45,7 +60,10 @@ export class ProcessadorCamera {
       this.media = new cv.Mat()
       f.convertTo(this.media, cv.CV_32FC3)
     } else {
-      cv.accumulateWeighted(f, this.media, 1.0 / n)
+      // o opencv.js não tem accumulateWeighted: mesma conta do OpenCV 5 em float32,
+      // dst = fma(src - dst, alpha, dst) — idêntico bit a bit ao cv2 (scripts/vigia-paridade/media_py.py + media_ts.mjs)
+      const a = Math.fround(1.0 / n), d = this.media.data32F, s = f.data
+      for (let i = 0; i < d.length; i++) { const x = d[i]; d[i] = Math.fround(s[i] - x) * a + x }
     }
     const out = new cv.Mat()
     cv.convertScaleAbs(this.media, out)

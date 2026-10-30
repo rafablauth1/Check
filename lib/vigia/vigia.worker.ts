@@ -16,7 +16,8 @@ export type PedidoWorker =
   | { tipo: 'camera'; cfg: Record<string, unknown>; bruto?: boolean }
   | { tipo: 'zerar_media' }
   | {
-      tipo: 'quadro'; id: number; t: number; largura: number; altura: number; dados: ArrayBuffer
+      /** o quadro vem em RGBA (dados) ou como VideoFrame (vf, convertido aqui, fora da tela) */
+      tipo: 'quadro'; id: number; t: number; largura: number; altura: number; dados?: ArrayBuffer; vf?: VideoFrame
       campos: Partial<CampoDisplay>[]; recortesDe?: number | null; devolverQuadro?: boolean; soAcumular?: boolean
       /** devolve também o quadro tratado em BGR (para o amostrador ler em outro worker) */
       devolverBgr?: boolean
@@ -25,9 +26,13 @@ export type PedidoWorker =
   | { tipo: 'ler_ultimo'; id: number; campos: Partial<CampoDisplay>[]; devolverQuadro?: boolean }
   /** amostrador: lê os campos num quadro JÁ tratado (BGR) — não mexe na média temporal deste worker */
   | { tipo: 'ler'; seq: number; t: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[] }
+  /** conferência: devolve o VideoFrame em RGBA, para comparar com a captura na tela */
+  | { tipo: 'rgba'; id: number; vf: VideoFrame }
 
 export type RespostaWorker =
   | { tipo: 'pronto'; versao: string }
+  | { tipo: 'rgba'; id: number; dados: ArrayBuffer | null }
+  | { tipo: 'acumulado' }
   | { tipo: 'erro'; msg: string; id?: number }
   | {
       tipo: 'resultado'; id: number; t: number; resultados: Record<string, ResultadoCampo>
@@ -35,6 +40,21 @@ export type RespostaWorker =
       bgr?: { largura: number; altura: number; dados: ArrayBuffer }
     }
   | { tipo: 'lido'; seq: number; t: number; valores: Record<string, number | null> }
+
+/** VideoFrame -> RGBA pelo mesmo caminho de CameraWeb.capturar() (drawImage + getImageData). Fecha o quadro. */
+let telaVf: OffscreenCanvas | null = null
+let ctxVf: OffscreenCanvasRenderingContext2D | null = null
+function rgbaDe(vf: VideoFrame): ImageData {
+  try {
+    const w = vf.displayWidth, h = vf.displayHeight
+    if (!telaVf || telaVf.width !== w || telaVf.height !== h) {
+      telaVf = new OffscreenCanvas(w, h)
+      ctxVf = telaVf.getContext('2d', { willReadFrequently: true })
+    }
+    ctxVf!.drawImage(vf, 0, 0)
+    return ctxVf!.getImageData(0, 0, w, h)
+  } finally { vf.close() }
+}
 
 async function carregarCv() {
   if (cv) return
@@ -48,6 +68,12 @@ async function carregarCv() {
 
 ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
   const m = ev.data
+  if (m.tipo === 'rgba') {   // não precisa do OpenCV
+    let dados: ArrayBuffer | null = null
+    try { dados = rgbaDe(m.vf).data.buffer as ArrayBuffer } catch { /* devolve null: fica a captura na tela */ }
+    ctx.postMessage({ tipo: 'rgba', id: m.id, dados } satisfies RespostaWorker, dados ? [dados] : [])
+    return
+  }
   try {
     if (m.tipo === 'iniciar') {
       carregando ??= carregarCv()
@@ -77,15 +103,16 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
       return
     }
     if (m.tipo === 'quadro') {
-      const rgba = new cv.Mat(m.altura, m.largura, cv.CV_8UC4)
-      rgba.data.set(new Uint8Array(m.dados))
+      const img = m.vf ? rgbaDe(m.vf) : null
+      const rgba = new cv.Mat(img?.height ?? m.altura, img?.width ?? m.largura, cv.CV_8UC4)
+      rgba.data.set(img ? img.data : new Uint8Array(m.dados!))
       const bgr = new cv.Mat()
       cv.cvtColor(rgba, bgr, cv.COLOR_RGBA2BGR)
       rgba.delete()
       // a média temporal acumula em TODO quadro recebido (como a thread da câmera do VIGIA)
       const acumulado = proc.acumular(bgr)
       bgr.delete()
-      if (m.soAcumular) { acumulado.delete(); return }
+      if (m.soAcumular) { acumulado.delete(); ctx.postMessage({ tipo: 'acumulado' } satisfies RespostaWorker); return }
       const f = proc.obter(acumulado)
       acumulado.delete()
       ultimo?.f.delete()
@@ -97,6 +124,7 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
       ctx.postMessage(resp, [...(quadro ? [quadro.dados] : []), ...(bgr2 ? [bgr2.dados] : [])])
     }
   } catch (e) {
+    if (m.tipo === 'quadro') m.vf?.close()   // nunca segurar quadro da câmera (o driver tem poucos buffers)
     ctx.postMessage({ tipo: 'erro', msg: e instanceof Error ? e.message : String(e), id: 'id' in m ? m.id : 'seq' in m ? m.seq : undefined } satisfies RespostaWorker)
   }
 }

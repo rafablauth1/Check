@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createRepo } from '@/lib/repo'
 import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
+import { nomePadrao } from '@/lib/equipamentos/nomes-server'
 
 const DEFAULTS: EquipamentoEMC[] = [
   { id: '1', tag: '1528EMC', nome: 'Analisador de Espectro R&S', grupoId: 'medidores', subgrupoId: 'analisador-espectro', status: 'ativo', grandezas: [], ultimaCalibracao: '2025-12-01', proximaCalibracao: '2026-12-01', intervaloCalibracao: 12 },
@@ -19,6 +20,7 @@ export async function GET() {
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json() as Omit<EquipamentoEMC, 'id'>
+    body.nome = await nomePadrao(body.nome)
     return NextResponse.json(await repo.create(body), { status: 201 })
   } catch (e: unknown) {
     return NextResponse.json({ error: String(e) }, { status: 500 })

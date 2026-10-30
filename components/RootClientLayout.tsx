@@ -11,6 +11,7 @@ function getPageTitle(pathname: string): string {
   if (pathname === '/dashboard')            return 'Dashboard'
   if (pathname === '/equipamentos/grupos')  return 'Grupos'
   if (pathname === '/equipamentos/novo')    return 'Novo Equipamento'
+  if (pathname === '/equipamentos/padronizar') return 'Padronizar nomes'
   if (pathname === '/checagens/nova')       return 'Nova Checagem'
   if (pathname === '/checagens/templates')  return 'Templates'
   if (pathname === '/normas')               return 'Normas'

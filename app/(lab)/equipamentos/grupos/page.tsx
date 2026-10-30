@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect, useMemo } from 'react'
-import { Plus, Pencil, Trash2, X, Save, GripVertical, Zap, Gauge, Waves, Radio, SlidersHorizontal, Thermometer, Layers } from 'lucide-react'
+import Link from 'next/link'
+import { Plus, Pencil, Trash2, X, Save, GripVertical, Zap, Gauge, Waves, Radio, SlidersHorizontal, Thermometer, Layers, Wand2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { GRUPO_CORES } from '@/lib/grupos-icons'
 
@@ -272,9 +273,14 @@ export default function GruposEditorPage() {
           <h1 className="page-title">Grupos de equipamentos</h1>
           <p className="page-sub">Taxonomia de grupos e subgrupos para classificação</p>
         </div>
-        <button className="btn-primary" onClick={() => { setGrupoAlvo(null); setModal('grupo-novo') }}>
-          <Plus size={13}/> Novo grupo
-        </button>
+        <div className="flex items-center gap-2">
+          <Link href="/equipamentos/padronizar" className="btn-secondary" title="Juntar grafias diferentes do mesmo equipamento e corrigir os nomes">
+            <Wand2 size={13}/> Padronizar nomes
+          </Link>
+          <button className="btn-primary" onClick={() => { setGrupoAlvo(null); setModal('grupo-novo') }}>
+            <Plus size={13}/> Novo grupo
+          </button>
+        </div>
       </div>
 
       {/* Tipos de equipamento — atribuir cada NOME a um grupo/subgrupo (em lote) */}

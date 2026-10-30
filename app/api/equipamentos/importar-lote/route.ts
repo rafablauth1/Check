@@ -11,6 +11,8 @@ import { corrigirGrandezasPorLayout } from '@/lib/certificados/layout'
 import { grandezasDoCertificado, mesclarGrandezas } from '@/lib/certificados/registrar-grandezas'
 import { addM, dmyParaISO } from '@/lib/utils'
 import { siglaOficial } from '@/lib/taxonomia/tipos'
+import { padronizarNome } from '@/lib/equipamentos/nomes'
+import { lerDicionarioNomes } from '@/lib/equipamentos/nomes-server'
 
 const ARQ_EQUIP    = 'equipamentos.json'
 const ARQ_CERT     = 'certificados.json'
@@ -96,6 +98,7 @@ export async function POST(req: NextRequest) {
     const foldersOk = new Set<string>()   // pastas cadastradas nesta rodada (limpa do rascunho)
     const labs = await lerLaboratorios()  // registro CAL → laboratório (auto-descoberta)
     let labsMudou = false
+    const dicNomes = await lerDicionarioNomes()  // nome do instrumento no padrão (ver lib/equipamentos/nomes)
     const agora = new Date().toISOString()
     // Modelo de extração do lab (rótulos por campo) p/ o CAL do certificado — Parte B.
     // overrideDoLab() é compartilhada com o escaneio individual (app/(lab)/equipamentos/novo/page.tsx).
@@ -154,7 +157,7 @@ export async function POST(req: NextRequest) {
           rascunho.push({ tag: it.folder, folder: it.folder, motivo, certPath: it.certPath || undefined, em: agora, cadastravel: false })
           continue
         }
-        const nomeA = limparCampo(ac?.nome || g.nome || dados.nome, 80) || ''
+        const nomeA = padronizarNome(limparCampo(ac?.nome || g.nome || dados.nome, 80) || '', dicNomes)
         const dcal = (ac?.dataCertificado || g.dataCalibracao || '').match(/(\d{2})\/(\d{2})\/(\d{4})/)
         const isoCal = dcal ? `${dcal[3]}-${dcal[2]}-${dcal[1]}` : (dados.ultimaCalibracao || '')
         const intervalo = ac?.periodicidadeMeses || 12
@@ -240,7 +243,7 @@ export async function POST(req: NextRequest) {
           // nome NUNCA = TAG; vazio sinaliza "preencher". FOR 6401 é autoritativo
           // (conferido manualmente, sem erro de OCR) — tem prioridade.
           tag,
-          nome: limparCampo(ac?.nome || dados.nome, 80) || '',
+          nome: padronizarNome(limparCampo(ac?.nome || dados.nome, 80) || '', dicNomes),
           grupoId, subgrupoId,
           status: 'ativo',
           grandezas: [],

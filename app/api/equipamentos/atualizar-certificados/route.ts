@@ -6,6 +6,8 @@ import {
   ehAnaliseCritica, parsearAnaliseCritica,
 } from '@/lib/certificados/parser'
 import { addM, dmyParaISO } from '@/lib/utils'
+import { padronizarNome } from '@/lib/equipamentos/nomes'
+import { lerDicionarioNomes } from '@/lib/equipamentos/nomes-server'
 
 // Evita pré-renderização estática (senão o POST daria 405 no app empacotado).
 export const dynamic = 'force-dynamic'
@@ -29,6 +31,7 @@ export async function POST(req: NextRequest) {
     const byTag = new Map(lista.map(e => [e.tag.toUpperCase(), e]))
     const atualizados: { tag: string; oque: string; de: string; para: string }[] = []
     let mudou = false
+    const dicNomes = await lerDicionarioNomes()
 
     for (const it of itens) {
       const text = it.text || ''
@@ -56,9 +59,11 @@ export async function POST(req: NextRequest) {
 
       // 1b) Nome do instrumento na análise crítica é conferido manualmente no FOR
       // 6401 (autoritativo — sem erro de OCR) → corrige o nome se vier diferente.
-      if (ac?.nome && ac.nome.trim() && ac.nome.trim() !== eq.nome) {
+      // Compara já no padrão — senão desfaria a padronização dos nomes a cada varredura.
+      const nomeAc = ac?.nome ? padronizarNome(ac.nome, dicNomes) : ''
+      if (nomeAc && nomeAc !== eq.nome) {
         const antes = eq.nome || '—'
-        eq.nome = ac.nome.trim()
+        eq.nome = nomeAc
         atualizados.push({ tag, oque: 'nome', de: antes, para: eq.nome })
         mudou = true
       }

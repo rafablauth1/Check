@@ -102,6 +102,14 @@
     appearance: none;
     background: transparent;
   }
+  /* …mas caixa de marcar e botão de opção sem appearance não desenham nada — ficavam
+     invisíveis no app inteiro. Volta o controle nativo, no tema escuro, com a cor
+     do accent-* de cada uso. */
+  input[type=checkbox], input[type=radio] {
+    -webkit-appearance: auto;
+    appearance: auto;
+    color-scheme: dark;
+  }
 
   html, body {
     background-color: var(--bg, #0B0E14);

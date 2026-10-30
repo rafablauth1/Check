@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { lerJSON, escreverJSON } from '@/lib/dados'
 import type { EquipamentoEMC } from '@/lib/equipamentos/tipos'
+import { nomePadrao } from '@/lib/equipamentos/nomes-server'
 
 const ARQUIVO = 'equipamentos.json'
 
@@ -14,6 +15,7 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
 export async function PUT(req: NextRequest, { params }: { params: { id: string } }) {
   try {
     const body = await req.json() as Partial<EquipamentoEMC>
+    if (typeof body.nome === 'string') body.nome = await nomePadrao(body.nome)
     const lista = await lerJSON<EquipamentoEMC[]>(ARQUIVO, [])
     const idx = lista.findIndex(e => e.id === params.id)
     if (idx < 0) return NextResponse.json({ error: 'Não encontrado' }, { status: 404 })

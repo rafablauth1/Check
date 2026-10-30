@@ -11,6 +11,7 @@ import AbaEmc from './AbaEmc'
 import AbaEnsaio from './AbaEnsaio'
 import AbaRegistro from './AbaRegistro'
 import JanelasEnsaio from './JanelasEnsaio'
+import JanelaAutoteste from './JanelaAutoteste'
 
 const ABAS = [
   '  Ensaio  ',
@@ -62,6 +63,7 @@ export default function VigiaPage() {
       )}
       {carregado && !versaoCv && <div style={{ position: 'absolute', bottom: 10, left: 16, color: '#5f6368' }}>Carregando OpenCV…</div>}
       {carregado && <JanelasEnsaio app={app} />}
+      {carregado && <JanelaAutoteste app={app} />}
       <Dialogos />
     </div>
   )

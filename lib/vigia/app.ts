@@ -17,6 +17,7 @@ import { desenharCampos, desenharPerspectiva, imagemDebug, Visor } from '@/lib/v
 import { br, num, pyRoundN, fixo, offsetInteiro, cicloComOffset } from '@/lib/vigia/util'
 import { Var, rotulo, messagebox, simpledialog, fmtG } from '@/lib/vigia/tk'
 import type { PedidoWorker, RespostaWorker } from '@/lib/vigia/vigia.worker'
+import type { ResultadoAutoteste, ParamsLeitura } from '@/lib/vigia/autoteste'
 
 export const NOME_APP = 'VIGIA-7S'
 export const DESCRICAO_APP = 'verificação de displays de 7 segmentos em tempo real'
@@ -66,6 +67,12 @@ class Processador {
     this.worker.onmessage = (ev: MessageEvent<RespostaWorker>) => {
       const m = ev.data
       if (m.tipo === 'pronto') { this.pronto.set(m.versao); return }
+      if ((m.tipo === 'bgr' || m.tipo === 'encaixado' || m.tipo === 'erro') && m.id !== undefined && this.pedidosGen.has(m.id)) {
+        const r = this.pedidosGen.get(m.id)!
+        this.pedidosGen.delete(m.id)
+        r(m)
+        return
+      }
       if (m.tipo === 'acumulado') { this.acumulando--; return }
       if (m.tipo === 'rgba') { this.pedidosRgba.get(m.id)?.(m.dados); this.pedidosRgba.delete(m.id); return }
       if (m.tipo === 'erro') {
@@ -124,6 +131,15 @@ class Processador {
     })
   }
   private pedidosRgba = new Map<number, (dados: ArrayBuffer | null) => void>()
+  private pedidosGen = new Map<number, (m: RespostaWorker) => void>()
+  /** pedido com resposta (quadro tratado mais recente, encaixe) — ids altos, fora dos da leitura */
+  pedir<T extends RespostaWorker['tipo']>(m: Extract<PedidoWorker, { tipo: 'bgr_ultimo' | 'encaixar' }>, resposta: T): Promise<Extract<RespostaWorker, { tipo: T }>> {
+    return new Promise((ok, falha) => {
+      this.pedidosGen.set(m.id, r => (r.tipo === 'erro' ? falha(new Error(r.msg)) : ok(r as Extract<RespostaWorker, { tipo: T }>)))
+      this.enviar(m)
+    })
+  }
+  idGen = 1_000_000_000
   private pedidos = new Map<number, (r: Extract<RespostaWorker, { tipo: 'resultado' }>) => void>()
   /** instante (relógio local) do último quadro tratado */
   ultimoT = -Infinity
@@ -299,6 +315,8 @@ export class App {
   lbl_live = rotulo('—')
   lbl_dica = rotulo('', COR_NEUTRO)
   dbg = new Var<HTMLCanvasElement | null>(null)
+  /** janela do teste dos dígitos 0–9 (recurso do app) */
+  autoteste = new Var<{ testando: true } | { testando: false; resultados: ResultadoAutoteste[]; aplicados: string[] } | null>(null)
   _carregando_campo = false
   _edicao: { j: number; tipo: string; ini: [number, number]; orig: number[] } | null = null
   _arrasto: [number, number] | null = null
@@ -718,6 +736,69 @@ export class App {
     const [, y, w, h] = c.celulas_manuais[this.cel_sel]
     for (const cel of c.celulas_manuais) { cel[1] = y; cel[2] = w; cel[3] = h }
     ajustarRoi(c)
+  }
+
+  /** Igualar e encaixar (recurso do app): igualar tamanhos + cada dígito procura, na imagem, a posição
+   *  em que os segmentos ficam mais nítidos (lib/vigia/autoteste.ts encaixar). */
+  async _encaixar() {
+    if (!this.campos.length) return
+    const c = this.campos[this.campo_sel]
+    if (!ehManual(c) || this.cel_sel === null) {
+      await messagebox.showinfo('Igualar e encaixar', "No modo 'Dígito a dígito', clique no dígito que está do tamanho certo e depois em 'Igualar e encaixar'.")
+      return
+    }
+    const p = this.proc
+    if (!p || !this._tem_quadro) { await messagebox.showwarning('Igualar e encaixar', 'Sem imagem da câmera.'); return }
+    try {
+      const r = await p.pedir({ tipo: 'encaixar', id: p.idGen++, campo: c, sel: this.cel_sel }, 'encaixado')
+      c.celulas_manuais = r.celulas.map(cel => cel.map(v => pyRoundN(v, 1)))
+      ajustarRoi(c)
+      const mov = r.movidos.map(([dx, dy], i) => (dx || dy ? `dígito ${i + 1}: ${dx > 0 ? '+' : ''}${dx}, ${dy > 0 ? '+' : ''}${dy} px` : '')).filter(Boolean)
+      this.lbl_cam.set({ text: `Tamanho do dígito ${this.cel_sel + 1} copiado para todos. ` + (mov.length ? `Encaixados: ${mov.join('; ')}.` : 'Nenhum precisou mudar de lugar.'), foreground: COR_OK })
+    } catch (e) {
+      await messagebox.showerror('Igualar e encaixar', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  /** Testar dígitos 0–9 (recurso do app): monta todos os dígitos em todas as posições com os segmentos
+   *  reais da imagem e lê; sugere parâmetros. Roda num worker à parte (a imagem ao vivo não trava). */
+  async _testar_digitos() {
+    const p = this.proc
+    if (!this.campos.length) return
+    if (!p || !this._tem_quadro) { await messagebox.showwarning('Testar dígitos', 'Sem imagem da câmera.'); return }
+    this.autoteste.set({ testando: true })
+    let w: Worker | null = null
+    try {
+      const { quadro } = await p.pedir({ tipo: 'bgr_ultimo', id: p.idGen++ }, 'bgr')
+      if (!quadro) throw new Error('Sem imagem da câmera.')
+      w = new Worker(new URL('./vigia.worker.ts', import.meta.url))
+      const ww = w
+      const resultados = await new Promise<ResultadoAutoteste[]>((ok, falha) => {
+        ww.onmessage = (ev: MessageEvent<RespostaWorker>) => {
+          const m = ev.data
+          if (m.tipo === 'pronto') ww.postMessage({ tipo: 'autoteste', id: 1, ...quadro, campos: this.campos } satisfies PedidoWorker, [quadro.dados])
+          else if (m.tipo === 'autoteste') ok(m.resultados)
+          else if (m.tipo === 'erro') falha(new Error(m.msg))
+        }
+        ww.onerror = e => falha(new Error(e.message || 'Falha ao carregar o OpenCV'))
+        ww.postMessage({ tipo: 'iniciar' } satisfies PedidoWorker)
+      })
+      if (this.autoteste.get()) this.autoteste.set({ testando: false, resultados, aplicados: [] })
+    } catch (e) {
+      this.autoteste.set(null)
+      await messagebox.showerror('Testar dígitos', e instanceof Error ? e.message : String(e))
+    } finally { w?.terminate() }
+  }
+
+  /** aplica os parâmetros sugeridos pelo teste 0–9 a um campo */
+  _aplicar_sugerido(nome: string, params: ParamsLeitura) {
+    const c = this.campos.find(x => x.nome === nome)
+    if (!c) return
+    Object.assign(c, params)
+    if (this.campos[this.campo_sel] === c) this._carregar_campo()
+    this.salvarLayoutDepois()   // grava a config (como as divisórias)
+    const st = this.autoteste.get()
+    if (st && !st.testando) this.autoteste.set({ ...st, aplicados: [...st.aplicados, nome] })
   }
 
   _alterar_celula(c: CampoDisplay, j: number, x: number, y: number, w: number, h: number) {

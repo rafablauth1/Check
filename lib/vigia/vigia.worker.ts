@@ -4,6 +4,7 @@
 // O opencv.js vem de /vigia/opencv.js (copiado de node_modules por scripts/copy-opencv.js).
 import { lerCampo, campoDe, type CampoDisplay, type ResultadoCampo, type OpenCV, type Mat } from '@/lib/vigia/seg7'
 import { ProcessadorCamera } from '@/lib/vigia/camera-proc'
+import { autotestar, encaixar, type ResultadoAutoteste } from '@/lib/vigia/autoteste'
 
 const ctx = self as unknown as DedicatedWorkerGlobalScope & { cv?: OpenCV }
 let cv: OpenCV = null
@@ -28,11 +29,20 @@ export type PedidoWorker =
   | { tipo: 'ler'; seq: number; t: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[] }
   /** conferência: devolve o VideoFrame em RGBA, para comparar com a captura na tela */
   | { tipo: 'rgba'; id: number; vf: VideoFrame }
+  /** teste dos dígitos 0–9 (lib/vigia/autoteste.ts) num quadro tratado (BGR) — roda num worker à parte */
+  | { tipo: 'autoteste'; id: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[] }
+  /** quadro tratado mais recente, em BGR */
+  | { tipo: 'bgr_ultimo'; id: number }
+  /** igualar e encaixar os dígitos de um campo no último quadro tratado */
+  | { tipo: 'encaixar'; id: number; campo: Partial<CampoDisplay>; sel: number }
 
 export type RespostaWorker =
   | { tipo: 'pronto'; versao: string }
   | { tipo: 'rgba'; id: number; dados: ArrayBuffer | null }
   | { tipo: 'acumulado' }
+  | { tipo: 'autoteste'; id: number; resultados: ResultadoAutoteste[] }
+  | { tipo: 'bgr'; id: number; quadro: { largura: number; altura: number; dados: ArrayBuffer } | null }
+  | { tipo: 'encaixado'; id: number; celulas: number[][]; movidos: [number, number][] }
   | { tipo: 'erro'; msg: string; id?: number }
   | {
       tipo: 'resultado'; id: number; t: number; resultados: Record<string, ResultadoCampo>
@@ -94,6 +104,26 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
         for (const c of m.campos) { const campo = campoDe(c); valores[campo.nome] = lerCampo(cv, f, campo, 'BGR').valor }
       } finally { f.delete() }
       ctx.postMessage({ tipo: 'lido', seq: m.seq, t: m.t, valores } satisfies RespostaWorker)
+      return
+    }
+    if (m.tipo === 'autoteste') {
+      const f = new cv.Mat(m.altura, m.largura, cv.CV_8UC3)
+      f.data.set(new Uint8Array(m.dados))
+      let resultados: ResultadoAutoteste[]
+      try { resultados = m.campos.map(c => autotestar(cv, f, campoDe(c))) } finally { f.delete() }
+      const transf = resultados.flatMap(r => (r.amostras ?? []).map(a => a.dados))
+      ctx.postMessage({ tipo: 'autoteste', id: m.id, resultados } satisfies RespostaWorker, transf)
+      return
+    }
+    if (m.tipo === 'bgr_ultimo') {
+      const quadro = ultimo ? { largura: ultimo.f.cols, altura: ultimo.f.rows, dados: (ultimo.f.data as Uint8Array).slice().buffer as ArrayBuffer } : null
+      ctx.postMessage({ tipo: 'bgr', id: m.id, quadro } satisfies RespostaWorker, quadro ? [quadro.dados] : [])
+      return
+    }
+    if (m.tipo === 'encaixar') {
+      if (!ultimo) throw new Error('Sem imagem da câmera')
+      const r = encaixar(cv, ultimo.f, campoDe(m.campo), m.sel)
+      ctx.postMessage({ tipo: 'encaixado', id: m.id, ...r } satisfies RespostaWorker)
       return
     }
     if (m.tipo === 'ler_ultimo') {

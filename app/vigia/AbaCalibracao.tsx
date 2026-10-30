@@ -180,6 +180,10 @@ function Campos({ app }: { app: App }) {
         <Radio v={app.v_modo} valor="digitos" onChange={() => app._modo_digitos()}>Dígito a dígito</Radio>
         <Botao style={{ marginLeft: 6 }} onClick={() => app._redistribuir()}>Redistribuir</Botao>
         <Botao onClick={() => void app._igualar()}>Igualar tamanhos</Botao>
+        <Botao onClick={() => void app._encaixar()} title="Copia o tamanho do dígito selecionado para todos e encaixa cada um onde os segmentos estão na imagem">Igualar e encaixar</Botao>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', padding: '2px 4px 0', gap: 4 }}>
+        <Botao onClick={() => void app._testar_digitos()} title="Monta 0–9 em todas as posições com os segmentos reais da imagem, lê e sugere parâmetros">Testar dígitos 0–9 (todos os campos)</Botao>
       </div>
       <div style={{ display: 'grid', gridTemplateColumns: 'auto auto auto auto', alignItems: 'center', padding: 4, rowGap: 1 }}>
         {ESPECS.map(([attr, rot, tipo, extra], i) => {

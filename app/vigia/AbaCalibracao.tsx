@@ -91,7 +91,8 @@ function AbaCamera({ app }: { app: App }) {
     <div style={g}>
       <span style={{ padding: '0 4px' }}>Câmera:</span>
       <div style={{ gridColumn: '2 / span 2', display: 'flex', gap: 2 }}>
-        <Combo v={app.v_fonte} valores={valores} style={{ flex: 1, minWidth: 0 }} onSelect={() => void app.conectar_camera()} onEnter={() => void app.conectar_camera()} />
+        <Combo v={app.v_fonte} valores={valores} style={{ flex: 1, minWidth: 0 }} onSelect={() => void app.conectar_camera()} onEnter={() => void app.conectar_camera()}
+          aoAbrir={valores.length ? undefined : () => app._procurar_cameras()} />
         <Botao onClick={() => void app._procurar_cameras()}>Procurar câmeras</Botao>
         <Botao onClick={() => arq.current?.click()}>Arquivo…</Botao>
         <input ref={arq} type="file" hidden accept=".png,.jpg,.jpeg,.bmp,.mp4,.avi,.mov,image/*,video/*"

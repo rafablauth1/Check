@@ -137,3 +137,18 @@
 .vg textarea.vg-texto { appearance: auto; border: 1px solid #7a7a7a; background: #fff; color: #000; padding: 2px 4px; outline: none; }
 .vg textarea.vg-texto:focus { border-color: #0078d7; }
 .vg textarea.vg-texto:disabled { background: #f4f4f4; }
+
+/* ttk.Combobox editável: texto + seta que abre a lista inteira */
+.vg-cbx { position: relative; display: inline-flex; height: 21px; border: 1px solid var(--vg-borda-campo); background: #fff; min-width: 0; }
+.vg-cbx:hover { border-color: #000; }
+.vg-cbx:focus-within { border-color: var(--vg-azul); }
+.vg-cbx > input { flex: 1; min-width: 0; border: none; outline: none; padding: 0 3px; background: #fff; height: 19px; }
+.vg-cbx > button { width: 17px; flex: none; font-size: 8px; padding: 0; background: #fff; color: #606060; border: none; cursor: default; }
+.vg-cbx > button:hover { background: #e5f1fb; }
+.vg-cbx > ul {
+  position: absolute; top: 100%; left: -1px; right: -1px; z-index: 50; margin: 0; padding: 0; list-style: none;
+  background: #fff; border: 1px solid #646464; max-height: 220px; overflow-y: auto; box-shadow: 2px 2px 4px rgba(0,0,0,.2);
+}
+.vg-cbx > ul > li { padding: 1px 4px; white-space: nowrap; cursor: default; }
+.vg-cbx > ul > li:hover, .vg-cbx > ul > li[data-sel] { background: var(--vg-azul); color: #fff; }
+.vg-cbx > ul > li[data-vazio] { color: #888; background: #fff; }

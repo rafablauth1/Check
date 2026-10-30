@@ -41,21 +41,45 @@ export function Entrada({ v, width, style, disabled }: { v: Var<string>; width?:
 }
 
 /** ttk.Combobox editável (lista + texto livre). */
-export function Combo({ v, valores, width, style, onSelect, onEnter }: {
+export function Combo({ v, valores, width, style, onSelect, onEnter, aoAbrir }: {
   v: Var<string>; valores: string[]; width?: number; style?: CSSProperties; onSelect?: () => void; onEnter?: () => void
+  /** antes de abrir a lista (ex.: procurar as câmeras se a lista estiver vazia) */
+  aoAbrir?: () => void | Promise<void>
 }) {
   const val = useVar(v)
-  const id = useRef(`vgc${Math.random().toString(36).slice(2)}`).current
+  const [aberto, setAberto] = useState(false)
+  const caixa = useRef<HTMLSpanElement>(null)
+  // fecha a lista ao clicar fora (como o ttk)
+  useEffect(() => {
+    if (!aberto) return
+    const fora = (e: MouseEvent) => { if (!caixa.current?.contains(e.target as Node)) setAberto(false) }
+    document.addEventListener('mousedown', fora)
+    return () => document.removeEventListener('mousedown', fora)
+  }, [aberto])
+  const abrir = async () => {
+    if (aberto) { setAberto(false); return }
+    if (aoAbrir) await aoAbrir()
+    setAberto(true)
+  }
+  const escolher = (o: string) => { v.set(o); setAberto(false); onSelect?.() }
   return (
-    <>
-      <input className="vg-combo" list={id} value={val} style={{ width: width ? width * 8 + 22 : undefined, ...style }}
-        onChange={e => {
-          v.set(e.target.value)
-          if (valores.includes(e.target.value) && (e.nativeEvent as InputEvent).inputType === undefined) onSelect?.()
-        }}
-        onKeyDown={e => { if (e.key === 'Enter') onEnter?.() }} />
-      <datalist id={id}>{valores.map(o => <option key={o} value={o} />)}</datalist>
-    </>
+    <span ref={caixa} className="vg-cbx" style={{ width: width ? width * 8 + 22 : undefined, ...style }}>
+      <input value={val} onChange={e => v.set(e.target.value)}
+        onKeyDown={e => {
+          if (e.key === 'Enter') onEnter?.()
+          else if (e.key === 'ArrowDown') { e.preventDefault(); void abrir() }
+          else if (e.key === 'Escape') setAberto(false)
+        }} />
+      <button type="button" tabIndex={-1} onClick={() => void abrir()}>▼</button>
+      {/* ttk.Combobox mostra a lista inteira (não filtra pelo texto digitado) */}
+      {aberto && (
+        <ul>
+          {valores.length
+            ? valores.map(o => <li key={o} data-sel={o === val || undefined} onMouseDown={e => { e.preventDefault(); escolher(o) }}>{o}</li>)
+            : <li data-vazio>(vazio)</li>}
+        </ul>
+      )}
+    </span>
   )
 }
 

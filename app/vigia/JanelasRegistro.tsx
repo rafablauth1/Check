@@ -60,6 +60,9 @@ function Abrir({ ui, itens, fechar }: { ui: RegistroUI; itens: { nome: string; c
         </table>
       </div>
       <div style={rodape}>
+        <Botao onClick={() => void ui.trocar_pasta()}>📁 Outra pasta (rede)…</Botao>
+        {ui.escolhida && <Botao onClick={() => void ui.trocar_pasta(true)}>Pasta deste PC</Botao>}
+        <span style={{ flex: 1 }} />
         <Botao disabled={!sel} onClick={() => sel && void ui.abrir_arquivo(sel)}>Abrir</Botao>
         <Botao onClick={fechar}>Cancelar</Botao>
       </div>

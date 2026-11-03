@@ -37,6 +37,7 @@ export default function VigiaPage() {
         await app.importar_vigia()
       }
       if (vivo) await app.iniciar()
+      app.registro.escolhida = !!r?.escolhida
       if (vivo) await app.registro.iniciar(String(r?.usuario ?? ''), String(r?.pasta ?? ''))
       // VIGIA-7S da área de trabalho aberto: avisa na aba Registro (os dois gravam o mesmo arquivo)
       const e = await fetch('/api/vigia', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ acao: 'ensaios' }) })

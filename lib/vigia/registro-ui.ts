@@ -52,6 +52,8 @@ export class RegistroUI {
   usuario = ''
   /** pasta do VIGIA no disco */
   base = ''
+  /** a pasta foi escolhida em "Pasta do ensaio…" (não é a padrão deste PC) */
+  escolhida = false
   carregado = new Var(false)
   private _salvarTimer: ReturnType<typeof setTimeout> | null = null
   private _io: Promise<unknown> = Promise.resolve()
@@ -147,6 +149,34 @@ export class RegistroUI {
   async abrir() {
     const r = await api({ acao: 'reg_listar' }).catch(() => ({ itens: [] }))
     this.janela.set({ tipo: 'abrir', itens: r.itens })
+  }
+
+  /** "Pasta do ensaio…": usa outra pasta do VIGIA (ex.: a cópia do ensaio na rede, para abrir em outro PC).
+   *  Troca a pasta inteira — config da câmera, perfis, ensaios e registros — e recarrega a tela.
+   *  padrao = volta à pasta deste PC (área de trabalho). */
+  async trocar_pasta(padrao = false) {
+    let pasta: string | null = null
+    if (!padrao) {
+      const el = (window as unknown as { electronAPI?: { browseFolder(t: string): Promise<{ canceled?: boolean; folderPath?: string }> } }).electronAPI
+      if (el) {
+        const r = await el.browseFolder('Pasta do ensaio (ex.: a pasta do protocolo na rede, com "Ensaio via Cam" dentro)')
+        if (r.canceled || !r.folderPath) return
+        pasta = r.folderPath
+      } else {
+        pasta = await simpledialog.askstring('Pasta do ensaio', 'Caminho da pasta do ensaio:', this.base)
+        if (!pasta) return
+      }
+    }
+    this.janela.set(null)
+    await this.salvar_agora()
+    await this.app.salvar_cfg_pendente()
+    try {
+      await api({ acao: 'pasta_vigia', pasta })
+    } catch (ex) {
+      await messagebox.showerror('Pasta do ensaio', ex instanceof Error ? ex.message : String(ex))
+      return
+    }
+    location.reload()
   }
 
   async abrir_arquivo(caminho: string) {

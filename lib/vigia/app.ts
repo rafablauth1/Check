@@ -438,6 +438,14 @@ export class App {
     await fetch('/api/vigia', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ config: this.cfg }), keepalive: true })
   }
 
+  /** grava já a config que estava esperando o salvarLayoutDepois (antes de trocar a pasta do VIGIA) */
+  async salvar_cfg_pendente() {
+    if (!this._salvarCfgTimer) return
+    clearTimeout(this._salvarCfgTimer)
+    this._salvarCfgTimer = null
+    await this.salvar_cfg()
+  }
+
   /** layout (divisórias) é salvo sozinho, como o Python faz ao fechar */
   salvarLayoutDepois() {
     if (this._salvarCfgTimer) clearTimeout(this._salvarCfgTimer)

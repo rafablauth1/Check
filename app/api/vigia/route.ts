@@ -4,7 +4,7 @@ import {
   ORIGEM_VIGIA_PADRAO, escreverRel, lerRel, existeRel, ensaiosIncompletos, abrirPasta, caminhoRel, resultDir,
   compartilhada, vigiaAberto, usuarioWindows, resolverCaminho, caminhoPortatil, caminhoBase,
   listarRegistros, lerRegistro, salvarRegistro, localizarFoto, ensaiosSalvos, listarEnsaiosSalvos, lerEstadoEnsaio,
-  arquivarEnsaios, abrirArquivo,
+  arquivarEnsaios, abrirArquivo, pastaEscolhida, definirPastaEscolhida, localizarBase,
 } from '@/lib/vigia/server'
 import { gerarResultadoXlsx } from '@/lib/vigia/excel'
 import { exportarExcel } from '@/lib/vigia/registro-excel'
@@ -24,7 +24,7 @@ const erro = (msg: string, status = 400) => NextResponse.json({ error: msg }, { 
 
 export async function GET() {
   const [config, perfis, orig] = await Promise.all([lerConfigBruta(), carregarPerfis(), lerVigiaOriginal()])
-  return NextResponse.json({ config, perfis, pasta: pastaVigia(), compartilhada: compartilhada(), usuario: usuarioWindows(), origem: { pasta: orig.pasta, existe: !!orig.config } })
+  return NextResponse.json({ config, perfis, pasta: pastaVigia(), escolhida: !!pastaEscolhida() && !process.env.VIGIA_PASTA, compartilhada: compartilhada(), usuario: usuarioWindows(), origem: { pasta: orig.pasta, existe: !!orig.config } })
 }
 
 export async function PUT(req: NextRequest) {
@@ -74,6 +74,15 @@ export async function POST(req: NextRequest) {
     if (b.acao === 'reg_resolver') {
       const p = resolverCaminho(String(b.caminho ?? ''))
       return NextResponse.json({ caminho: p ? caminhoPortatil(p) : null })
+    }
+    // Registro → "Pasta do ensaio…": outra BASE (ex.: o ensaio na rede); pasta null = volta ao padrão
+    if (b.acao === 'pasta_vigia') {
+      if (process.env.VIGIA_PASTA) return erro('A pasta do VIGIA está fixada pela variável VIGIA_PASTA deste PC.')
+      if (b.pasta === null) { await definirPastaEscolhida(null); return NextResponse.json({ pasta: pastaVigia() }) }
+      const base = localizarBase(String(b.pasta))
+      if (!base) return erro(`Não achei um ensaio do VIGIA em:\n${b.pasta}\n\nEscolha a pasta que tem config.json e a pasta resultados (ex.: "Ensaio via Cam").`)
+      await definirPastaEscolhida(base)
+      return NextResponse.json({ pasta: base })
     }
     if (b.acao === 'reg_listar') return NextResponse.json({ itens: await listarRegistros() })
     if (b.acao === 'reg_ler') return NextResponse.json({ reg: await lerRegistro(String(b.caminho)) })

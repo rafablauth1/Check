@@ -2,8 +2,9 @@
 // São os MESMOS do VIGIA-7S da área de trabalho (pasta "Ensaio via Cam"): calibração, perfis, ensaios e registros
 // ficam compartilhados entre os dois. Só os dados — o código do VIGIA-7S (vigia7s/) nunca é tocado.
 // Sem o VIGIA-7S no PC: pasta própria do app (userData/vigia). VIGIA_PASTA (variável de ambiente) força outra pasta.
+// No Registro, "Pasta do ensaio…" escolhe outra (ex.: a cópia do ensaio na rede, para abrir em outro PC).
 import fs from 'fs/promises'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync, statSync } from 'fs'
 import os from 'os'
 import path from 'path'
 import { getUserDataDir } from '@/lib/settings-server'
@@ -12,9 +13,41 @@ import { completarPerfis, type Segmento } from '@/lib/vigia/emc'
 /** Pasta do VIGIA-7S original (área de trabalho). */
 export const ORIGEM_VIGIA_PADRAO = path.join(os.homedir(), 'Desktop', 'Ensaio via Cam')
 
+/** pasta escolhida no Registro ("Pasta do ensaio…"), guardada em userData/vigia-pasta.json */
+const arqEscolha = () => path.join(getUserDataDir(), 'vigia-pasta.json')
+let escolhida: string | null | undefined
+export function pastaEscolhida(): string | null {
+  if (escolhida === undefined) {
+    try { escolhida = String(JSON.parse(readFileSync(arqEscolha(), 'utf-8')).pasta || '') || null } catch { escolhida = null }
+  }
+  return escolhida
+}
+export async function definirPastaEscolhida(p: string | null) {
+  await fs.mkdir(path.dirname(arqEscolha()), { recursive: true })
+  await fs.writeFile(arqEscolha(), JSON.stringify({ pasta: p ?? '' }, null, 2), 'utf-8')
+  escolhida = p
+}
+
+const ehDir = (p: string) => { try { return statSync(p).isDirectory() } catch { return false } }
+const temVigia = (p: string) => existsSync(path.join(p, 'config.json')) || ehDir(path.join(p, 'resultados'))
+/** A pasta que a pessoa escolheu pode ser a do ensaio (com "Ensaio via Cam" dentro), a própria BASE ou uma
+ *  pasta dentro de resultados/: acha a BASE (a que tem config.json ou resultados/). */
+export function localizarBase(escolha: string): string | null {
+  const p = path.resolve(escolha)
+  if (temVigia(p)) return p
+  const dentro = path.join(p, 'Ensaio via Cam')
+  if (temVigia(dentro)) return dentro
+  for (let d = p; path.dirname(d) !== d; d = path.dirname(d)) {
+    if (path.basename(d).toLowerCase() === 'resultados' && temVigia(path.dirname(d))) return path.dirname(d)
+  }
+  return null
+}
+
 /** BASE do VIGIA: config.json, perfis_emc.json e resultados/ ficam nela. */
 export function pastaVigia() {
   if (process.env.VIGIA_PASTA) return process.env.VIGIA_PASTA
+  const e = pastaEscolhida()
+  if (e) return e
   if (existsSync(path.join(ORIGEM_VIGIA_PADRAO, 'vigia7s'))) return ORIGEM_VIGIA_PADRAO
   return path.join(getUserDataDir(), 'vigia')
 }

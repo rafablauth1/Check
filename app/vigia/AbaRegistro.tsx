@@ -29,11 +29,18 @@ export default function AbaRegistro({ app, vigiaAberto }: { app: VigiaApp; vigia
         <span style={{ margin: '0 6px' }}>{basename(ui.caminho)}</span>
         <Botao onClick={() => void ui.novo()}>Novo…</Botao>
         <Botao onClick={() => void ui.abrir()}>Abrir…</Botao>
+        <Botao onClick={() => void ui.trocar_pasta()}>📁 Pasta do ensaio…</Botao>
         <Botao onClick={() => void ui.salvar_como()}>Salvar como…</Botao>
         <Botao onClick={() => void ui.exportar()}>📊 Exportar planilha (FOR EMC38)</Botao>
         <Botao onClick={() => void ui.emitir_dialogo()}>📄 Emitir relatório / Draft…</Botao>
         <span style={{ color: CINZA, marginLeft: 8 }}>(salvo automaticamente a cada alteração)</span>
       </div>
+      {ui.escolhida && (
+        <div style={{ margin: '0 6px 4px', padding: '4px 8px', background: '#e8f0fe', color: '#174ea6', border: '1px solid #aecbfa', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span>Usando a pasta do ensaio: <b>{ui.base}</b> (câmera, perfis, ensaios e registros vêm dela).</span>
+          <Botao onClick={() => void ui.trocar_pasta(true)}>Voltar à pasta deste PC</Botao>
+        </div>
+      )}
       {vigiaAberto && (
         <div style={{ margin: '0 6px 4px', padding: '4px 8px', background: '#fef7e0', color: '#8a5300', border: '1px solid #f3d27a' }}>
           O VIGIA-7S da área de trabalho está aberto e usa este mesmo registro: edite em um só dos dois (cada um grava o arquivo inteiro).

@@ -16,6 +16,19 @@
  * localStorage, sessionStorage e IndexedDB sobrevivem a essa navegação; o
  * caminho relativo preserva a origem (3000 no dev, 3721 no empacotado).
  */
+const VOLTAR_KEY = 'relatorioVoltarPara'
+
 export function abrirRelatorio(query = ''): void {
+  // guarda a tela de origem (com a query: ?id= do lote, ?num= da emenda) para o "Voltar"
+  try { sessionStorage.setItem(VOLTAR_KEY, window.location.pathname + window.location.search) } catch {}
   window.location.assign('/cispr15/relatorio' + query)
+}
+
+/* "Voltar" do relatório: vai para a tela que o abriu, pelo endereço — não pelo
+ * histórico. O history.back() voltava para o que estivesse antes no histórico
+ * da janela, e num PC do laboratório essa entrada dava "Bad Gateway". */
+export function voltarDoRelatorio(padrao: string): void {
+  let url: string | null = null
+  try { url = sessionStorage.getItem(VOLTAR_KEY) } catch {}
+  window.location.assign(url && url.startsWith('/') && !url.startsWith('/cispr15/relatorio') ? url : padrao)
 }

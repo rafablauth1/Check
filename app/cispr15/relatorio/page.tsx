@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useRef, useMemo } from 'react'
 import { useRouter } from 'next/navigation'
+import { voltarDoRelatorio } from '../abrir-relatorio'
 import { ArrowLeft, Printer, Upload, X, Loader2, FolderOpen, PenLine, CheckCircle2, Save, AlertTriangle, ShieldCheck, Search } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { finalizarMarcador, registrarTempo } from '@/lib/tempos'
@@ -791,8 +792,7 @@ export default function Cispr15RelatorioPage() {
 
   async function voltar() {
     await salvarNoRascunho()
-    if (fromLote) router.push('/cispr15/lote')
-    else router.back()
+    voltarDoRelatorio(fromLote ? '/cispr15/lote' : '/cispr15')
   }
 
   async function salvarArquivos() {

@@ -41,6 +41,8 @@ export interface ResultadoAutoteste {
   sugerido?: (Grade & { params: ParamsLeitura; folga: number }) | null
   /** estados que o display não mostrou e foram montados com outro segmento */
   substituidos?: string[]
+  /** o campo na foto usada no teste (RGBA): o display pode estar andando, o valor digitado é o desta foto */
+  foto?: { largura: number; altura: number; dados: ArrayBuffer }
   /** dígitos montados (RGBA), para conferir na tela */
   amostras?: { texto: string; largura: number; altura: number; dados: ArrayBuffer }[]
 }
@@ -230,10 +232,24 @@ function fracoesPorEspessura(cv: OpenCV, frame: Mat, campo: CampoDisplay, esps: 
 
 /** `mostra`: o que o display mostra agora, digitado pelo operador (só dígitos, um por posição; espaço =
  *  apagado). Com ele o teste roda mesmo quando a leitura atual está errada — é quando ele mais ajuda. */
+/** a área do campo (com 6 px de margem) em RGBA, para mostrar na janela */
+function recorteRGBA(cv: OpenCV, frame: Mat, [x0, y0, x1, y1]: [number, number, number, number]) {
+  const m = 6
+  const rx0 = Math.max(0, x0 - m), ry0 = Math.max(0, y0 - m), rx1 = Math.min(frame.cols, x1 + m), ry1 = Math.min(frame.rows, y1 + m)
+  if (rx1 - rx0 < 2 || ry1 - ry0 < 2) return null
+  const roi = frame.roi(new cv.Rect(rx0, ry0, rx1 - rx0, ry1 - ry0))
+  const rgba = new cv.Mat()
+  try {
+    cv.cvtColor(roi, rgba, cv.COLOR_BGR2RGBA)
+    return { largura: rgba.cols, altura: rgba.rows, dados: (rgba.data as Uint8Array).slice().buffer as ArrayBuffer }
+  } finally { roi.delete(); rgba.delete() }
+}
+
 export function autotestar(cv: OpenCV, frame: Mat, campoIn: CampoDisplay, mostra?: string): ResultadoAutoteste {
   const campo = { ...campoIn }
   const base = lerCampo(cv, frame, campo, 'BGR')
   const res: ResultadoAutoteste = { campo: campo.nome, leitura: base.texto, mostra }
+  res.foto = recorteRGBA(cv, frame, envolvente(celulasAbs(campo), fatorK(campo))) ?? undefined
   if (mostra !== undefined) {
     if (mostra.length !== base.segmentos.length || ![...mostra].every(c => c in PADRAO)) {
       res.erro = `Digite os ${base.segmentos.length} dígitos que o display mostra (sem vírgula; espaço para dígito apagado).`
@@ -318,17 +334,11 @@ export function autotestar(cv: OpenCV, frame: Mat, campoIn: CampoDisplay, mostra
     } else res.sugerido = null
 
     // amostras: a sequência girando (cada posição com um dígito diferente), recortada na área do campo
-    const [x0, y0, x1, y1] = env
-    const m = 6
-    const rx0 = Math.max(0, x0 - m), ry0 = Math.max(0, y0 - m), rx1 = Math.min(frame.cols, x1 + m), ry1 = Math.min(frame.rows, y1 + m)
     res.amostras = []
     for (const alvo of conjuntos.slice(11)) {
       compor(proprio.data, orig, cels, estados, fonte, alvo)
-      const roi = proprio.roi(new cv.Rect(rx0, ry0, rx1 - rx0, ry1 - ry0))
-      const rgba = new cv.Mat()
-      cv.cvtColor(roi, rgba, cv.COLOR_BGR2RGBA)
-      res.amostras.push({ texto: alvo.join(''), largura: rgba.cols, altura: rgba.rows, dados: (rgba.data as Uint8Array).slice().buffer })
-      roi.delete(); rgba.delete()
+      const a = recorteRGBA(cv, proprio, env)
+      if (a) res.amostras.push({ texto: alvo.join(''), ...a })
     }
   } finally { proprio.delete() }
   return res

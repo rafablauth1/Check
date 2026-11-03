@@ -111,7 +111,7 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
       f.data.set(new Uint8Array(m.dados))
       let resultados: ResultadoAutoteste[]
       try { resultados = m.campos.map(c => { const campo = campoDe(c); return autotestar(cv, f, campo, m.mostra?.[campo.nome]) }) } finally { f.delete() }
-      const transf = resultados.flatMap(r => (r.amostras ?? []).map(a => a.dados))
+      const transf = resultados.flatMap(r => [...(r.amostras ?? []), ...(r.foto ? [r.foto] : [])].map(a => a.dados))
       ctx.postMessage({ tipo: 'autoteste', id: m.id, resultados } satisfies RespostaWorker, transf)
       return
     }

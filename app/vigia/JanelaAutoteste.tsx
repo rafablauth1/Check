@@ -79,8 +79,9 @@ function ValorDisplay({ app, r, mostra }: { app: App; r: ResultadoAutoteste; mos
   const [v, setV] = useState(r.mostra ?? r.leitura.replace(/[^0-9 ]/g, ''))
   const testar = () => app._testar_digitos({ ...mostra, [r.campo]: v.replace(/[.,]/g, '') })
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 4px' }}>
-      <span>O display mostra:</span>
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 4px', flexWrap: 'wrap' }}>
+      {r.foto && <Foto foto={r.foto} />}
+      <span>Nesta foto o display mostra:</span>
       <input className="vg-entry" style={{ width: 90, fontFamily: 'Consolas, monospace' }} value={v}
         onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') testar() }} />
       <Botao onClick={testar}>Testar com esse valor</Botao>
@@ -127,6 +128,19 @@ function Bloco({ titulo, g, params, antes }: { titulo: string; g: Grade & { folg
       {!!g.erros.length && <div style={{ color: COR_FALHA, maxWidth: 380 }}>Erros: {g.erros.slice(0, 8).join('; ')}{g.erros.length > 8 ? '…' : ''}</div>}
     </div>
   )
+}
+
+/** a foto (congelada) usada no teste: o display pode estar andando, o valor digitado é o desta foto */
+function Foto({ foto }: { foto: NonNullable<ResultadoAutoteste['foto']> }) {
+  const ref = useRef<HTMLCanvasElement>(null)
+  useEffect(() => {
+    const c = ref.current
+    if (!c) return
+    c.width = foto.largura; c.height = foto.altura
+    c.getContext('2d')!.putImageData(new ImageData(new Uint8ClampedArray(foto.dados.slice(0)), foto.largura, foto.altura), 0, 0)
+  }, [foto])
+  const alt = 70
+  return <canvas ref={ref} title="foto usada no teste" style={{ height: alt, width: Math.round(foto.largura * alt / foto.altura), background: '#222' }} />
 }
 
 function Amostras({ r }: { r: ResultadoAutoteste }) {

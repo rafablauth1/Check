@@ -316,6 +316,7 @@ export class App {
   lbl_dica = rotulo('', COR_NEUTRO)
   dbg = new Var<HTMLCanvasElement | null>(null)
   /** janela do teste dos dígitos 0–9 (recurso do app) */
+  _quadro_autoteste: { largura: number; altura: number; dados: ArrayBuffer } | null = null
   autoteste = new Var<{ testando: true } | { testando: false; resultados: ResultadoAutoteste[]; aplicados: string[]; mostra: Record<string, string> } | null>(null)
   _carregando_campo = false
   _edicao: { j: number; tipo: string; ini: [number, number]; orig: number[] } | null = null
@@ -770,14 +771,20 @@ export class App {
     this.autoteste.set({ testando: true })
     let w: Worker | null = null
     try {
-      const { quadro } = await p.pedir({ tipo: 'bgr_ultimo', id: p.idGen++ }, 'bgr')
-      if (!quadro) throw new Error('Sem imagem da câmera.')
+      // com valor digitado, testa a MESMA foto em que o operador leu o display (ele pode estar andando)
+      let quadro = Object.keys(mostra).length ? this._quadro_autoteste : null
+      if (!quadro) {
+        quadro = (await p.pedir({ tipo: 'bgr_ultimo', id: p.idGen++ }, 'bgr')).quadro
+        if (!quadro) throw new Error('Sem imagem da câmera.')
+        this._quadro_autoteste = quadro
+      }
+      const envio = { ...quadro, dados: quadro.dados.slice(0) }   // a cópia vai para o worker (transferida)
       w = new Worker(new URL('./vigia.worker.ts', import.meta.url))
       const ww = w
       const resultados = await new Promise<ResultadoAutoteste[]>((ok, falha) => {
         ww.onmessage = (ev: MessageEvent<RespostaWorker>) => {
           const m = ev.data
-          if (m.tipo === 'pronto') ww.postMessage({ tipo: 'autoteste', id: 1, ...quadro, campos: this.campos, mostra } satisfies PedidoWorker, [quadro.dados])
+          if (m.tipo === 'pronto') ww.postMessage({ tipo: 'autoteste', id: 1, ...envio, campos: this.campos, mostra } satisfies PedidoWorker, [envio.dados])
           else if (m.tipo === 'autoteste') ok(m.resultados)
           else if (m.tipo === 'erro') falha(new Error(m.msg))
         }

@@ -316,7 +316,7 @@ export class App {
   lbl_dica = rotulo('', COR_NEUTRO)
   dbg = new Var<HTMLCanvasElement | null>(null)
   /** janela do teste dos dígitos 0–9 (recurso do app) */
-  autoteste = new Var<{ testando: true } | { testando: false; resultados: ResultadoAutoteste[]; aplicados: string[] } | null>(null)
+  autoteste = new Var<{ testando: true } | { testando: false; resultados: ResultadoAutoteste[]; aplicados: string[]; mostra: Record<string, string> } | null>(null)
   _carregando_campo = false
   _edicao: { j: number; tipo: string; ini: [number, number]; orig: number[] } | null = null
   _arrasto: [number, number] | null = null
@@ -762,7 +762,8 @@ export class App {
 
   /** Testar dígitos 0–9 (recurso do app): monta todos os dígitos em todas as posições com os segmentos
    *  reais da imagem e lê; sugere parâmetros. Roda num worker à parte (a imagem ao vivo não trava). */
-  async _testar_digitos() {
+  /** `mostra`: por campo, o valor que o display mostra (digitado), para testar quando a leitura está errada */
+  async _testar_digitos(mostra: Record<string, string> = {}) {
     const p = this.proc
     if (!this.campos.length) return
     if (!p || !this._tem_quadro) { await messagebox.showwarning('Testar dígitos', 'Sem imagem da câmera.'); return }
@@ -776,14 +777,14 @@ export class App {
       const resultados = await new Promise<ResultadoAutoteste[]>((ok, falha) => {
         ww.onmessage = (ev: MessageEvent<RespostaWorker>) => {
           const m = ev.data
-          if (m.tipo === 'pronto') ww.postMessage({ tipo: 'autoteste', id: 1, ...quadro, campos: this.campos } satisfies PedidoWorker, [quadro.dados])
+          if (m.tipo === 'pronto') ww.postMessage({ tipo: 'autoteste', id: 1, ...quadro, campos: this.campos, mostra } satisfies PedidoWorker, [quadro.dados])
           else if (m.tipo === 'autoteste') ok(m.resultados)
           else if (m.tipo === 'erro') falha(new Error(m.msg))
         }
         ww.onerror = e => falha(new Error(e.message || 'Falha ao carregar o OpenCV'))
         ww.postMessage({ tipo: 'iniciar' } satisfies PedidoWorker)
       })
-      if (this.autoteste.get()) this.autoteste.set({ testando: false, resultados, aplicados: [] })
+      if (this.autoteste.get()) this.autoteste.set({ testando: false, resultados, aplicados: [], mostra })
     } catch (e) {
       this.autoteste.set(null)
       await messagebox.showerror('Testar dígitos', e instanceof Error ? e.message : String(e))

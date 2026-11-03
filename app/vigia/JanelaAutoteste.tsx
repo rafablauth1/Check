@@ -2,7 +2,7 @@
 // Janela do teste dos dígitos 0–9 (recurso do app, não existe no VIGIA-7S em Python): para cada campo,
 // os dígitos montados com os segmentos reais da imagem, a grade dígito × posição lida com os parâmetros
 // atuais e com os sugeridos, e o botão para aplicar a sugestão.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useVar } from '@/lib/vigia/tk'
 import { type App, COR_OK, COR_FALHA, COR_NEUTRO, COR_AVISO } from '@/lib/vigia/app'
 import type { ResultadoAutoteste, Grade, ParamsLeitura } from '@/lib/vigia/autoteste'
@@ -28,7 +28,7 @@ export default function JanelaAutoteste({ app }: { app: App }) {
                 Cada dígito foi montado com os segmentos <b>reais</b> da imagem atual (aceso de um dígito, apagado de outro) e lido
                 pela mesma leitura do ensaio. O display tem de estar lendo certo agora.
               </div>
-              {st.resultados.map(r => <Campo key={r.campo} app={app} r={r} aplicado={st.aplicados.includes(r.campo)} />)}
+              {st.resultados.map(r => <Campo key={r.campo} app={app} r={r} aplicado={st.aplicados.includes(r.campo)} mostra={st.mostra} />)}
             </>
           )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 8 }}>
@@ -40,10 +40,11 @@ export default function JanelaAutoteste({ app }: { app: App }) {
   )
 }
 
-function Campo({ app, r, aplicado }: { app: App; r: ResultadoAutoteste; aplicado: boolean }) {
+function Campo({ app, r, aplicado, mostra }: { app: App; r: ResultadoAutoteste; aplicado: boolean; mostra: Record<string, string> }) {
   return (
     <fieldset className="vg-lf" style={{ marginBottom: 8, padding: 6 }}>
-      <legend>{r.campo} — lendo agora: '{r.leitura}'</legend>
+      <legend>{r.campo} — lendo agora: '{r.leitura}'{r.mostra !== undefined ? ` · testado com o valor digitado '${r.mostra}'` : ''}</legend>
+      <ValorDisplay app={app} r={r} mostra={mostra} />
       {r.erro ? <div style={{ color: COR_FALHA }}>{r.erro}</div> : (
         <>
           <Amostras r={r} />
@@ -70,6 +71,21 @@ function Campo({ app, r, aplicado }: { app: App; r: ResultadoAutoteste; aplicado
         </>
       )}
     </fieldset>
+  )
+}
+
+/** o operador digita o que o display mostra: o teste usa isso no lugar da leitura (que pode estar errada) */
+function ValorDisplay({ app, r, mostra }: { app: App; r: ResultadoAutoteste; mostra: Record<string, string> }) {
+  const [v, setV] = useState(r.mostra ?? r.leitura.replace(/[^0-9 ]/g, ''))
+  const testar = () => app._testar_digitos({ ...mostra, [r.campo]: v.replace(/[.,]/g, '') })
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, margin: '0 0 4px' }}>
+      <span>O display mostra:</span>
+      <input className="vg-entry" style={{ width: 90, fontFamily: 'Consolas, monospace' }} value={v}
+        onChange={e => setV(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') testar() }} />
+      <Botao onClick={testar}>Testar com esse valor</Botao>
+      <span style={{ color: COR_NEUTRO }}>(um dígito por posição, sem vírgula; espaço = apagado)</span>
+    </div>
   )
 }
 

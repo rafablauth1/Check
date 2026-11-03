@@ -30,7 +30,7 @@ export type PedidoWorker =
   /** conferência: devolve o VideoFrame em RGBA, para comparar com a captura na tela */
   | { tipo: 'rgba'; id: number; vf: VideoFrame }
   /** teste dos dígitos 0–9 (lib/vigia/autoteste.ts) num quadro tratado (BGR) — roda num worker à parte */
-  | { tipo: 'autoteste'; id: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[] }
+  | { tipo: 'autoteste'; id: number; largura: number; altura: number; dados: ArrayBuffer; campos: Partial<CampoDisplay>[]; mostra?: Record<string, string> }
   /** quadro tratado mais recente, em BGR */
   | { tipo: 'bgr_ultimo'; id: number }
   /** igualar e encaixar os dígitos de um campo no último quadro tratado */
@@ -110,7 +110,7 @@ ctx.onmessage = async (ev: MessageEvent<PedidoWorker>) => {
       const f = new cv.Mat(m.altura, m.largura, cv.CV_8UC3)
       f.data.set(new Uint8Array(m.dados))
       let resultados: ResultadoAutoteste[]
-      try { resultados = m.campos.map(c => autotestar(cv, f, campoDe(c))) } finally { f.delete() }
+      try { resultados = m.campos.map(c => { const campo = campoDe(c); return autotestar(cv, f, campo, m.mostra?.[campo.nome]) }) } finally { f.delete() }
       const transf = resultados.flatMap(r => (r.amostras ?? []).map(a => a.dados))
       ctx.postMessage({ tipo: 'autoteste', id: m.id, resultados } satisfies RespostaWorker, transf)
       return

@@ -35,6 +35,8 @@ export interface ResultadoAutoteste {
   campo: string
   erro?: string
   leitura: string
+  /** valor digitado com que foi testado (quando a leitura estava errada) */
+  mostra?: string
   atual?: Grade & { params: ParamsLeitura; folga: number }
   sugerido?: (Grade & { params: ParamsLeitura; folga: number }) | null
   /** estados que o display não mostrou e foram montados com outro segmento */
@@ -226,19 +228,28 @@ function fracoesPorEspessura(cv: OpenCV, frame: Mat, campo: CampoDisplay, esps: 
   } finally { rec.delete(); b.delete() }
 }
 
-export function autotestar(cv: OpenCV, frame: Mat, campoIn: CampoDisplay): ResultadoAutoteste {
+/** `mostra`: o que o display mostra agora, digitado pelo operador (só dígitos, um por posição; espaço =
+ *  apagado). Com ele o teste roda mesmo quando a leitura atual está errada — é quando ele mais ajuda. */
+export function autotestar(cv: OpenCV, frame: Mat, campoIn: CampoDisplay, mostra?: string): ResultadoAutoteste {
   const campo = { ...campoIn }
   const base = lerCampo(cv, frame, campo, 'BGR')
-  const res: ResultadoAutoteste = { campo: campo.nome, leitura: base.texto }
-  if (!base.texto || base.texto.includes('?') || base.valor === null) {
-    res.erro = `A leitura atual é '${base.texto || '?'}': ajuste o campo até ler o display certo e teste de novo.`
+  const res: ResultadoAutoteste = { campo: campo.nome, leitura: base.texto, mostra }
+  if (mostra !== undefined) {
+    if (mostra.length !== base.segmentos.length || ![...mostra].every(c => c in PADRAO)) {
+      res.erro = `Digite os ${base.segmentos.length} dígitos que o display mostra (sem vírgula; espaço para dígito apagado).`
+      return res
+    }
+  } else if (!base.texto || base.texto.includes('?') || base.valor === null) {
+    res.erro = `A leitura atual é '${base.texto || '?'}': digite abaixo o que o display mostra, ou ajuste o campo até ler certo.`
     return res
   }
   const mapa = mapearCelulas(cv, frame.cols, frame.rows, campo)
   if (!mapa || mapa.cels.length !== base.segmentos.length) { res.erro = 'Área do campo fora da imagem.'; return res }
   const { cels, env } = mapa
   const n = cels.length
-  const estados = base.segmentos.map(d => d.map(s => (s[5] ? 1 : 0)))
+  const estados = mostra !== undefined
+    ? [...mostra].map(c => PADRAO[c])
+    : base.segmentos.map(d => d.map(s => (s[5] ? 1 : 0)))
   // de onde copiar cada segmento aceso/apagado: a célula mais próxima que tenha esse segmento nesse estado;
   // se o display não mostra o segmento naquele estado (ex.: em "4000" b, c e f nunca apagam), usa outro
   // segmento da mesma orientação naquele estado (espelhado se estiver do outro lado do dígito)
@@ -264,7 +275,7 @@ export function autotestar(cv: OpenCV, frame: Mat, campoIn: CampoDisplay): Resul
     const [jj, eu, ev] = tabela[s][j]!
     return [perto(com[s][jj], i), jj, eu, ev]
   }
-  const conjuntos = conjuntosDeTeste(n, base.texto)
+  const conjuntos = conjuntosDeTeste(n, mostra ?? base.texto)
   const orig = (frame.data as Uint8Array).slice()
   // quadro de trabalho onde os dígitos são montados (clone() do opencv.js compartilharia os pixels)
   const proprio = new cv.Mat(frame.rows, frame.cols, cv.CV_8UC3)
